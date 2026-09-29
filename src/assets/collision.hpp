@@ -5,10 +5,9 @@
 #include <vector>
 
 #include "assets/reader.hpp"
+#include "core/math.hpp"
 
 namespace nf {
-
-using Vec3 = std::array<float, 3>;
 
 // coll_data_new block (0x2E), parsed by parsemap_block_Coll_Data_New and walked by
 // Intersect_RayGeom / Intersect_CylGeom. Precedes the PS2_GFX + entity_params pair of its model;

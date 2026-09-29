@@ -2,6 +2,17 @@
 
 namespace nf {
 
+std::vector<std::uint8_t> read_level_bin(GameFiles& files, std::string& name) {
+    for (const auto& f : files.files()) {
+        if (!f.name.ends_with(".bin") || (!name.empty() && f.name != name)) continue;
+        auto bin = files.read(f);
+        if (parse_bin_archive(Bytes(bin)).empty()) continue;
+        name = f.name;
+        return bin;
+    }
+    return {};
+}
+
 std::array<float, 16> instance_transform(const StaticInstance& s) {
     auto [x, y, z, w] = s.quat;
     // Rotation from unit quaternion, then scale columns, then translate.

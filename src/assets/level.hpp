@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "assets/bin_archive.hpp"
+#include "assets/game_files.hpp"
 #include "assets/map_file.hpp"
 #include "assets/ps2_gfx.hpp"
 
@@ -48,5 +49,9 @@ private:
 };
 
 std::array<float, 16> instance_transform(const StaticInstance& s);
+
+// Reads level .bin `name` from FILES.BIN, or the first non-empty .bin when `name` is empty (which is
+// then set). Returns an empty vector if there is no such file.
+std::vector<std::uint8_t> read_level_bin(GameFiles& files, std::string& name);
 
 }  // namespace nf

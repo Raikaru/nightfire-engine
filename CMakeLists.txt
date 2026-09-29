@@ -35,6 +35,13 @@ target_link_libraries(nfdump PRIVATE nf_assets)
 target_compile_options(nfdump PRIVATE -Wall -Wextra)
 
 find_package(OpenGL REQUIRED)
+add_library(nf_render STATIC
+  src/render/gl.cpp
+  src/render/window.cpp
+  src/render/level_renderer.cpp)
+target_link_libraries(nf_render PUBLIC nf_assets SDL3::SDL3-static OpenGL::GL)
+target_compile_options(nf_render PRIVATE -Wall -Wextra)
+
 add_executable(nfview src/viewer/main.cpp)
-target_link_libraries(nfview PRIVATE nf_assets SDL3::SDL3-static OpenGL::GL)
+target_link_libraries(nfview PRIVATE nf_render)
 target_compile_options(nfview PRIVATE -Wall -Wextra)
