@@ -1,8 +1,15 @@
 // nfdump: inspect and validate Nightfire (PS2) game data.
 //   nfdump <gamedir> files              FILES.BIN index (from ACTION.ELF FileList)
 //   nfdump <gamedir> maps               level .bins with their Map entry and headline models
-//   nfdump <gamedir> validate           parse every map chunk file and decode every PS2_GFX block
+//   nfdump <gamedir> validate           parse every map chunk file and decode every PS2_GFX block,
+//                                       then decode every sound bank, music track and stream, and self-check
+//                                       the collision world of every level
+//   nfdump <gamedir> collision          only the collision-world self-check of validate
+//   nfdump <gamedir> nav <level.bin> [map.bmp]   navigation network: counts, connectivity, A*, emitters, route walk
+//   nfdump <gamedir> chars [level.bin [skin]]   skins, skeletons, animations (validate covers them too)
+//   nfdump <gamedir> sounds [banks|bank <slot>|music [n]|streams|maps]
 // <gamedir> holds ACTION.ELF and FILES.BIN extracted from the disc.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <exception>
@@ -12,6 +19,20 @@
 #include "assets/collision.hpp"
 #include "assets/game_files.hpp"
 #include "assets/level.hpp"
+#include "assets/menu_validate.hpp"
+#include "tools/nfdump_chars.hpp"
+#include "tools/nfdump_game.hpp"
+#include "tools/nfdump_sounds.hpp"
+#include "tools/nfdump_weapons.hpp"
+#include "tools/nfdump_arena.hpp"
+#include "tools/nfdump_hud.hpp"
+#include "tools/nfdump_ui.hpp"
+#include "tools/nfdump_mp.hpp"
+#include "tools/nfdump_nav.hpp"
+#include "tools/nfdump_sp.hpp"
+#include "tools/nfdump_bots.hpp"
+#include "tools/nfdump_driving.hpp"
+#include "tools/nfdump_ssh.hpp"
 
 using namespace nf;
 
@@ -43,12 +64,64 @@ int cmd_maps(GameFiles& gf) {
     return 0;
 }
 
+// Counts of the GS material state and animation data seen across the disc (see docs/formats.md).
+struct MaterialStats {
+    std::map<std::string, std::size_t> blend, alpha_test;
+    std::size_t depth_write_off = 0, untextured = 0, non_gequal_depth = 0;
+    std::size_t animated_textures = 0, max_frames = 0, sky_instances = 0, sky_missing_model = 0;
+    std::map<std::uint32_t, std::size_t> sky_layers;
+
+    void add(const GfxBatch& b) {
+        const Material& m = b.material;
+        static const char* ops[] = {"", "-", "rev-"};
+        static const char* factors[] = {"0", "1", "As", "1-As", "K"};
+        std::string blend_name = "opaque";
+        if (m.blend.enabled) {
+            blend_name = std::string(ops[int(m.blend.op)]) + "src*" + factors[int(m.blend.src)] + " / dst*" +
+                         factors[int(m.blend.dst)];
+        }
+        ++blend[blend_name];
+        static const char* methods[] = {"never", "always", "<", "<=", "==", ">=", ">", "!="};
+        ++alpha_test[m.alpha_test ? std::string("A ") + methods[int(m.alpha_method)] + " " +
+                                        std::to_string(m.alpha_ref)
+                                  : "off"];
+        depth_write_off += !m.depth_write;
+        untextured += !m.textured;
+        non_gequal_depth += m.depth_test != DepthMethod::GreaterEqual;
+    }
+    void add(const MapChunk& chunk) {
+        for (const auto& t : chunk.textures) {
+            if (t.frames < 2) continue;
+            ++animated_textures;
+            max_frames = std::max<std::size_t>(max_frames, t.frames);
+        }
+        for (const auto& s : chunk.statics) {
+            if (s.object_class() != kClassSky) continue;
+            ++sky_instances;
+            ++sky_layers[s.param(4)];
+        }
+    }
+    void print() const {
+        std::printf("materials (per batch): blend");
+        for (const auto& [k, n] : blend) std::printf(" [%s]=%zu", k.c_str(), n);
+        std::printf("\n  alpha test");
+        for (const auto& [k, n] : alpha_test) std::printf(" [%s]=%zu", k.c_str(), n);
+        std::printf("\n  depth write off %zu, untextured %zu, depth test other than GEQUAL %zu\n", depth_write_off,
+                    untextured, non_gequal_depth);
+        std::printf("animated textures %zu (max %zu frames); sky instances %zu (layer:", animated_textures,
+                    max_frames, sky_instances);
+        for (const auto& [k, n] : sky_layers) std::printf(" %u=%zu", k, n);
+        std::printf(")\n");
+    }
+};
+
 int cmd_validate(GameFiles& gf) {
     std::size_t bins = 0, chunks = 0, blocks = 0, textures = 0, models = 0, batches = 0, triangles = 0, verts = 0;
     std::size_t failures = 0, bad_texref = 0;
     std::size_t coll_models = 0, coll_tris = 0, coll_boxes = 0, coll_outside = 0, coll_badnorm = 0,
                 coll_degenerate = 0, coll_normal_agree = 0, coll_normal_flip = 0, coll_normal_other = 0;
     std::map<std::uint8_t, std::size_t> block_ids;
+    MaterialStats materials;
     for (const auto& f : gf.files()) {
         if (!is_level_bin(f)) continue;
         auto data = gf.read(f);
@@ -69,11 +142,13 @@ int cmd_validate(GameFiles& gf) {
                 blocks += chunk.blocks.size();
                 for (const auto& b : chunk.blocks) ++block_ids[b.id];
                 textures += chunk.textures.size();
+                materials.add(chunk);
                 for (const auto& m : chunk.models) {
                     ++models;
                     GfxMesh mesh = decode_ps2_gfx(m.gfx);
                     for (const auto& b : mesh.batches) {
                         ++batches;
+                        materials.add(b);
                         verts += b.vertices.size();
                         triangles += b.indices.size() / 3;
                         if (b.texture >= std::int32_t(chunk.textures.size())) ++bad_texref;
@@ -119,6 +194,7 @@ int cmd_validate(GameFiles& gf) {
                 models);
     std::printf("batches %zu, vertices %zu, triangles %zu, texture refs out of range %zu\n", batches, verts,
                 triangles, bad_texref);
+    materials.print();
     std::printf("collision: %zu models, %zu boxes, %zu triangles, %zu vertex coords outside leaf box, "
                 "%zu non-unit normals, %zu degenerate\n",
                 coll_models, coll_boxes, coll_tris, coll_outside, coll_badnorm, coll_degenerate);
@@ -134,7 +210,7 @@ int cmd_validate(GameFiles& gf) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::fprintf(stderr, "usage: %s <gamedir> files|maps|validate\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <gamedir> files|maps|validate|collision|chars|sounds\n", argv[0]);
         return 2;
     }
     try {
@@ -142,7 +218,37 @@ int main(int argc, char** argv) {
         std::string cmd = argv[2];
         if (cmd == "files") return cmd_files(gf);
         if (cmd == "maps") return cmd_maps(gf);
-        if (cmd == "validate") return cmd_validate(gf);
+        if (cmd == "validate") {
+            int rc = cmd_validate(gf);
+            if (validate_chars(gf, argv[1]) != 0) rc = 1;
+            if (validate_ui(gf, argv[1]) != 0) rc = 1;
+            if (validate_menu(gf, argv[1]) != 0) rc = 1;
+            if (validate_hud(gf, argv[1]) != 0) rc = 1;
+            if (validate_game(gf, argv[1]) != 0) rc = 1;
+            if (validate_mp(gf, argv[1]) != 0) rc = 1;
+            if (validate_arena(gf, argv[1]) != 0) rc = 1;
+            if (validate_weapons(gf, argv[1]) != 0) rc = 1;
+            if (validate_nav(gf, argv[1]) != 0) rc = 1;
+            if (validate_sp(gf, argv[1]) != 0) rc = 1;
+            if (validate_bots(gf, argv[1]) != 0) rc = 1;
+            if (validate_ssh(argv[1]) != 0) rc = 1;
+            if (validate_driving(argv[1]) != 0) rc = 1;
+            return validate_sounds(gf, argv[1]) == 0 ? rc : 1;
+        }
+        if (cmd == "collision") return validate_game(gf, argv[1]) == 0 ? 0 : 1;
+        if (cmd == "chars") return cmd_chars(gf, std::vector<std::string>(argv + 3, argv + argc));
+        if (cmd == "sounds") return cmd_sounds(gf, argv[1], std::vector<std::string>(argv + 3, argv + argc));
+        if (cmd == "arena") return cmd_arena(gf, argv[1], std::vector<std::string>(argv + 3, argv + argc));
+        if (cmd == "weapons") return cmd_weapons(gf, argv[1], std::vector<std::string>(argv + 3, argv + argc));
+        if (cmd == "sp") return dump_sp(gf, argv[1], argc > 3 ? argv[3] : "");
+        if (cmd == "nav") {
+            if (argc < 4) {
+                std::fprintf(stderr, "usage: %s <gamedir> nav <level.bin> [map.bmp]\n", argv[0]);
+                return 2;
+            }
+            return cmd_nav(gf, argv[3], argc > 4 ? argv[4] : "");
+        }
+        if (cmd == "ssh") return cmd_ssh(argv[1], std::vector<std::string>(argv + 3, argv + argc));
         std::fprintf(stderr, "unknown command %s\n", cmd.c_str());
         return 2;
     } catch (const std::exception& e) {

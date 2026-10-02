@@ -1,0 +1,5 @@
+0 release
+20 axis LY -1
+100 axis LX 1
+112 axis LX 0
+260 release

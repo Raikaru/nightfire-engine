@@ -17,7 +17,8 @@ namespace nf {
 //         u16 box_count, u16 tri_count, u16 unit_count. Data, in order:
 //   unit_count x 0x40  quantised vertex pool (i16 triples, addressed in halfwords per box)
 //   box_count  x 0x30  BVH boxes (root first)
-//   tri_count  x 8     u16 v0, v1, v2, normal  (halfword offsets into the box's pool)
+//   tri_count  x 8     u16 v0, v1, v2, normal  (halfword offsets into the box's pool; the normal
+//                      entry is i16 x 3 followed by an f32 plane constant)
 //   tri_count  x 1     material byte (Collide_Filter; bits 0xC0 = pass-through flags)
 struct CollisionBox {
     Vec3 min, max;
@@ -29,6 +30,7 @@ struct CollisionBox {
 struct CollisionTri {
     std::array<Vec3, 3> v;
     Vec3 normal;           // stored, unit length (i16 * 2^-14)
+    float plane_d;         // stored f32 following the normal's three i16: plane is normal . p + plane_d = 0
     std::uint8_t material;
 };
 

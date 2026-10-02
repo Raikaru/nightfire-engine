@@ -1,5 +1,8 @@
 #include "assets/elf.hpp"
 
+#include <algorithm>
+#include <cstring>
+
 namespace nf {
 
 namespace {
@@ -50,6 +53,16 @@ Bytes Elf32::at(std::uint32_t vaddr, std::uint32_t size) const {
             return slice(Bytes(image_), seg.offset + (vaddr - seg.vaddr), size);
     }
     throw FormatError("vaddr not backed by a loaded segment");
+}
+
+std::vector<std::uint8_t> Elf32::image_range(std::uint32_t vaddr, std::uint32_t size) const {
+    std::vector<std::uint8_t> out(size, 0);
+    for (const auto& seg : segments_) {
+        const std::uint64_t lo = std::max<std::uint64_t>(vaddr, seg.vaddr);
+        const std::uint64_t hi = std::min<std::uint64_t>(std::uint64_t(vaddr) + size, std::uint64_t(seg.vaddr) + seg.filesz);
+        if (lo < hi) std::memcpy(out.data() + (lo - vaddr), image_.data() + seg.offset + (lo - seg.vaddr), hi - lo);
+    }
+    return out;
 }
 
 }  // namespace nf

@@ -1,0 +1,7 @@
+0 release
+20 down square
+24 up square
+80 axis LY -1
+90 down square
+94 up square
+140 release
