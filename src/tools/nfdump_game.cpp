@@ -128,7 +128,10 @@ std::size_t validate_game(GameFiles& files, const std::filesystem::path&) {
             }
             samples += level_samples;
 
-            // Spawn markers: the standing capsule may start inside geometry, but one push must resolve it.
+            // Spawn markers: the standing capsule may start inside geometry, but per-frame pushes must
+            // resolve it (Player_Collision pushes every tick; 07000014.bin's Player_1 marker is wedged
+            // between two overlapping floors and converges 0.61 -> 0.001 in ~5 pushes, standing cleanly
+            // after 10 live ticks). Fails only when 8 pushes still leave it embedded.
             for (const SpawnPoint& s : find_spawn_points(level)) {
                 ++spawns;
                 Player player(s.position, s.yaw, PlayerParams{});
@@ -139,15 +142,17 @@ std::size_t validate_game(GameFiles& files, const std::filesystem::path&) {
                 q.a = {player.pos[0], player.pos[1] + 0.275f, player.pos[2]};
                 q.b = {player.pos[0], player.pos[1] + 0.55f - player.stand_height, player.pos[2]};
                 q.radius = 0.55f;
-                const auto res = world.cylinder(q);
-                // One push must resolve the start pose (a second query at the pushed position is clean).
-                CylinderQuery again = q;
-                again.a = res.a;
-                again.b = res.b;
-                const float residual = length(world.cylinder(again).push_out);
+                float residual = 0;
+                for (int push = 0; push < 8; ++push) {
+                    const auto res = world.cylinder(q);
+                    residual = length(res.push_out);
+                    if (residual <= 0.05f) break;
+                    q.a = res.a;
+                    q.b = res.b;
+                }
                 if (floor && residual > 0.05f) {
-                    std::printf("%s: spawn '%s' at %.2f,%.2f,%.2f stays embedded after a push (residual %.3f)\n", f.name.c_str(),
-                                s.model.c_str(), s.position[0], s.position[1], s.position[2], residual);
+                    std::printf("%s: spawn '%s' at %.2f,%.2f,%.2f stays embedded after pushes (residual %.3f)\n",
+                                f.name.c_str(), s.model.c_str(), s.position[0], s.position[1], s.position[2], residual);
                     ++level_failures;
                 }
             }

@@ -31,6 +31,7 @@ namespace nf {
 namespace sp {
 class SpSystem;
 }  // namespace sp
+class MissionSystem;
 namespace drone {
 
 class DroneCli {
@@ -45,8 +46,13 @@ public:
                const std::string& bin_name);
     // Call after every world tick (frame counter of the world): scripted hits and log lines.
     void after_tick(World& world);
+    // Drains MissionSystem::take_spawns() into SpSystem::spawn_scripted (Drone_CoderCreate for cutscene
+    // event 8): call after World::tick like SpSession does. Returns the spawned drone ids. No-op without --sp.
+    std::vector<int> drain_coder_spawns(MissionSystem& mission);
 
     DroneSystem* system() const { return sys_; }
+    // The single-player layer (--sp), null when inactive. Owned by the World (added ahead of the DroneSystem).
+    sp::SpSystem* sp_system() const { return spsys_; }
     // Camera override in game convention (eye, yaw with forward = (sin, cos), pitch up positive); false = none.
     bool camera(Vec3& eye, float& yaw, float& pitch) const;
 
@@ -59,8 +65,10 @@ private:
     std::string skin_;
     int sub_class_ = -1, weapon_ = 6, follow_ = 0;
     float health_ = 10.0f;
-    bool trace_ = false, probe_ = false, sp_ = false, sp_enable_all_ = false;
+    bool trace_ = false, probe_ = false, sp_ = false, sp_enable_all_ = false, sp_channels_ = false;
     int difficulty_ = 2;   // --difficulty (GameState+0x28: 1 easy, 2 normal, 3 hard)
+    // Last seen switch-channel snapshot for --sp-channels (who-set-what tracing with MissionSystem's log).
+    std::array<std::uint8_t, 256> channel_snap_{};
     std::unique_ptr<NavNetwork> nav_;
     DroneSystem* sys_ = nullptr;
     sp::SpSystem* spsys_ = nullptr;   // owned by the World (added ahead of the DroneSystem)

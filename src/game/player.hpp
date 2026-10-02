@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <functional>
 
 #include "core/math.hpp"
 #include "game/actions.hpp"
@@ -196,6 +197,9 @@ public:
     // Player_Activate took the use action (Cross) this frame: a creep wall was in reach (icon 6). The weapon code
     // must not also reload on that press.
     bool use_action_consumed() const { return use_consumed_; }
+    // Scripting's use-action half (SpObjects::activate_at): called with the activation probe when Cross
+    // is pressed and no creep wall took it; its return value joins use_consumed_.
+    void set_use_handler(std::function<bool(const ActivationProbe&)> handler) { use_handler_ = std::move(handler); }
     // --- vehicles (player_vehicle.cpp; docs/gameplay.md "Vehicles") ---
     // Car_Activate / GunImp_Activate / GT_TakeControl, player halves: links the vehicle object
     // (BLData+0x878), switches to substate 11 / 12 / 16 with camera mode 0xD / 0xE / 0xF, stows the
@@ -324,6 +328,8 @@ private:
     std::uint8_t jump_delay_ = 0;    // BL+0x952
     std::uint8_t crouch_timer_ = 0;  // BL+0x960
     float applied_height_ = 1.0327658653f;   // stand_height already folded into pos
+    float last_height_delta_ = 0.0f;          // foot-height delta applied this frame (along last_height_vec_)
+    Vec3 last_height_vec_{};              // pos shift from the foot height (reverted if frozen-airborne)
     Vec3 prev_pos_{};           // BL+0x00
     CylinderResult last_cylinder_;
     FrameTiming timing_;        // FRAME_RATE / _MUL / REC_FRAME_RATE as of the last update
@@ -351,6 +357,7 @@ private:
     std::uint8_t icon_context_ = 0xFF;              // BL+0x95F
     std::uint8_t icon_next_ = 0xFF;                 // what the last collision pass saw; latched by the next update
     bool use_consumed_ = false;
+    std::function<bool(const ActivationProbe&)> use_handler_;   // Scripting::SpObjects::activate_at
     // Vehicles (player_vehicle.cpp). BL+0x878 holds the vehicle/gun object while boarded.
     BoardedVehicle vehicle_;
     CamMode cam_mode_ = CamMode::FirstPerson;   // BL+0x950

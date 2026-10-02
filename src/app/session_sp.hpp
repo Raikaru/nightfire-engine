@@ -21,16 +21,21 @@ namespace nf::app {
 struct SpLaunch {
     std::string bin;      // FILES.BIN level name, e.g. "07000001.bin"
     int difficulty = 2;   // GameState+0x28: 1 easy, 2 normal, 3 hard
+    // Debug channel presets (nfgame --channel): applied to the mission switch channels at start.
+    std::vector<std::pair<int, int>> channels;
 };
 
 enum class SpExit {
     QuitToMenu,   // pause quit, P_ENDMISSION quit, or window close
     Restart,      // pause restart or P_ENDMISSION retry
+    NextMission,  // mission succeeded: `next_level` names the follow-up (0 = back to the frontend)
 };
 
 struct SpResult {
     SpExit exit = SpExit::QuitToMenu;
     bool failed = false;  // death or the mission-fail hook fired
+    bool won = false;     // MissionSystem reported Succeeded
+    std::uint32_t next_level = 0;  // sp_level id after a win (0x070000xx ACTION, 0x0900000x driving, 0 = frontend)
 };
 
 struct SpHeadless {

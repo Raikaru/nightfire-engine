@@ -162,6 +162,21 @@ MissionData MissionData::load(const CarpFile& carp) {
         s.width = f32(b, 32);
         md.road.push_back(s);
     }
+    // Routable route: `rn` positions in index order. (`rn` = {vec3 pos, u32 (self|road<<16),
+    // u32 (prev|self<<16), ...}; the road id marks segment types, not routes — filtering by it
+    // fragments the route at every junction, so all nodes are kept in index order. The walk
+    // bridges the remaining gaps.)
+    {
+        struct Rn { int idx; Vec3 pos; };
+        std::vector<Rn> all;
+        for (const CarpEntry* x : carp.find("rn")) {
+            const Bytes b = carp.payload(*x, x->size ? x->size : 32);
+            if (b.size() < 12) continue;
+            all.push_back({x->index, {f32(b, 0), f32(b, 4), f32(b, 8)}});
+        }
+        std::sort(all.begin(), all.end(), [](const Rn& p, const Rn& q) { return p.idx < q.idx; });
+        for (const Rn& n : all) md.route.push_back(n.pos);
+    }
 
     // PowerUp pickups: Map-group instances whose sr article name holds "PowerUp". Instance rows
     // are 64 bytes (track_model.cpp): u16 sr ref at +28, translation at +48..+59.

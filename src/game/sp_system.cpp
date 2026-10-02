@@ -177,6 +177,7 @@ Drone* SpSystem::spawn_npc(const SpNpcSpec& spec, std::uint32_t static_index, co
     ext->static_index = static_index;
     ext->spawner = spawner;
     ext->template_index = template_index;
+    ext->death_channel = std::uint8_t(spec.key12);   // Drone+0x13c: set on death (DroneFunc_SetDeathChannel)
     info.ext = std::move(ext);
     Drone& d = drones_.spawn(std::move(info));
     apply_config(d, r);
@@ -184,6 +185,26 @@ Drone* SpSystem::spawn_npc(const SpNpcSpec& spec, std::uint32_t static_index, co
     if (r.captain) ++stats.captains;
     ++spawned_;
     return &d;
+}
+
+Drone* SpSystem::spawn_scripted(const Vec3& feet, const std::uint32_t args[4]) {
+    // Drone_CoderCreate with zeroed DIVars: default-configured drone at the event position.
+    SpNpcSpec spec;
+    spec.pos = feet;
+    spec.mode = 0;   // zeroed DIVars: DMODE 0, like the original's memset block
+    Drone* d = spawn_npc(spec, 0xffffffffu, &feet);
+    if (!d) return nullptr;
+    std::uint32_t ebits = 0, fbits = 0, d0 = 0;
+    std::memcpy(&ebits, &args[0], 4);
+    std::memcpy(&fbits, &args[1], 4);
+    std::memcpy(&d0, &args[3], 4);
+    std::memcpy(&d->engage_dist, &ebits, 4);   // Drone+0xf0 override (0 = keep resolved)
+    if (ebits == 0) d->engage_dist = 12.0f;
+    std::memcpy(&d->range_f4, &fbits, 4);       // Drone+0xf4 override
+    if (fbits == 0) d->range_f4 = 4.0f;
+    if (d0 != 0) d->d0 = int(d0);               // Drone+0xd0 override
+    d->initial_state = kStIdle;
+    return d;
 }
 
 std::size_t SpSystem::spawn_placed() {

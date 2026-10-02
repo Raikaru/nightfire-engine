@@ -236,12 +236,14 @@ the menus asked for (accept, back, alt, left/right, move, page back).
 
 ```
 P_INTRO 0x40000032 -> P_START 0x40000009 (press cross) -> P_PARISENUM 0x4000004a -> P_ESTHERO 0x40000043 -> P_MAIN 0x40000002
-P_MAIN: NightFire | Multiplayer | Codenames
+P_MAIN: NightFire | Multiplayer | Codenames (2D layer over the game's 3D/vista backdrop)
 NightFire: P_NFSELECT 0x40000025 (codename) -> P_NFDFCTY 0x40000023 (difficulty) -> P_NFMAP 0x4000001c (mission)
-            -> StartMission; P_DOSSIER 0x4000002b -> records 0x3a / rewards 0x3b / gadgets 0x3c / weapons 0x3d
-            results: P_NFRESULTS 0x36 -> P_NFBONUS 0x38 (-> P_WINGAME 0x53) or MissionDone; P_NFSTATS 0x37
-Codenames: P_CNSELECT 0x4000001b (new / profile) -> P_CNNAME 0x40000020 (letter grid) or P_CNMENU 0x4000001d hub
-            -> controls 0x40000022 (style list + Y-inversion) / game options 0x4000002d (8 radios) /
+            -> StartMission (unlocks from the active profile); P_DOSSIER 0x4000002b -> records 0x3a /
+            rewards 0x3b / gadgets 0x3c / weapons 0x3d (wheels from the ds_gadgets/ds_weapons tables)
+            results: P_NFRESULTS 0x36 -> P_NFBONUS 0x38 (-> P_WINGAME 0x53 movie -> P_CREDITS) or MissionDone;
+            P_NFSTATS 0x37
+Codenames: P_CNSELECT 0x4000001b (new / saved profiles) -> P_CNNAME 0x40000020 (letter grid) or P_CNMENU 0x4000001d hub
+            -> controls 0x40000022 (style list + per-style diagram + Y-inversion) / game options 0x4000002d /
                MP options 0x4000002e / AV options 0x40000031 (music/effects sliders, subtitles, split-screen,
                speaker, widescreen, screen adjust, defaults, credits, trailer) / screen adjust 0x40000047
 Multiplayer:  P_MPJOIN 0x40000019 -> P_MPSCENARIO 0x4000001a -> P_MPMAP 0x40000013 -> P_MPSETUP 0x40000051 -> P_MPOPTIONS 0x40000012
@@ -251,9 +253,10 @@ Multiplayer:  P_MPJOIN 0x40000019 -> P_MPSCENARIO 0x4000001a -> P_MPMAP 0x400000
               after the match: P_MPDEBRIEFING 0x40000033 (Continue -> QuitToMenu, triangle Replay -> MpRematch)
 Pause (level bin script): P_PAUSE 0x4000004b: tabs MISSION (Continue / Restart / Quit + Yes/No box), OBJECTIVES, CONTROLS
               (controller style list, per-button action list, Y-axis), SCORE
-Level pages: P_ENDMISSION 0x40000042 (retry / base map / quit), P_NIS 0x4000000c (script runs), P_CHEATMEDAL 0x4c,
-              P_TWEAKS 0x44 / 0x46 (C_CH* cheats into Frontend::tweaks)
-Movies (no video: hold, then pop back): P_ATTRACT 0x35, P_FMV 0x4d, P_TRAILER 0x4e, P_FMVTEST 0x4f, P_CREDITS 0x30
+Level pages: P_ENDMISSION 0x40000042 (retry / base map / quit), P_NIS 0x4000000c (68-row sequence list),
+              P_CHEATMEDAL 0x4c, P_TWEAKS 0x44 / 0x46 (boot values + live readouts + write-back)
+Movies (PSS request + fallback transition): P_ATTRACT 0x35, P_INTRO 0x32, P_ESTHERO 0x43, P_FMV 0x4d,
+              P_TRAILER 0x4e, P_FMVTEST 0x4f, P_FMVPLAYER 0x50, P_WINGAME 0x53; P_CREDITS 0x30 (real roll)
 ```
 
 Every page of the front end script (51) and of a level script renders and navigates through the generic runtime
@@ -261,33 +264,45 @@ Every page of the front end script (51) and of a level script renders and naviga
 lists, sliders and memos from the original code: the scenario / map / option / bot / bot character wheels, the
 codename / team / character / handicap wheels of the four controllers (per-controller cursor
 controls, manager `0x5a`), the rule radios (`MpSetup::rule_choices`), the game/MP/AV option radios and volume
-sliders (`GameOptions`), the controller style list (`Menu_DisplayControllerStyle`), the screen-adjust scrolls
-(live `psiAdjustScreenPos` into `GameOptions::screen_x/y`), the dossier wheels (`cn_options` / `ds_options`
-M_ITEM tables), the results / stats / bonus / debriefing labels (`MissionResults` / `DebriefInfo`), the
-message box `Menu_CreateOptionBox` and the pause tabs. Simplifications, all deliberate: there is no memory card,
-so P_PARISENUM/P_ESTHERO/P_INTRO/P_PS2MEMCARDINIT pass through at once, the codename wheel offers the typed
-profile plus "new", saved-game unlocks are those of a fresh save, and the card pages (0x2a and friends) stay
-static; the attract movie, the 3D backdrop scene and every movie page have no video (P_MAIN never starts the
-attract loop, movie pages hold then pop back); the TWEAKS tuning values stay script-side (the live game globals
-are unreadable) while every C_CH* accept is recorded for the game.
+sliders (`GameOptions`), the controller style list and per-style button diagram
+(`Menu_DisplayControllerStyle` switch via the cross-platform xref; Classic Bond verified against PCSX2),
+the screen-adjust scrolls (live `psiAdjustScreenPos` into `GameOptions::screen_x/y`), the dossier wheels
+(`cn_options` / `ds_options` M_ITEM tables, gadget/weapon wheels from `ds_gadgets` / `ds_weapons`), the
+results / stats / bonus / debriefing labels (`MissionResults` / `DebriefInfo`), the TWEAKS/NIS tables
+(`TweakData`), the credits roll (`load_credits`), the message box `Menu_CreateOptionBox` and the pause
+tabs. Profiles replace the memory card (`assets/profile.*`: codename, difficulty, mission results,
+bonus mask, options, MP slots, cheats; `XDG_CONFIG_HOME/nightfire`).
+Standalone playback: `nfui <gamedir> movie <hex-id|path> [--at SEC] [--shot out.bmp] [--stats]` decodes
+any PSS (libav mpeg2video + the manually demuxed 0xBD SShd PCM through SDL; menu movie pages use the same
+player in place). Simplifications, all deliberate: the attract movie and the 3D backdrop scene have no
+playback here (attract/movie pages request their PSS id for the game via `take_movie_request`, then
+`movie_finished`; credits scroll the real text); the card-only pages (0x2a and friends) stay static;
+per-row credit font variants stay script-default.
 
 ### Game integration (for the Integration slice)
 
 ```cpp
-Frontend fe(assets, menu, &mp, &sp);
+Frontend fe(assets, menu, &mp, &sp, &tweaks);
 fe.set_pause_info(...); fe.set_dossier(...);           // before open() in Pause / dossier flows
+fe.set_mission_results(...); fe.set_debriefing(...);  // before results / debriefing pages
+fe.set_credits(load_credits(elf, strings));           // once (credits roll)
+if (auto saved = load_profile(codename)) fe.set_profile(*saved);  // or fresh_profile
 fe.open(FrontendMode::MainMenu);                        // or Pause with the level's MenuFile
 pump_menu_sounds({}, [](std::uint32_t id) {});          // once: play kMenuAmbientA/B via AudioSystem
 for each 30 Hz frame: fe.update(pad); fe.draw(renderer, text);
 pump_menu_sounds(fe.take_sounds(), [&](std::uint32_t id) { audio.play_sfx(id); });
+if (std::uint32_t movie = fe.take_movie_request()) play_pss(movie);  // MOVIES/30_FPS/%08X.PSS, then movie_finished()
+if (std::uint32_t nis = fe.take_nis_request()) play_nis(nis);
 if (fe.wants_close()) apply(fe.result());              // launch request below
 ```
 
 The frontend returns a launch request and draws over the game: `FrontendResult` is the whole request
 (`action` + `level_bin` / `level_id` / `difficulty` / `launch` / `end_choice`). The game applies
 `GameOptions` after close (volumes via `AudioSystem::set_sfx_volume/set_music_volume`, speaker via
-`set_stereo(speaker != 0)`, screen offset, `PlayerSettings` bits) and reads `tweak(id)` for cheats.
-`Hud` is fed per viewer per tick: `WeaponSystem::fill_hud(slot, state)` (weapon, ammo, health, crosshair),
+`set_stereo(speaker != 0)`, screen offset, `PlayerSettings` bits), reads `tweak(id)` for cheats and
+`tweak_vars()` for the damage globals (TweakData documents the live targets), records mission ends via
+`complete_mission`, and persists with `save_profile()`. `Hud` is fed per viewer per tick:
+`WeaponSystem::fill_hud(slot, state)` (weapon, ammo, health, crosshair),
 then the arena feed (`apply_arena_hud(session.hud(slot), state.mp)`,
 `project_name_tags(...)`, `to_hud_message(...)` from `take_messages()`), then `hud.update(state)` +
 `hud.draw(...)` over the 3D view. Menu sounds flow through `take_sounds()` + `pump_menu_sounds`

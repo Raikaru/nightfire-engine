@@ -126,11 +126,13 @@ Determined from `ACTION.ELF` disassembly, not assumed:
 The EE FPU has no Inf/NaN and flushes denormals; `nf_ee` models that in integer
 arithmetic (`src/ee/ps2float.*`), independent of the host FPU:
 
-- Inputs: exponent 0 -> signed zero, exponent 255 -> +/-`Fmax`
-  (`0x7F7FFFFF`). This is PCSX2's `fpuDouble`/`vuDouble` mapping.
 - Every op rounds toward zero, exactly once. Fused forms (`MADD`/`MSUB`,
   `MADDA`/`MSUBA`) are a truncated multiply followed by a truncated add,
-  matching the PCSX2 interpreters.
+  matching the PCSX2 interpreters. Note the bias this creates in loops: 159
+  truncated `x -= 2pi` steps (PS2Sinf reduction) accumulate ~80 ulp of
+  same-sign error (~1.9e-5), where a host round-to-nearest loop would only
+  random-walk ~6 ulp — replicas must truncate per iteration, not just match
+  the count.
 - Overflow yields +/-`Fmax` (+FPU `O` flag); underflow yields signed zero (+`U`
   flag). Division by zero yields +/-`Fmax` (+`D`/`I` flags like PCSX2);
   `0/0` also sets `I`. `SQRT.S` of a negative sets `I` and roots the magnitude.
@@ -256,10 +258,44 @@ draws = 245 760 rows): DCVars/obj blobs built per case, GameState level /
 difficulty / frame poked, `Rand_FRand` hooked to the scripted draw, hit read
 back from `obj+0x200` (zeroed = hit). CSV columns: inputs, draw, hit,
 `ox,oy,oz` + bit patterns; `#` header lines record blob addresses and the
-`DroneFiring_*` tuning values read from the image. Measured mix: 96 000 hits
-/ 149 760 misses, zero zero-offset misses, `dist < 3` always hits.
-Compare with `weap::do_bullet_accuracy(Drone&, draw)`: exact on hit, 1e-5 on
-miss offsets (yaw-vs-RotMatrix frame + host-vs-EE trig noise).
+`DroneFiring_*` tuning values read from the image. Measured mix: 97 664 hits
+/ 148 096 misses, zero zero-offset misses, `dist < 3` always hits; difficulty
+verified end to end (diff 0==2 and 3==4 bit-exact, diff 1 hits strictly less
+per the x0.5 Easy mult) and phase verified (all 74 048 miss pairs differ
+across phases). Compare with `weap::do_bullet_accuracy(Drone&, draw)`: exact
+on hit, 1e-5 on miss offsets (yaw-vs-RotMatrix frame + host-vs-EE trig noise).
+Lesson for future sweeps: this game's Ghidra `._NN_4_` fields are decimal —
+difficulty is GameState+40 dec, frame +52 dec — and the wobble phase reads via
+`*(DCVars[0])+236` with DCVars[0] an obj_tag*, so the blob points it at the
+drone.
+
+`nfmips <elf> diff-sin` emits the `PS2Sinf__Ff` curve (2 001 args across
+[-pi/2, pi/2] plus +-78.77/+-157.54/+-1000, in/out at %.9g with out bits) for
+fitting the VU sine polynomial; note the endpoints overshoot (+-1.00000012),
+which an exact replica must reproduce.
+
+`nfmips <elf> diff-refind` runs the EE side of the Bots mission-route
+differential (`NDrone2_ReFindMissionPath`, 8 640 rows): synthetic drone blob
+(mission u16 array, node table, flags), MoveTest/FindCel/MoveToGoal/
+LinkCreep_Calc/Dest/NavPath/Player scripted + logged, everything else real
+(LinkCreep_Calc/Dest on zeroed routes and CalcRouteToPosition hang without
+nav data, hence the scripts; route planning gets its own table). Validated
+branch model: nothing reachable (or count 0) takes the setup-goal path
+(ret 0); a reachable point takes the move path (ndx = nearest reachable,
+ret 1, MoveToGoal verdict ignored, never SetState); the setup-goal
+MoveToGoal switch fires SetState(99,0) exactly for verdicts 0-3 and falls
+through for 4+ (mg 13-14 behave like 4-12). MoveToGoal takes DCVars in a0,
+the +0x710 CelPos in a1, and float(+0x704) in f12.
+
+## Cross-platform disambiguation
+
+When a differential shows systematic (non-noise) differences on a VU0/MMI-heavy
+path, check the GameCube/Xbox counterparts before assuming the port is wrong:
+`python3 tools/xref/xref.py <PS2 symbol>` (docs/xref.md). The PPC/x86 builds
+come from the same source without VU intrinsics, so scalar intent (e.g. yaw-only
+vs full-frame rotation, float vs double intermediates) reads clearly there.
+PS2 behaviour stays authoritative — nfmips runs the PS2 code — but xref tells
+you which side of a mismatch to fix.
 
 ## RNG replay (for spread/damage differentials)
 

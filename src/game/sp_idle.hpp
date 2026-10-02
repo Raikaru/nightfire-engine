@@ -37,10 +37,30 @@ const SpExt::AiGoal& ai_goal(const Drone& d);
 int move_to_ai_goal(Drone& d);
 // NDrone2_DistanceToAIPoint: 2-D distance from the feet to the AI goal (1e9 when none).
 float distance_to_ai_point(const Drone& d);
+// Pure decision core of NDrone2_ReFindMissionPath (test seam for the diff-refind checker). Scans the
+// mission nodes for the nearest reachable one (MoveTest from the feet; stationary drones make zero
+// MoveTest calls, like the original, which never early-exits). `move_to_goal` is NDrone2_MoveToGoalPosition
+// on the chosen AIPoint (verdict int): the move path calls it and ignores the verdict; the setup path
+// (nothing reachable) calls it on the nearest node and takes SetState(99,0) for verdicts 0-3, falling
+// through to the opponent goal for 4+. Empty route = opponent goal with no MoveToGoal call.
+// found = move path (EE ret == 1); selected = a node was chosen (EE +0x9f0 = position).
+struct RefindChoice {
+    bool found = false;          // move path taken (EE ret == 1)
+    bool selected = false;       // a node was selected (index written)
+    bool has_choice = false;     // caller should apply pos/radius (false = no nodes and no opponent)
+    std::size_t position = 0;    // selected array position (EE +0x9f0)
+    Vec3 pos{};                  // AIPoint position (EE +0x6f0 +0x20)
+    float radius = 2.0f;         // AIPoint radius (EE +0x14: 2.0 move/fallback, 1.0 setup)
+    bool goto_goal_state = false;// SetState(99,0): setup path with verdict 0-3
+    bool move_goal_called = false;
+};
+RefindChoice choose_mission_node(const std::vector<Vec3>& nodes, const Vec3& feet, bool stationary, bool has_opp,
+                                 const Vec3& opp, const std::function<int(const Vec3&)>& find_cel,
+                                 const std::function<int(const CelPos&, const CelPos&)>& move_test,
+                                 const std::function<int(const Vec3&, float)>& move_to_goal);
 // NDrone2_ReFindMissionPath 0x1542c0-ish: re-anchor the mission route at the nearest node to the drone
 // and point the AI goal at it, so GoToGoalPosition walks back onto the patrol path.
 void refind_mission_path(Drone& d);
-
 // DroneAnim_SetScript: plays character script `script` as the drone's animation; `end_msg` is sent to the drone
 // when a non-looping script finishes (msg 5).
 void play_script(Drone& d, std::uint32_t script, int dasc, bool loop, int end_msg);

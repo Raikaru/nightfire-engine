@@ -65,21 +65,21 @@ void WeaponEffects::consume(const WeaponEvents& events) {
     for (const ExplosionEvent& x : events.explosions) {
         if (x.radius > 0.0f) {
             blasts_.push_back({x.position, x.radius * 0.7f, x.radius * 1.5f, 0, 18, {1.0f, 0.55f, 0.2f, 0.9f}});
-            add_light(x.position, {1.0f, 0.55f, 0.2f}, x.radius * 2.0f + 4.0f, 25.0f);
+            glow(x.position, {1.0f, 0.55f, 0.2f}, x.radius * 2.0f + 4.0f, 25);
             for (int k = 0; k < 4; ++k)
                 puffs_.push_back({x.position, jitter(0.25f) + Vec3{0, 0.15f, 0}, 0.15f, 0.01f, 0, 30,
                                   {1.0f, 0.7f, 0.3f, 0.9f}, 0, true});
         } else {
             // Smoke / stun / flash grenades (no blast): a lingering grey puff; the stun adds a white-out flash.
             puffs_.push_back({x.position, Vec3{0, 0.05f, 0}, 1.1f, 0.03f, 0, 90, {0.6f, 0.6f, 0.6f, 0.55f}, 0, false});
-            if (x.weapon == 53) add_light(x.position, {1.0f, 1.0f, 1.0f}, 12.0f, 40.0f);
+            if (x.weapon == 53) glow(x.position, {1.0f, 1.0f, 1.0f}, 12.0f, 40);
         }
     }
 }
 
 void WeaponEffects::tick(float mul) {
-    for (DynLight& l : dynamics_) l.ttl -= mul;
-    std::erase_if(dynamics_, [](const DynLight& l) { return l.ttl <= 0.0f; });
+    // DynamicLights::update is one Light_Update tick; run it mul times for mul 60 Hz frames.
+    for (int i = 0; i < std::max(1, int(mul + 0.5f)); ++i) lights_.update(switches_);
     for (Decal& d : decals_) d.age += mul;
     std::erase_if(decals_, [](const Decal& d) { return d.age >= d.ttl; });
     for (Puff& p : puffs_) {
@@ -91,18 +91,16 @@ void WeaponEffects::tick(float mul) {
     for (Blast& b : blasts_) b.age += mul;
     std::erase_if(blasts_, [](const Blast& b) { return b.age >= b.ttl; });
 }
-
-void WeaponEffects::add_light(const Vec3& pos, const Vec3& color01, float radius, float ttl_frames) {
-    dynamics_.push_back({MapLight{pos, radius, {color01[0], color01[1], color01[2]}}, ttl_frames});
-    if (dynamics_.size() > 16) dynamics_.erase(dynamics_.begin());
+void WeaponEffects::glow(const Vec3& pos, const Vec3& color01, float radius, int life) {
+    auto byte = [](float c) { return std::uint8_t(std::lround(std::clamp(c, 0.0f, 1.0f) * 255.0f)); };
+    lights_.create(pos, radius, byte(color01[0]), byte(color01[1]), byte(color01[2]), 1.0f, life);
 }
-
+void WeaponEffects::muzzle_flash(const Vec3& pos, const WeaponDef& def) {
+    lights_.muzzle(pos, 5.0f, def.flash_r, def.flash_g, def.flash_b);
+}
 CharacterLighting WeaponEffects::lighting_at(const Vec3& pos, float radius) const {
-    std::vector<MapLight> all;
-    if (map_lights_) all = *map_lights_;
-    for (const DynLight& l : dynamics_) all.push_back(l.light);
     CharacterLighting out;
-    if (!all.empty()) out.lights = closest_lights(all, pos, radius);
+    out.lights = lights_.lights_for(pos, radius);
     return out;
 }
 
@@ -146,8 +144,7 @@ void WeaponEffects::draw(const Camera& cam, float aspect, CharacterRenderer& cha
     for (const Projectile& b : projectiles) {   // F2 & 0x2000 projectiles carry a dynamic light
         const WeaponDef& def = table_.weapon(b.weapon);
         if ((def.flags2 & wf2::kLight) == 0) continue;
-        add_light(b.pos, {float(def.flash_r) / 255.0f, float(def.flash_g) / 255.0f, float(def.flash_b) / 255.0f},
-                  4.0f, 2.0f);
+        glow(b.pos, {float(def.flash_r) / 255.0f, float(def.flash_g) / 255.0f, float(def.flash_b) / 255.0f}, 4.0f, 2);
     }
     // Pass 3: surface effects. Impact points sit exactly on the wall that stopped them and the projection
     // (near 0.05, far 2000) cannot resolve centimetre offsets there, so glows (blast, sparks) skip the depth

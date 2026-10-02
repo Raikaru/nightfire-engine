@@ -32,7 +32,14 @@ CollisionWorld SpObjects::make_volumes(Level& level) {
     // Volume classes for the touch tests below (model collision at the static transform).
     static constexpr std::uint32_t kVolumeClasses[] = {32,  40,  41,  46,  48,  49,  51,  219, 220, 225,
                                                        226, 228, 234, 235, 240, 249, 251, 254};
-    return CollisionWorld::of_objects(level, std::span<const std::uint32_t>(kVolumeClasses, 20));
+    return CollisionWorld::of_objects(level, std::span<const std::uint32_t>(kVolumeClasses, std::size(kVolumeClasses)));
+}
+
+const StaticInstance* SpObjects::statics(std::size_t placement) const {
+    const MapChunk* map = level_.map() ? &level_.map()->chunk : nullptr;
+    if (!map) return nullptr;
+    const Placement& p = level_.placements()[placement];
+    return p.instance < map->statics.size() ? &map->statics[p.instance] : nullptr;
 }
 
 std::array<float, 3> SpObjects::placement_pos(std::size_t placement) const {
@@ -165,17 +172,15 @@ void SpObjects::build() {
             sensors_.push_back(se);
             break;
         }
-        case 222: {  // Searchlight_Create: sweeping cone -> alarm (params like Sensor)
+        case 222: {  // Searchlight_Create: alarm = p1 (long cone, sweep static v1 [INFERENCE])
             Sensor se;
             se.placement = i;
-            se.alarm_channel = uparam16(s, 3);
-            se.gate_channel = uparam16(s, 4);
+            se.alarm_channel = uparam16(s, 1);
+            se.range = 60.0f;
+            se.half_sin = 0.05f;
             sensors_.push_back(se);
             break;
         }
-        case 47:
-        case 52:
-        case 210:
         case 224: {  // Copter / GunImp / Shooter / Creature: scripted shooters
             Turret t;
             t.placement = i;
@@ -208,11 +213,17 @@ void SpObjects::build() {
             break;
         }
         case 46:  // Lock_Create: use -> unlock channel p1 (gated by p0) [INFERENCE]
-        case 48:  // Monitor_Create: use -> channel p1 [INFERENCE]
-        case 49: {  // FuseBox_Create: use -> channel p1 [INFERENCE]
+        case 48: {  // Monitor_Create: use -> channel p1 [INFERENCE]
             Switch sw;
             sw.placement = i;
             sw.gate = uparam16(s, 0);
+            sw.out = uparam16(s, 1);
+            switches_.push_back(sw);
+            break;
+        }
+        case 49: {  // FuseBox_Create: spark script = p0, use powers p1 (no gate) [INFERENCE]
+            Switch sw;
+            sw.placement = i;
             sw.out = uparam16(s, 1);
             switches_.push_back(sw);
             break;
@@ -291,6 +302,41 @@ void SpObjects::build() {
         }
     }
     // Breakable bounds for the damage tests.
+    // Door spline tracks (`static_path_refs` by static index; swing otherwise).
+    const std::vector<PathTrack> tracks = parse_path_data(*map);
+    for (const StaticPathRef& ref : static_path_refs(*map)) {
+        if (ref.count == 0 || ref.path_index >= tracks.size()) continue;
+        for (DoorObject& d : doors_) {
+            const Placement& dp = level_.placements()[d.placement];
+            if (dp.instance == ref.static_index && tracks[ref.path_index].keys.size() >= 2) {
+                d.path = tracks[ref.path_index].keys;
+                d.has_path = true;
+            }
+        }
+    }
+    // Cache world-space bounds per placement with collision (touch tests + movers run per tick).
+    for (std::size_t i = 0; i < trigger_volumes_.solid_count(); ++i) {
+        const auto solid = trigger_volumes_.solid(i);
+        if (solid.collision.tris.empty()) continue;
+        const bool fresh = bounds_.count(solid.placement) == 0;
+        auto& slot = bounds_[solid.placement];
+        bool init = fresh;
+        for (const CollisionTri& tri : solid.collision.tris) {
+            for (const Vec3& v : tri.v) {
+                const Vec3 w = transform_point(solid.transform, v);
+                if (init) {
+                    slot.first = w;
+                    slot.second = w;
+                    init = false;
+                } else {
+                    for (int k = 0; k < 3; ++k) {
+                        slot.first[std::size_t(k)] = std::min(slot.first[std::size_t(k)], w[std::size_t(k)]);
+                        slot.second[std::size_t(k)] = std::max(slot.second[std::size_t(k)], w[std::size_t(k)]);
+                    }
+                }
+            }
+        }
+    }
     for (Breakable& b : breakables_) {
         std::array<float, 3> mn{}, mx{};
         object_bounds(b.placement, mn, mx);
@@ -299,37 +345,42 @@ void SpObjects::build() {
         b.radius = 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
         if (!(b.radius > 0.01f)) b.radius = 1.0f;
     }
-}
-
-void SpObjects::object_bounds(std::size_t placement, std::array<float, 3>& mn,
-                              std::array<float, 3>& mx) const {
-    mn = placement_pos(placement);
-    mx = mn;
-    bool found = false;
+    // Model-space door bounds (rotated by the live pose each tick for correct swing AABBs).
     for (std::size_t i = 0; i < trigger_volumes_.solid_count(); ++i) {
         const auto solid = trigger_volumes_.solid(i);
-        if (solid.placement != placement) continue;
-        for (const CollisionTri& tri : solid.collision.tris) {
-            for (const Vec3& v : tri.v) {
-                const Vec3 w = transform_point(solid.transform, v);
-                if (!found) {
-                    mn = w;
-                    mx = w;
-                    found = true;
-                } else {
-                    for (int k = 0; k < 3; ++k) {
-                        mn[std::size_t(k)] = std::min(mn[std::size_t(k)], w[std::size_t(k)]);
-                        mx[std::size_t(k)] = std::max(mx[std::size_t(k)], w[std::size_t(k)]);
+        if (solid.collision.tris.empty()) continue;
+        for (DoorObject& d : doors_) {
+            if (d.placement != solid.placement) continue;
+            for (const CollisionTri& tri : solid.collision.tris) {
+                for (const Vec3& v : tri.v) {
+                    if (!d.has_local) {
+                        d.local_mn = v;
+                        d.local_mx = v;
+                        d.has_local = true;
+                    } else {
+                        for (int k = 0; k < 3; ++k) {
+                            d.local_mn[std::size_t(k)] = std::min(d.local_mn[std::size_t(k)], v[std::size_t(k)]);
+                            d.local_mx[std::size_t(k)] = std::max(d.local_mx[std::size_t(k)], v[std::size_t(k)]);
+                        }
                     }
                 }
             }
         }
     }
-    if (!found) {  // no collision model: a 2 m box at the marker [INFERENCE]
-        for (int k = 0; k < 3; ++k) {
-            mn[std::size_t(k)] -= 1.0f;
-            mx[std::size_t(k)] += 1.0f;
-        }
+}
+void SpObjects::object_bounds(std::size_t placement, std::array<float, 3>& mn,
+                              std::array<float, 3>& mx) const {
+    const auto it = bounds_.find(placement);
+    if (it != bounds_.end()) {
+        mn = it->second.first;
+        mx = it->second.second;
+        return;
+    }
+    mn = placement_pos(placement);  // no collision model: a 2 m box at the marker [INFERENCE]
+    mx = mn;
+    for (int k = 0; k < 3; ++k) {
+        mn[std::size_t(k)] -= 1.0f;
+        mx[std::size_t(k)] += 1.0f;
     }
 }
 
@@ -342,7 +393,8 @@ bool SpObjects::touch_test(std::size_t placement, const Toucher& t) const {
     const float dx = t.pos[0] - cx, dz = t.pos[2] - cz;
     if (dx * dx + dz * dz > (t.radius + 0.3f) * (t.radius + 0.3f)) return false;
     const float top = t.pos[1] + t.height, bottom = t.pos[1] - 0.5f;
-    return top >= mn[1] && bottom <= mx[1];
+    // Volumes are often flat floor plates: step tolerance in Y.
+    return top + 0.3f >= mn[1] && bottom - 0.6f <= mx[1];
 }
 
 void SpObjects::door_pose(DoorObject& d, std::array<float, 16>& out) const {
@@ -364,9 +416,111 @@ void SpObjects::door_pose(DoorObject& d, std::array<float, 16>& out) const {
         (void)p;
         return;
     }
-    out = p.transform;
+    // Spline doors (`Door_Interp`): sample the static's path track by open progress.
+    const float fi = std::clamp(d.progress, 0.0f, 1.0f) * float(d.path.size() - 1);
+    const std::size_t i = std::min(d.path.size() - 2, std::size_t(fi));
+    const float f = fi - float(i);
+    const PathKey& a = d.path[i];
+    const PathKey& b = d.path[i + 1];
+    std::array<float, 3> pos;
+    std::array<float, 4> q;
+    for (int k = 0; k < 3; ++k) pos[std::size_t(k)] = a.pos[std::size_t(k)] + (b.pos[std::size_t(k)] - a.pos[std::size_t(k)]) * f;
+    float dot = 0;
+    for (int k = 0; k < 4; ++k) dot += a.quat[std::size_t(k)] * b.quat[std::size_t(k)];
+    const float sgn = dot < 0 ? -1.0f : 1.0f;
+    for (int k = 0; k < 4; ++k) q[std::size_t(k)] = a.quat[std::size_t(k)] * (1 - f) + sgn * b.quat[std::size_t(k)] * f;
+    // Normalised lerp (keys are near-identity rotations; [INFERENCE] on quat order x,y,z,w).
+    float len = 0;
+    for (int k = 0; k < 4; ++k) len += q[std::size_t(k)] * q[std::size_t(k)];
+    len = std::sqrt(std::max(1e-12f, len));
+    for (int k = 0; k < 4; ++k) q[std::size_t(k)] /= len;
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    Mat4 m = identity();
+    m[0] = 1 - 2 * (y * y + z * z);
+    m[1] = 2 * (x * y + z * w);
+    m[2] = 2 * (x * z - y * w);
+    m[4] = 2 * (x * y - z * w);
+    m[5] = 1 - 2 * (x * x + z * z);
+    m[6] = 2 * (y * z + x * w);
+    m[8] = 2 * (x * z + y * w);
+    m[9] = 2 * (y * z - x * w);
+    m[10] = 1 - 2 * (x * x + y * y);
+    m[12] = pos[0];
+    m[13] = pos[1];
+    m[14] = pos[2];
+    out = m;
 }
 
+bool SpObjects::use_door(DoorObject& d) {
+    if (d.rate <= 0 || d.locked_shown) return false;
+    const auto center = placement_pos(d.placement);
+    if (d.lock_channel != 0 && channels_.on(int(d.lock_channel))) {
+        texts_.push_back({0x02000003, 180, 1});
+        if (d.locked_sound != 0) sounds_.push_back({d.locked_sound, center, true});
+        d.locked_shown = true;
+        return true;
+    }
+    d.locked_shown = false;
+    d.opening = !d.opening;  // `Door_Activate` toggles
+    return true;
+}
+
+bool SpObjects::use_switch(Switch& sw) {
+    const StaticInstance* s = statics(sw.placement);
+    const std::uint32_t cls = s ? s->object_class() : 0;
+    if (cls == 41) {  // `Switch_Activate`: use toggles the channel (gated)
+        if (sw.gate != 0 && channels_.on(int(sw.gate))) return false;
+        channels_.set(int(sw.channel), !channels_.on(int(sw.channel)));
+        return true;
+    }
+    if (cls == 46 || cls == 48 || cls == 49) {  // Lock/Monitor/FuseBox: use sets out
+        if (sw.gate != 0 && !channels_.on(int(sw.gate))) return false;
+        if (sw.out != 0) channels_.set(int(sw.out), true);
+        return true;
+    }
+    return false;
+}
+
+bool SpObjects::activate_at(const Vec3& center, float radius) {
+    // The probe tests against object volumes (`Collide_SphereIntersect` radius 1.0), not centers.
+    const std::array<float, 3> c{center[0], center[1], center[2]};
+    auto dist_to = [&](std::size_t placement) {
+        std::array<float, 3> mn{}, mx{};
+        object_bounds(placement, mn, mx);
+        float d2 = 0;
+        for (int k = 0; k < 3; ++k) {
+            const float v = c[std::size_t(k)];
+            const float lo = mn[std::size_t(k)] - radius, hi = mx[std::size_t(k)] + radius;
+            if (v < lo) d2 += (lo - v) * (lo - v);
+            else if (v > hi) d2 += (v - hi) * (v - hi);
+        }
+        return d2;
+    };
+    DoorObject* best_door = nullptr;
+    float best_d = radius * radius;
+    for (DoorObject& d : doors_) {
+        const float dd = dist_to(d.placement);
+        if (dd < best_d) {
+            best_d = dd;
+            best_door = &d;
+        }
+    }
+    if (best_door) return use_door(*best_door);
+    Switch* best_sw = nullptr;
+    best_d = radius * radius;
+    for (Switch& sw : switches_) {
+        const StaticInstance* s = statics(sw.placement);
+        const std::uint32_t cls = s ? s->object_class() : 0;
+        if (cls != 41 && cls != 46 && cls != 48 && cls != 49) continue;
+        const float dd = dist_to(sw.placement);
+        if (dd < best_d) {
+            best_d = dd;
+            best_sw = &sw;
+        }
+    }
+    if (best_sw) return use_switch(*best_sw);
+    return false;
+}
 std::size_t SpObjects::door_count() const { return doors_.size(); }
 
 bool SpObjects::any_door_open() const {
@@ -482,7 +636,14 @@ void SpObjects::tick(const std::vector<Toucher>& touchers, const std::vector<boo
     // ---- doors (`Door_Update`) ----
     for (DoorObject& d : doors_) {
         const auto center = placement_pos(d.placement);
-        const bool near = touching(d.placement, false);
+        // Proximity scan (`Door_Update` sphere test): anyone within ~3 m of the panel.
+        bool near = false;
+        for (const Toucher& t : touchers) {
+            if (dist2(center, t.pos) < (3.0f + t.radius) * (3.0f + t.radius)) {
+                near = true;
+                break;
+            }
+        }
         if (d.rate > 0) {
             if (d.locked_shown) {  // frozen by the denied path; the unlock channel releases it
                 if (d.unlock_channel != 0 && channels_.on(int(d.unlock_channel))) {
@@ -503,16 +664,7 @@ void SpObjects::tick(const std::vector<Toucher>& touchers, const std::vector<boo
                     d.locked_shown = false;
                     d.opening = true;
                 }
-                if (use_near(d.placement, 2.5f)) {
-                    if (d.lock_channel != 0 && channels_.on(int(d.lock_channel))) {
-                        texts_.push_back({0x02000003, 180, 1});
-                        if (d.locked_sound != 0) sounds_.push_back({d.locked_sound, center, true});
-                        d.locked_shown = true;
-                    } else {
-                        d.locked_shown = false;
-                        d.opening = !d.opening;  // `Door_Activate` toggles
-                    }
-                }
+                if (use_near(d.placement, 2.5f)) use_door(d);
             }
             const bool was_open = d.progress > 0.02f;
             d.progress = std::clamp(d.progress + (d.opening ? d.rate * dt_frames : -d.rate * dt_frames), 0.0f, 1.0f);
@@ -528,19 +680,36 @@ void SpObjects::tick(const std::vector<Toucher>& touchers, const std::vector<boo
             // `Door_SetState` reports the open state back on the unlock channel.
             if (d.unlock_channel != 0) channels_.set(int(d.unlock_channel), is_open);
         }
-        // Publish the solid: closed pose blocks; the open panel moves with the door.
+        // Publish the solid: the model-space box posed by the live matrix (correct for both
+        // sliders and swung panels); falls back to the shifted closed box without local bounds.
         std::array<float, 16> pose{};
         door_pose(d, pose);
-        std::array<float, 3> mn{}, mx{};
-        object_bounds(d.placement, mn, mx);
-        const std::array<float, 3> closed_c{(mn[0] + mx[0]) * 0.5f, (mn[1] + mx[1]) * 0.5f,
-                                            (mn[2] + mx[2]) * 0.5f};
-        const std::array<float, 3> now_c{pose[12], pose[13], pose[14]};
-        const std::array<float, 3> shift{now_c[0] - closed_c[0], now_c[1] - closed_c[1], now_c[2] - closed_c[2]};
+        Mat4 pm;
+        for (int k = 0; k < 16; ++k) pm[std::size_t(k)] = pose[std::size_t(k)];
         Mover m;
-        for (int k = 0; k < 3; ++k) {
-            m.min[std::size_t(k)] = mn[std::size_t(k)] + (d.progress > 0.02f ? shift[std::size_t(k)] : 0);
-            m.max[std::size_t(k)] = mx[std::size_t(k)] + (d.progress > 0.02f ? shift[std::size_t(k)] : 0);
+        if (d.has_local) {
+            bool init = false;
+            for (int cx = 0; cx < 8; ++cx) {
+                const Vec3 corner{(cx & 1) != 0 ? d.local_mx[0] : d.local_mn[0],
+                                  (cx & 2) != 0 ? d.local_mx[1] : d.local_mn[1],
+                                  (cx & 4) != 0 ? d.local_mx[2] : d.local_mn[2]};
+                const Vec3 w = transform_point(pm, corner);
+                if (!init) {
+                    m.min = w;
+                    m.max = w;
+                    init = true;
+                } else {
+                    for (int k = 0; k < 3; ++k) {
+                        m.min[std::size_t(k)] = std::min(m.min[std::size_t(k)], w[std::size_t(k)]);
+                        m.max[std::size_t(k)] = std::max(m.max[std::size_t(k)], w[std::size_t(k)]);
+                    }
+                }
+            }
+        } else {
+            std::array<float, 3> mn{}, mx{};
+            object_bounds(d.placement, mn, mx);
+            m.min = mn;
+            m.max = mx;
         }
         m.id = std::uint32_t(d.placement);
         if (d.has_last) m.displacement = {m.max[0] - d.last_max[0], m.max[1] - d.last_max[1], m.max[2] - d.last_max[2]};
@@ -555,7 +724,7 @@ void SpObjects::tick(const std::vector<Toucher>& touchers, const std::vector<boo
     }
     // ---- touch triggers ----
     for (TriggerObject& t : triggers_) {
-        if (t.gate_channel != 0 && !channels_.on(int(t.gate_channel)) && t.type != 2) continue;
+        if (t.gate_channel != 0 && !channels_.on(int(t.gate_channel))) continue;
         const bool touch = touching(t.placement, true);
         const bool was = t.touched;
         t.touched = touch;
@@ -674,14 +843,12 @@ void SpObjects::tick_switches(const std::vector<Toucher>& touchers, const std::v
         const std::uint32_t cls = s ? s->object_class() : 0;
         if (cls == 41) {  // Switch_Activate: use toggles the channel (gated)
             if (!use_near(sw.placement, 2.0f)) continue;
-            if (sw.gate != 0 && channels_.on(int(sw.gate))) continue;
-            channels_.set(int(sw.channel), !channels_.on(int(sw.channel)));
+            use_switch(sw);
             continue;
         }
         if (cls == 46 || cls == 48 || cls == 49) {  // Lock/Monitor/FuseBox: use sets out
             if (!use_near(sw.placement, 2.0f)) continue;
-            if (sw.gate != 0 && !channels_.on(int(sw.gate))) continue;
-            if (sw.out != 0) channels_.set(int(sw.out), true);
+            use_switch(sw);
             continue;
         }
         if (cls == 51) {  // Hint: gate edge shows the text once

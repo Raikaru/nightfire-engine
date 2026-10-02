@@ -183,20 +183,26 @@ bool Player::mount_creep_wall(const CreepWallObject& wall, const CollisionWorld&
 // nearest to the player (obj+0x30, squared distance below 1000).
 void Player::activate_creep_wall(const ActionInput& input, const CollisionWorld& world) {
     use_consumed_ = false;
-    if (!object_world_ || !input.pressed(kActUse) || icon_context_ != kCreepIcon) return;
-    const CreepWallObject* nearest = nullptr;
-    float best = kCreepReachSq;
-    for (const CreepWallObject& wall : object_world_->creep_walls()) {
-        const Vec3 d = wall.position - pos;
-        const float dist_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-        if (dist_sq < best) {
-            best = dist_sq;
-            nearest = &wall;
+    if (!input.pressed(kActUse)) return;
+    // Player_Activate: icon 6 (a creep wall in reach) takes precedence; otherwise the scripting side
+    // gets the probe (doors, switches, locks: SpObjects::activate_at).
+    if (object_world_ && icon_context_ == kCreepIcon) {
+        const CreepWallObject* nearest = nullptr;
+        float best = kCreepReachSq;
+        for (const CreepWallObject& wall : object_world_->creep_walls()) {
+            const Vec3 d = wall.position - pos;
+            const float dist_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            if (dist_sq < best) {
+                best = dist_sq;
+                nearest = &wall;
+            }
+        }
+        if (nearest) {
+            use_consumed_ = true;
+            mount_creep_wall(*nearest, world);
         }
     }
-    if (!nearest) return;
-    use_consumed_ = true;
-    mount_creep_wall(*nearest, world);
+    if (!use_consumed_ && use_handler_ && use_handler_(activation_probe())) use_consumed_ = true;
 }
 
 // Player_Creep (substate 7): the body is locked to the wall's segment; the strafe stick starts the shuffle

@@ -4,10 +4,12 @@
 //
 // P_ENDMISSION closes the menu with RestartMission (radio 0 retry / 1 base map, the choice in
 // FrontendResult::end_choice) or QuitToMenu (radio 2 quit), like the original's ResetMap calls.
-// P_NIS runs its camera script through the generic runtime. The TWEAKS pages are live debug tools
-// reading game globals (damage/armour values); here they render their static script content while
-// every C_CH* accept records into Frontend::tweaks for the game to consume (scroll cheats store
-// their level, button cheats toggle 1/0). P_CHEATMEDAL arms its medal the same way and resumes.
+// P_NIS runs its camera script through the generic runtime. The TWEAKS pages show live tuning
+// values from TweakData (boot defaults from ACTION.ELF); every C_CH* accept records into
+// Frontend::tweaks for the game to consume (scroll cheats store their level, button cheats
+// toggle 1/0). P_CHEATMEDAL arms its medal the same way and resumes.
+#include <cstdio>
+
 #include "assets/menu_file.hpp"
 #include "ui/frontend_impl.hpp"
 
@@ -51,10 +53,17 @@ bool Frontend::Impl::p_nis(ui::Control&, const ui::Msg& m) {
     return true;
 }
 
-// C_NIS: the NIS list is filled from game script data (raw pointers) the frontend cannot read,
-// so the list shows the script's rows. Accept closes the page (the sequence is skipped).
-bool Frontend::Impl::c_nis(ui::Control&, const ui::Msg& m) {
-    if (m.type == kAccept) mgr->send_manager(kPageBack, 0, 0);
+// C_NIS: the sequence list from TweakData (names at their .rodata addresses, script hashes as
+// values). Accept requests the play (take_nis_request) and stays; circle backs out.
+bool Frontend::Impl::c_nis(ui::Control& c, const ui::Msg& m) {
+    if (m.type == 0x51) {
+        mgr->send_to(c, ui::Msg{kClear, 0, 0});
+        if (tweak_data)
+            for (const NisEntry& row : tweak_data->nis) mgr->send_to(c, ui::Msg{kAddItem, 0, row.script, row.name});
+    } else if (m.type == kAccept || m.type == kBack) {
+        nis_request = std::uint32_t(mgr->send_to(c, ui::Msg{kGetValue}));
+        if (m.type == kBack) mgr->send_manager(kPageBack, 0, 0);
+    }
     return true;
 }
 // P_CHEATMEDAL: the medal list takes the cursor on show; accept arms medal_from_cheat and the
@@ -70,12 +79,46 @@ bool Frontend::Impl::p_cheat_medal(ui::Control&, const ui::Msg& m) {
     return true;
 }
 
-// P_TWEAKS / P_TWEAKS2: live tuning values stay script-side (they format game globals); the first
-// scroll takes the cursor on show. Every C_CH* accept is recorded (see p_tweaks_cheat).
+// P_TWEAKS / P_TWEAKS2: captions and boot values from TweakData on show; accept stores every
+// scroll back into tweak_vars (shown / scale, like the original's writes to the live globals)
+// and pops. The first scroll takes the cursor on show.
 bool Frontend::Impl::p_tweaks(ui::Control&, const ui::Msg& m) {
-    if (m.type == kPageShown)
-        mgr->send_manager(kSelectControl, mgr->current_page_id() == kPageTweaks2 ? 0x100001DF : 0x100001A6);
+    const bool second = mgr->current_page_id() == kPageTweaks2;
+    if (m.type == kPageShown) {
+        if (tweak_data) {
+            for (const auto& [control, text] : tweak_data->labels) set_text(control, text);
+            for (const auto& [control, shown] : tweak_data->scrolls) {
+                const auto vit = tweak_vars.find(control);
+                const std::uint32_t v = std::uint32_t(vit == tweak_vars.end() ? shown : vit->second);
+                send(control, kScrollRange, 0, 1000);  // no script range: debug sliders run 0..1000
+                send(control, kScrollSet, v, 0);
+            }
+            refresh_tweak_values(second);
+        }
+        mgr->send_manager(kSelectControl, second ? 0x100001DF : 0x100001A6);
+    } else if (m.type == kIdle) {
+        if (tweak_data) refresh_tweak_values(second);
+    } else if (m.type == kAccept) {
+        if (tweak_data)
+            for (const auto& [control, scale] : tweak_data->scales) {
+                // 0x44 scrolls are below 0x1DF, 0x46 scrolls at/above it: store only this page.
+                if ((control >= 0x100001DF) != second) continue;
+                tweak_vars[control] = float(mgr->send(control, kScrollGet)) / scale;
+            }
+        mgr->send_manager(kPageBack, 0, 0);
+    }
     return true;
+}
+
+// The 0x50 tick: value readouts print shown / scale ("%f", like the original's sprintf).
+void Frontend::Impl::refresh_tweak_values(bool second) {
+    for (const auto& [scroll, readout] : tweak_data->values) {
+        if ((scroll >= 0x100001DF) != second) continue;
+        const float scale = tweak_data->scales.count(scroll) ? tweak_data->scales.at(scroll) : 1;
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%f", double(mgr->send(scroll, kScrollGet)) / double(scale));
+        set_text(readout, buf);
+    }
 }
 
 
@@ -85,6 +128,7 @@ bool Frontend::Impl::p_tweaks_cheat(ui::Control& c, const ui::Msg& m) {
     if (c.type == std::uint8_t(ControlType::Scroll)) {
         if (m.type == 0x51) {
             const int v = tweaks.count(c.id) ? tweaks[c.id] : 0;
+            mgr->send_to(c, ui::Msg{kScrollRange, 0, 1000});
             mgr->send_to(c, ui::Msg{kScrollSet, std::uint32_t(v), 0});
         } else if (m.type == 0x49) {
             tweaks[c.id] = mgr->send_to(c, ui::Msg{kScrollGet});

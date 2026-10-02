@@ -44,4 +44,17 @@ Drone* hostage_killer_of(Drone& d);
 // initial state (TruckDriverInit for DTYPE 0x17, PlayScript when it has a script). Headless verification
 // only; the game itself releases drones through switch channels. No-op unless the drone waits.
 void release_waiting(Drone& d);
+
+// Cover-node queries shared by the cover states and the combat selector (docs/spec-arena-ai.md Part 3 §7).
+// Drone_IsCoverNodeUsable: switch gates pass and no live SP drone has claimed the node.
+bool cover_usable(Drone& d, std::size_t index);
+// NDrone2_CoverAvailable: a usable node exists (no claim made; RunForCover claims with find_cover).
+bool cover_available(Drone& d);
+// NDrone2_FindCover 0x152548: nearest usable node in 2-D, claimed on success (Drone+0x4f8 & 0x1000).
+bool find_cover(Drone& d);
+// Release a claimed node (Drone_Delete / UnderCoverLeave path).
+void release_cover(Drone& d);
+// DroneFunc_SetDeathChannel: set the drone's death switch channel (Drone+0x13c, DIVars key12). SP drones
+// only; silent otherwise. Called on entering every death state.
+void notify_death(Drone& d);
 }  // namespace nf::sp

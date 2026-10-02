@@ -24,11 +24,16 @@
 #include <string>
 #include <vector>
 
+#include "assets/bin_archive.hpp"
+#include "assets/cutscene.hpp"
 #include "assets/elf.hpp"
 #include "assets/game_files.hpp"
 #include "assets/level.hpp"
+#include "assets/mission_data.hpp"
 #include "assets/sound_archive.hpp"
 #include "assets/sprites.hpp"
+#include "assets/strings.hpp"
+#include "game/mission.hpp"
 #include "audio/audio.hpp"
 #include "game/actions.hpp"
 #include "game/drone_cli.hpp"
@@ -258,6 +263,12 @@ public:
         audio_->update();   // SFXUpdate runs at 60 Hz; one tick is two frames
         audio_->update();
     }
+    // Mission/object sounds (`SpObjects`, cutscenes): same SFX path as weapon sounds.
+    void play_mission(std::uint32_t id, const Vec3& pos, bool positional) {
+        audio::PlayOptions o;
+        if (positional) o.position = pos;
+        audio_->play_sfx(id, o);
+    }
 
 private:
     std::unique_ptr<SoundArchive> archive_;
@@ -284,7 +295,7 @@ Camera camera_for(const View& prev, const View& cur, float alpha) {
 int run(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr,
-                     "usage: %s <gamedir> [level.bin] [--coll] [--shot out.bmp] [--frames N] [--inputs file [--sync]] [--trace out.jsonl]\n",
+                     "usage: %s <gamedir> [level.bin] [--coll] [--shot out.bmp] [--frames N] [--inputs file [--sync]] [--trace out.jsonl] [--no-mission] [--channel CH=VAL]\n",
                      argv[0]);
         return 2;
     }
@@ -318,9 +329,10 @@ int run(int argc, char** argv) {
         }
     }
     std::string bin_name, shot, inputs_path, trace_path, script_path;
+    std::vector<std::pair<int, int>> debug_channels;  // --channel presets, applied at start
     long weapon_seed = 1;
     int player_count = 1;
-    bool print_events = false, mute = false;
+    bool print_events = false, mute = false, no_mission = false;
     long frames = -1;
     bool show_collision = false, sync = false;
     drone::DroneCli drone_cli;
@@ -335,8 +347,16 @@ int run(int argc, char** argv) {
         else if (a == "--players" && i + 1 < argc) player_count = std::clamp(std::atoi(argv[++i]), 1, World::kMaxPlayers);
         else if (a == "--events") print_events = true;
         else if (a == "--mute") mute = true;
-        else if (a == "--coll") show_collision = true;
         else if (a == "--sync") sync = true;
+        else if (a == "--coll") show_collision = true;
+        else if (a == "--no-mission") no_mission = true;  // bare movement/collision (oracle traces)
+        else if (a == "--channel" && i + 1 < argc) {  // debug: preset a switch channel (CH=VAL)
+            const std::string spec = argv[++i];
+            const auto eq = spec.find('=');
+            if (eq != std::string::npos)
+                debug_channels.emplace_back(std::atoi(spec.substr(0, eq).c_str()),
+                                            std::atoi(spec.substr(eq + 1).c_str()));
+        }
         else if (drone_cli.parse(argc, argv, i)) {}   // --drone / --cam / --follow-drone ... (drone_cli.hpp)
         else bin_name = a;
     }
@@ -347,6 +367,16 @@ int run(int argc, char** argv) {
     if (bin.empty()) {
         std::fprintf(stderr, "no such level .bin: %s\n", bin_name.c_str());
         return 1;
+    }
+    // Cutscene scripts (type-7 entries) for the mission system, parsed before the move below.
+    std::vector<std::pair<std::uint32_t, CutsceneBin>> level_scripts;
+    try {
+        for (const BinEntry& e : parse_bin_archive(Bytes(bin))) {
+            if (e.type != EntryType::Script) continue;
+            level_scripts.emplace_back(e.hash, parse_cutscene_bin(e.data));
+        }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "%s: scripts: %s\n", bin_name.c_str(), e.what());
     }
     Level level(std::move(bin));
     if (!level.map()) {
@@ -379,12 +409,48 @@ int run(int argc, char** argv) {
     weapons.set_bank(weapon_bank.get());
     world.add_system(std::move(weapon_system));
     if (drone_cli.enabled()) drone_cli.setup(world, level, *weapon_bank, action_elf, gf, weapons, bin_name);
+    // Single-player mission flow (objectives, doors, triggers, cutscenes): skipped for arenas
+    // and with --no-mission (bare movement for oracle traces). The World owns the system;
+    // mission_ptr stays valid for the session.
+    MissionSystem* mission_ptr = nullptr;
+    std::unique_ptr<StringTable> strings;
+    if (!multiplayer && !no_mission) {
+        if (const GameFile* txt = gf.find("USATxt.dat")) {
+            const auto bytes = gf.read(*txt);
+            strings = std::make_unique<StringTable>(StringTable::parse(Bytes(bytes), false));
+        }
+        const std::uint32_t level_id = level_id_from_bin_name(bin_name);
+        for (const MissionEntry& e : load_mission_data(action_elf)) {
+            if (e.level != level_id) continue;
+            auto m = std::make_unique<MissionSystem>(level, level_id, e, weapons, drone_cli.sp_system());
+            mission_ptr = m.get();
+            mission_ptr->add_scripts(std::move(level_scripts));
+            mission_ptr->apply_loadout(0);
+            world.add_system(std::move(m));
+            std::printf("mission: %08x base %08x order %u, %zu objectives, %zu doors\n", level_id, e.base, e.order,
+                        mission_ptr->objectives().size(), mission_ptr->objects().door_count());
+            for (const auto& [ch, val] : debug_channels) {
+                mission_ptr->set_channel(std::uint16_t(ch), std::uint8_t(val));
+                std::printf("mission: debug preset channel %d = %d\n", ch, val);
+            }
+            break;
+        }
+        if (!mission_ptr) std::printf("%s: no mission row, running bare\n", bin_name.c_str());
+    }
     // Impact/explosion visuals and dynamic lights (CPU-side until the first draw uploads textures).
     SpriteLibrary fx_sprites;
     if (level.map()) fx_sprites.add(level.map()->chunk);
     WeaponEffects effects(weapons.table(), *weapon_bank, &fx_sprites);
-    effects.set_map_lights(&weapon_bank->lights());
+    effects.set_map_lights(weapon_bank->lights());
     for (int i = 1; i < player_count; ++i) world.spawn_player(i, spawns[std::min<std::size_t>(std::size_t(i) * 3, spawns.size() - 1)]);
+    // Cross/use on doors and switches (Scripting): every player probes SpObjects; without a mission
+    // (arenas, --no-mission) the handler stays empty and only creep walls consume the press.
+    if (mission_ptr)
+        for (int i = 0; i < World::kMaxPlayers; ++i)
+            if (Player* pl = world.player(i))
+                pl->set_use_handler([mission_ptr](const Player::ActivationProbe& probe) {
+                    return mission_ptr->objects().activate_at(probe.center, probe.radius);
+                });
     std::optional<WeaponScript> script;
     std::unique_ptr<GameAudio> game_audio;
     if (!script_path.empty()) script = WeaponScript::parse(script_path);
@@ -403,6 +469,9 @@ int run(int argc, char** argv) {
 
     // Fixed-step simulation of a scripted (or idle) input stream.
     const long scripted = frames >= 0 ? frames : std::max(long(replay.frames.size()), script ? script->last_frame() + 1 : 0L);
+    auto mission_text = [&](std::uint32_t label) {
+        return strings ? std::string(strings->label(label)) : std::string();
+    };
     for (long i = 0; i < scripted; ++i) {
         PadInputs pads{};
         const ReplayFrame* f = i < long(replay.frames.size()) ? &replay.frames[std::size_t(i)] : nullptr;
@@ -410,8 +479,26 @@ int run(int argc, char** argv) {
         if (f && f->stand_height) player.stand_height = *f->stand_height;
         if (sync && f && f->sync_pos) player.pos = *f->sync_pos;
         if (script) script->apply(i, world, weapons, pads);
+        // Cross/use goes through Movement's Player_Activate -> SpObjects::activate_at hook now.
+        if (mission_ptr) mission_ptr->pre_tick(world, std::vector<bool>(4, false));
         world.tick(pads, FrameTiming{f ? f->rate : World::kTickHz});
         drone_cli.after_tick(world);
+        if (mission_ptr) {
+            for (const auto& t : mission_ptr->take_texts())
+                std::printf("mission text [%d/%d]: %08x '%s'\n", t.type, t.frames, t.label,
+                            mission_text(t.label).c_str());
+            for (const auto& m : mission_ptr->take_music())
+                std::printf("mission music: event %d value %d\n", m.event, m.value);
+            for (int id : drone_cli.drain_coder_spawns(*mission_ptr)) (void)id;   // coder spawns (event 8)
+            for (const auto& s : mission_ptr->take_sounds())
+                std::printf("mission sound: %u at %.1f,%.1f,%.1f%s\n", s.id, s.pos[0], s.pos[1], s.pos[2],
+                            s.positional ? " 3D" : "");
+            for (const auto& c : mission_ptr->take_channel_log())
+                std::printf("mission channel: f%llu ch %d = %d\n", (unsigned long long)c.frame, c.channel,
+                            (int)c.value);
+            if (mission_ptr->pending_level() != 0)
+                std::printf("mission transition to %08x\n", mission_ptr->pending_level());
+        }
         if (print_events) WeaponScript::dump_events(i, weapons.events());
         effects.consume(weapons.events());
         effects.tick(FrameTiming{f ? f->rate : World::kTickHz}.mul());
@@ -439,15 +526,39 @@ int run(int argc, char** argv) {
         float yaw, pitch;
         if (drone_cli.camera(eye, yaw, pitch)) cam.eye = eye, cam.yaw = yaw + kPi, cam.pitch = pitch;
     };
+    // Script-camera override (`ScriptCam`): the NIS camera replaces the player view.
+    auto apply_mission_camera = [&](Camera& cam) {
+        if (!mission_ptr) return false;
+        const auto sc = mission_ptr->script_camera();
+        if (!sc) return false;
+        cam.eye = {sc->eye[0], sc->eye[1], sc->eye[2]};
+        cam.yaw = std::atan2(-sc->forward[0], -sc->forward[2]);
+        cam.pitch = std::asin(std::clamp(sc->forward[1], -1.0f, 1.0f));
+        cam.fovy = sc->fov * 3.14159265f / 180.0f;
+        return true;
+    };
     auto draw = [&](const Camera& cam) {
         int width, height;
         window.begin_frame(width, height);
         const float aspect = float(width) / float(std::max(height, 1));
         Camera wc = cam;
-        wc.fovy = 1.1f / std::max(1.0f, weapons.zoom(0));   // Player_Zoom narrows the view while aiming
+        if (weapons.zoom(0) > 1.0f) wc.fovy = 1.1f / weapons.zoom(0);  // Player_Zoom (script fov wins)
         glClearColor(0.25f, 0.3f, 0.4f, 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        if (mission_ptr) renderer.set_hidden_placements(mission_ptr->hides());
         renderer.draw(wc, aspect, show_collision);
+        if (mission_ptr) {
+            std::vector<LevelRenderer::ObjectDraw> objs;
+            for (const auto& d : mission_ptr->draws()) {
+                const Placement& pl = level.placements()[d.placement];
+                LevelRenderer::ObjectDraw o;
+                o.chunk = pl.chunk;
+                o.model = pl.model;
+                for (int k = 0; k < 16; ++k) o.transform[k] = d.transform[std::size_t(k)];
+                objs.push_back(o);
+            }
+            renderer.draw_objects(wc, aspect, objs);
+        }
         if (drone_renderer) drone_renderer->draw(wc, aspect, *drone_cli.system());
         effects.draw(wc, aspect, chars, weapons.projectiles());
         // Weapon layer (Player_SetWeaponAnimObj / Player_MuzzleFlash): drawn last, after the Z buffer
@@ -458,7 +569,7 @@ int run(int argc, char** argv) {
             const Vec3 muzzle =
                 weapon_view.draw(wc, aspect, vm, weapons.table().weapon(vm.weapon), effects.lighting_at(wc.eye, 2.0f));
             if (vm.muzzle_flash > 0.0f && muzzle != Vec3{0, 0, 0})
-                effects.add_light(muzzle, vm.flash_color, 5.0f, 2.0f);
+                effects.muzzle_flash(muzzle, weapons.table().weapon(vm.weapon));
         }
         glEnable(GL_DEPTH_TEST);
         glDisable(GL_BLEND);
@@ -469,6 +580,7 @@ int run(int argc, char** argv) {
         const View v = view_of(player);
         Camera cam = camera_for(v, v, 0.0f);
         apply_drone_camera(cam);
+        apply_mission_camera(cam);
         draw(cam);
         const bool ok = window.save_bmp(shot);
         std::printf("pos %.2f,%.2f,%.2f yaw %.3f pitch %.3f -> %s\n", player.pos[0], player.pos[1], player.pos[2], player.yaw,
@@ -513,8 +625,28 @@ int run(int argc, char** argv) {
             prev = view_of(player);
             PadInputs pads{};
             pads[0] = human.sample();
+            // Cross/use goes through Movement's Player_Activate -> SpObjects::activate_at hook now.
+            if (mission_ptr) mission_ptr->pre_tick(world, std::vector<bool>(4, false));
             world.tick(pads);
             drone_cli.after_tick(world);
+            if (mission_ptr) {
+                for (const auto& t : mission_ptr->take_texts())
+                    std::printf("mission text [%d/%d]: %08x '%s'\n", t.type, t.frames, t.label,
+                                mission_text(t.label).c_str());
+                for (const auto& m : mission_ptr->take_music())
+                    std::printf("mission music: event %d value %d\n", m.event, m.value);
+                for (int id : drone_cli.drain_coder_spawns(*mission_ptr)) (void)id;   // coder spawns (event 8)
+                for (const auto& s : mission_ptr->take_sounds()) {
+                    std::printf("mission sound: %u at %.1f,%.1f,%.1f%s\n", s.id, s.pos[0], s.pos[1], s.pos[2],
+                                s.positional ? " 3D" : "");
+                    if (game_audio) game_audio->play_mission(s.id, s.pos, s.positional);
+                }
+                for (const auto& c : mission_ptr->take_channel_log())
+                    std::printf("mission channel: f%llu ch %d = %d\n", (unsigned long long)c.frame, c.channel,
+                                (int)c.value);
+                if (mission_ptr->pending_level() != 0)
+                    std::printf("mission transition to %08x\n", mission_ptr->pending_level());
+            }
             if (game_audio) game_audio->frame(player, weapons.events());
             effects.consume(weapons.events());
             effects.tick(FrameTiming{}.mul());
@@ -524,6 +656,7 @@ int run(int argc, char** argv) {
         }
         Camera cam = camera_for(prev, view_of(player), float(accumulator / kStep));
         apply_drone_camera(cam);
+        apply_mission_camera(cam);
         draw(cam);
         window.swap();
     }

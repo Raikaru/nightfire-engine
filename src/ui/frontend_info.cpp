@@ -15,10 +15,10 @@ using namespace menu_msg;
 
 namespace {
 
-constexpr std::uint32_t kPageNfMap = 0x4000001C, kPageDossier = 0x4000002B, kPageDebrief = 0x40000033,
+constexpr std::uint32_t kPageMain = 0x40000002, kPageStart = 0x40000009, kPageCredits = 0x40000030,
+                        kPageNfMap = 0x4000001C, kPageDossier = 0x4000002B, kPageDebrief = 0x40000033,
                         kPageResults = 0x40000036, kPageStats = 0x40000037, kPageBonus = 0x40000038,
                         kPageWingame = 0x40000053;
-// P_DOSSIER hub wheel (C_SBDOSSIER rows -> records/rewards/gadgets/weapons).
 constexpr std::uint32_t kDsWheel = 0x1000010C, kDsRows = 0x1000010D, kDsImage = 0x1000010A, kDsDesc = 0x100001ED,
                         kDsFader = 0x1000010B;
 constexpr std::uint32_t kDsPages[4] = {0x4000003A, 0x4000003B, 0x4000003C, 0x4000003D};
@@ -205,18 +205,7 @@ bool Frontend::Impl::p_nf_bonus(ui::Control&, const ui::Msg& m) {
     return true;
 }
 
-// P_WINGAME: the victory movie. No video: hold, then report MissionDone.
-bool Frontend::Impl::p_wingame(ui::Control&, const ui::Msg& m) {
-    if (m.type == kPageShown) {
-        movie_frames = 0;
-    } else if (m.type == kIdle) {
-        if (++movie_frames > kMovieHoldFrames) {
-            result.action = FrontendResult::Action::MissionDone;
-            closed = true;
-        }
-    }
-    return true;
-}
+// P_WINGAME is a movie page (p_movie requests 0x73F0048, then goes to the credits).
 
 // P_MPDEBRIEFING: the sorted table from DebriefInfo (best first). Unused rows hide, like the
 // original's 0x2b pass. Cross continues (QuitToMenu), triangle replays (MpRematch).
@@ -266,19 +255,118 @@ bool Frontend::Impl::p_mp_debriefing(ui::Control&, const ui::Msg& m) {
     return true;
 }
 
-// Movie placeholders and credits: hold the first frame, then pop back (Back works any time).
+// Movie pages (no decoder here): on show they request their PSS id (take_movie_request) for the
+// game to play. If nobody takes the request (nfui), the page holds briefly, then runs the same
+// post-movie transition the original runs when the movie ends. Back skips to the transition.
+// PSS ids: ATTRACT 0x73a/0x73b0048, INTRO 0x7380048, ESTHERO 0x73b0048, TRAILER 0x7390048,
+// WINGAME 0x73f0048 (all present as MOVIES/30_FPS/*.PSS on the disc; see docs/formats.md).
 bool Frontend::Impl::p_movie(ui::Control&, const ui::Msg& m) {
+    const std::uint32_t page = mgr->current_page_id();
     if (m.type == kPageShown) {
         movie_frames = 0;
+        movie_taken = false;
+        movie_source = m.a;
+        switch (page) {
+            case 0x40000035: pending_movie = (m.a == kPageMain) ? 0x73B0048 : 0x73A0048; break;
+            case 0x40000032: pending_movie = 0x7380048; break;
+            case 0x40000043: pending_movie = 0x73B0048; break;
+            case 0x4000004E: pending_movie = 0x7390048; break;
+            case 0x40000053: pending_movie = 0x73F0048; break;
+            default: pending_movie = 0; break;  // P_FMV/FMVTEST/FMVPLAYER: no fixed movie
+        }
     } else if (m.type == kIdle) {
-        if (++movie_frames > kMovieHoldFrames) mgr->send_manager(kPageBack, 0, 0);
+        if (!movie_taken && pending_movie && ++movie_frames > kMovieHoldFrames) movie_finished();
+    } else if (m.type == kBackVeto) {
+        // Skip the movie. Redirects veto the back (calling movie_finished would re-pop and loop);
+        // plain pop pages just let it happen.
+        pending_movie = 0;
+        movie_taken = false;
+        if (page == 0x40000032) {
+            change_page(kPageStart, 1);
+            m.veto = true;
+        } else if (page == 0x40000043) {
+            change_page(kPageMain, 1);
+            m.veto = true;
+        } else if (page == 0x40000053) {
+            change_page_close_iris(kPageCredits, 0x1000010B);
+            m.veto = true;
+        }
     }
     return true;
 }
 
+// The post-movie transition (psiMovieFinished): per page, like the originals.
+void Frontend::Impl::movie_finished() {
+    const std::uint32_t page = mgr->current_page_id();
+    pending_movie = 0;
+    movie_taken = false;
+    switch (page) {
+        case 0x40000032: change_page(kPageStart, 1); break;       // P_INTRO -> title
+        case 0x40000043: change_page(kPageMain, 1); break;        // P_ESTHERO -> main menu
+        case 0x40000053: change_page_close_iris(kPageCredits, 0x1000010B); break;  // WINGAME -> credits
+        default: mgr->send_manager(kPageBack, 0, 0); break;       // ATTRACT/TRAILER/FMV*: back
+    }
+}
+
+// P_CREDITS: the roll from set_credits (Menu_SetupCredits rows). Every 14 ticks the next row
+// fills one of the 26 label pairs; every pair slides up 2px per tick. At the end the music fades
+// (game side) and the page goes to the main menu from the wingame, else pops back.
+bool Frontend::Impl::p_credits(ui::Control&, const ui::Msg& m) {
+    if (m.type == kPageShown) {
+        credit_cursor = 0;
+        credit_slot = 0;
+        credit_tick = 0;
+        credit_source = m.a;
+        for (unsigned i = 0; i < 26; ++i) {
+            send_ex(0x10000213, i, kSetText, std::string(""));
+            send_ex(0x10000214, i, kSetText, std::string(""));
+        }
+    } else if (m.type == kIdle) {
+        if (credit_cursor < credits.size() && ++credit_tick % 14 == 0) {
+            const CreditRow& row = credits[credit_cursor++];
+            credit_slot = (credit_slot + 1) % 26;
+            assign_credit_row(credit_slot, row);
+        }
+        for (unsigned i = 0; i < 26; ++i) {
+            ui::Control* l = mgr->find_ex(0x10000213, i);
+            ui::Control* r = mgr->find_ex(0x10000214, i);
+            if (l) l->y -= 2;
+            if (r) r->y -= 2;
+        }
+        if (!credits.empty() && credit_cursor >= credits.size() &&
+            credit_tick / 14 > int(credits.size()) + 18 && !credits_done_) {
+            credits_done_ = true;  // the music fade + exit below run once (game fades track 0x27)
+            if (credit_source == kPageWingame)
+                mgr->send_delayed_manager(0x13, kChangePage, kPageMain, 0);
+            else
+                mgr->send_delayed_manager(0x13, kPageBack, 0, 0);
+        }
+    }
+    return true;
+}
+
+// One roll row into a label pair: span rows go wide centered, pairs split the columns.
+// Like the original (+0x70/+0x72/+0x74 writes), the pair enters from below the screen.
+void Frontend::Impl::assign_credit_row(unsigned slot, const CreditRow& row) {
+    ui::Control* l = mgr->find_ex(0x10000213, slot);
+    ui::Control* r = mgr->find_ex(0x10000214, slot);
+    if (!row.span) {
+        send_ex(0x10000213, slot, kSetText, row.left);
+        send_ex(0x10000214, slot, kSetText, row.right);
+    } else {
+        send_ex(0x10000213, slot, kSetText, row.left);
+        if (l) {
+            l->x = 58;
+            l->w = 524;  // full width, like the script's slot-0 label
+        }
+        send_ex(0x10000214, slot, kSetText, std::string(""));
+    }
+    if (l) l->y = 460;
+    if (r) r->y = 460;
+}
+
 void Frontend::Impl::register_info_handlers() {
     handlers[kPageDossier] = &Impl::p_dossier;
-    handlers[kDsWheel] = &Impl::c_sb_dossier;
     handlers[0x4000003D] = &Impl::p_ds_weapons;
     handlers[0x10000173] = &Impl::c_sb_ds_weapons;
     handlers[0x4000003C] = &Impl::p_ds_gadgets;
@@ -288,14 +376,16 @@ void Frontend::Impl::register_info_handlers() {
     handlers[kPageResults] = &Impl::p_nf_results;
     handlers[kPageStats] = &Impl::p_nf_stats;
     handlers[kPageBonus] = &Impl::p_nf_bonus;
-    handlers[kPageWingame] = &Impl::p_wingame;
+    handlers[kPageWingame] = &Impl::p_movie;  // victory movie -> credits
     handlers[kPageDebrief] = &Impl::p_mp_debriefing;
     handlers[0x40000035] = &Impl::p_movie;  // P_ATTRACT
+    handlers[0x40000032] = &Impl::p_movie;  // P_INTRO
+    handlers[0x40000043] = &Impl::p_movie;  // P_ESTHERO
     handlers[0x4000004D] = &Impl::p_movie;  // P_FMV
     handlers[0x4000004E] = &Impl::p_movie;  // P_TRAILER
     handlers[0x4000004F] = &Impl::p_movie;  // P_FMVTEST
     handlers[0x40000050] = &Impl::p_movie;  // P_FMVPLAYER
-    handlers[0x40000030] = &Impl::p_movie;  // P_CREDITS (static first screen)
+    handlers[kPageCredits] = &Impl::p_credits;
 }
 
 }  // namespace nf

@@ -8,10 +8,13 @@
 //   nfdump <gamedir> nav <level.bin> [map.bmp]   navigation network: counts, connectivity, A*, emitters, route walk
 //   nfdump <gamedir> chars [level.bin [skin]]   skins, skeletons, animations (validate covers them too)
 //   nfdump <gamedir> sounds [banks|bank <slot>|music [n]|streams|maps]
+//   nfdump <gamedir> script [level.bin]   mission rows, object census and cutscene scripts
 // <gamedir> holds ACTION.ELF and FILES.BIN extracted from the disc.
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <map>
 #include <string>
@@ -30,6 +33,8 @@
 #include "tools/nfdump_mp.hpp"
 #include "tools/nfdump_nav.hpp"
 #include "tools/nfdump_sp.hpp"
+#include "tools/nfdump_diff.hpp"
+#include "tools/nfdump_script.hpp"
 #include "tools/nfdump_bots.hpp"
 #include "tools/nfdump_driving.hpp"
 #include "tools/nfdump_ssh.hpp"
@@ -210,7 +215,7 @@ int cmd_validate(GameFiles& gf) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::fprintf(stderr, "usage: %s <gamedir> files|maps|validate|collision|chars|sounds\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <gamedir> files|maps|validate|collision|chars|sounds|sp|script|nav|ssh|arena|weapons|diff-acc|diff-refind|coder-spawn\n", argv[0]);
         return 2;
     }
     try {
@@ -231,6 +236,7 @@ int main(int argc, char** argv) {
             if (validate_nav(gf, argv[1]) != 0) rc = 1;
             if (validate_sp(gf, argv[1]) != 0) rc = 1;
             if (validate_bots(gf, argv[1]) != 0) rc = 1;
+            if (validate_script(gf, argv[1]) != 0) rc = 1;
             if (validate_ssh(argv[1]) != 0) rc = 1;
             if (validate_driving(argv[1]) != 0) rc = 1;
             return validate_sounds(gf, argv[1]) == 0 ? rc : 1;
@@ -241,6 +247,7 @@ int main(int argc, char** argv) {
         if (cmd == "arena") return cmd_arena(gf, argv[1], std::vector<std::string>(argv + 3, argv + argc));
         if (cmd == "weapons") return cmd_weapons(gf, argv[1], std::vector<std::string>(argv + 3, argv + argc));
         if (cmd == "sp") return dump_sp(gf, argv[1], argc > 3 ? argv[3] : "");
+        if (cmd == "script") return dump_script(gf, argv[1], argc > 3 ? argv[3] : "");
         if (cmd == "nav") {
             if (argc < 4) {
                 std::fprintf(stderr, "usage: %s <gamedir> nav <level.bin> [map.bmp]\n", argv[0]);
@@ -249,6 +256,28 @@ int main(int argc, char** argv) {
             return cmd_nav(gf, argv[3], argc > 4 ? argv[4] : "");
         }
         if (cmd == "ssh") return cmd_ssh(argv[1], std::vector<std::string>(argv + 3, argv + argc));
+        if (cmd == "diff-acc") {
+            if (argc < 4) {
+                std::fprintf(stderr, "usage: %s <gamedir> diff-acc <csv> [level.bin]\n", argv[0]);
+                return 2;
+            }
+            return cmd_diff_acc(gf, argv[1], argv[3], argc > 4 ? argv[4] : "07000001.bin");
+        }
+        if (cmd == "diff-refind") {
+            if (argc < 4) {
+                std::fprintf(stderr, "usage: %s <gamedir> diff-refind <csv>\n", argv[0]);
+                return 2;
+            }
+            return cmd_diff_refind(argv[3]);
+        }
+        if (cmd == "coder-spawn") {
+            if (argc < 5) {
+                std::fprintf(stderr, "usage: %s <gamedir> coder-spawn <level.bin> <script-hash-hex> [frames]\n", argv[0]);
+                return 2;
+            }
+            return cmd_coder_spawn(gf, argv[1], argv[3], std::uint32_t(std::strtoul(argv[4], nullptr, 16)),
+                                   argc > 5 ? std::atol(argv[5]) : 400);
+        }
         std::fprintf(stderr, "unknown command %s\n", cmd.c_str());
         return 2;
     } catch (const std::exception& e) {

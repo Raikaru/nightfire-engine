@@ -8,8 +8,6 @@
 #include "game/sp_idle.hpp"
 #include "game/sp_states.hpp"
 
-#include "game/drone_weap.hpp"
-
 namespace nf::sp {
 
 using namespace nf::drone;
@@ -18,46 +16,6 @@ namespace {
 
 int skeleton(Drone& d, const Msg& m) { return skel_common(d, m, kStAttack) ? 1 : 0; }
 
-// Drone_IsCoverNodeUsable: switch gates pass and no live SP drone has claimed the node.
-bool cover_usable(Drone& d, std::size_t index) {
-    const SpSystem& sp = sp_of(d);
-    const CoverNodeDef& n = sp.level().cover_nodes[index];
-    if (n.require_on != 0 && !sp.channels.on(n.require_on)) return false;
-    if (n.require_off != 0 && sp.channels.on(n.require_off)) return false;
-    for (Drone* o : sp_of(d).sp_drones()) {
-        if (o != &d && sx(*o).cover_node == int(index)) return false;
-    }
-    return true;
-}
-
-// NDrone2_FindCover 0x152548: nearest usable node in 2-D, claimed on success.
-bool find_cover(Drone& d) {
-    SpExt& e = sx(d);
-    const SpLevel& level = sp_of(d).level();
-    const Vec3 f = d.feet();
-    int best = -1;
-    float best_d2 = 1e18f;
-    for (std::size_t i = 0; i < level.cover_nodes.size(); ++i) {
-        if (!cover_usable(d, i)) continue;
-        const Vec3& p = level.cover_nodes[i].pos;
-        const float dx = f[0] - p[0], dz = f[2] - p[2];
-        const float d2 = dx * dx + dz * dz;
-        if (d2 < best_d2) {
-            best_d2 = d2;
-            best = int(i);
-        }
-    }
-    if (best < 0) return false;
-    e.cover_node = best;
-    d.flags |= flag::kCoverClaimed;
-    set_ai_goal(d, level.cover_nodes[std::size_t(best)].pos, 1.0f);
-    return true;
-}
-
-void release_cover(Drone& d) {
-    sx(d).cover_node = -1;
-    d.flags &= ~(flag::kCoverClaimed | flag::kCoverClaimed2);
-}
 
 bool at_cover(const Drone& d) {
     const int node = static_cast<const SpExt*>(d.ext.get())->cover_node;
@@ -73,6 +31,7 @@ int state_run_for_cover(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         if (!find_cover(d)) {   // no free node: stand and fight
             d.set_state(kStCombatNoMove);
             return 1;
@@ -105,6 +64,7 @@ int state_under_cover_init(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kCrouchCover, 0, kStUnderCoverIdle);
         return 1;
     case kMsgTick:
@@ -120,6 +80,7 @@ int state_under_cover_idle(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kCrouchCover);
         d.timer1 = {d.now() + d.seconds(2.0f), 0};
         return 1;
@@ -141,6 +102,7 @@ int state_under_cover_aim(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         set_angle_to_obj(d, d.opponent, 0.0f, true);
         anim_call(d, 0, kAimCrouch);
         d.timer1 = {d.now() + d.seconds(1.0f), 0};
@@ -161,13 +123,13 @@ int state_under_cover_fire(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         set_angle_to_obj(d, d.opponent, 0.0f, true);
         anim_call(d, 0, kAimCrouch);
         return 1;
     case kMsgTick:
         set_angle_to_obj(d, d.opponent, 0.0f);
-        d.fire_requested = !d.fire_lock;
-        if (d.fire_requested) weap::do_firing(d);
+        d.fire_requested = !d.fire_lock;   // DroneWeap_HandleFiring fires post-move, like the original
         if (d.burst_done) {
             d.burst_done = false;
             d.set_state(kStUnderCoverIdle);   // back down after the burst
@@ -184,6 +146,7 @@ int state_under_cover_sniper_fire(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         set_angle_to_obj(d, d.opponent, 0.0f, true);
         anim_call(d, 0, kShoot);
         return 1;
@@ -191,8 +154,7 @@ int state_under_cover_sniper_fire(Drone& d, const Msg& m) {
         d.set_state(kStUnderCoverSniperReload);
         return 1;
     case kMsgTick:
-        d.fire_requested = !d.fire_lock;
-        if (d.fire_requested) weap::do_firing(d);
+        d.fire_requested = !d.fire_lock;   // DroneWeap_HandleFiring fires post-move, like the original
         return 1;
     default:
         return skeleton(d, m);

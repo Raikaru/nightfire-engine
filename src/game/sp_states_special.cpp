@@ -22,8 +22,8 @@ int state_death_anim(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        notify_death(d);   // DroneFunc_SetDeathChannel: switch_channels[Drone+0x13c]
         talk(d, Speech::Death);
-        anim_call(d, 0, d.head_shot ? kDeathHead : kDeath, 0, kStDead);
         return 1;
     case kMsgTick:
         return 1;
@@ -37,6 +37,7 @@ int state_death_by_explosion(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        notify_death(d);
         talk(d, Speech::Death);
         anim_call(d, 0, kDeathExplosive, 0, kStDead);
         return 1;
@@ -52,6 +53,7 @@ int state_special_death_anim(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        notify_death(d);
         talk(d, Speech::Death);
         anim_call(d, 0, kDeathDir, 0, kStDead);
         return 1;
@@ -344,6 +346,7 @@ int state_seen_dead_body(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         set_angle_to_obj(d, d.opponent, 0.0f, true);
         anim_call(d, 0, kStandAlertLook);
         set_idle_timeout(d, 3, 2);
@@ -363,6 +366,7 @@ int state_seen_surrendered(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kStandAlertLook);
         set_idle_timeout(d, 2, 2);
         return 1;
@@ -382,6 +386,7 @@ int state_hold_it(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         if (d.opponent.valid()) set_angle_to_obj(d, d.opponent, 0.0f, true);
         anim_call(d, 0, kAimStand);
         talk(d, Speech::Other);
@@ -403,6 +408,7 @@ int state_open_door(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kCStand, 0, sx(d).return_state2 != 0 ? sx(d).return_state2 : kStPatrol);
         return 1;
     case kMsgTick:
@@ -446,6 +452,7 @@ int state_elevator_jumper(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kStand);
         set_idle_timeout(d, 6, 0);
         return 1;
@@ -517,6 +524,7 @@ int state_abseil_step_off(Drone& d, const Msg& m) {
 
 int state_abseil_death(Drone& d, const Msg& m) {
     if (m.id == kMsgNone || m.id == kMsgEnter || m.id == kMsgTick) {
+        if (m.id == kMsgEnter) notify_death(d);
         anim_call(d, 0, kDeathFall, 0, kStDead);
         return 1;
     }
@@ -530,6 +538,7 @@ int state_ninja_stand(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kzNinjaStand);
         return 1;
     case kMsgTick: {
@@ -606,6 +615,7 @@ int state_ninja_short_range(Drone& d, const Msg& m) {
 
 int state_ninja_get_close(Drone& d, const Msg& m) {
     if (m.id == kMsgNone) return 1;
+    if (m.id == kMsgEnter) d.flags |= flag::kAware;
     if (m.id == kMsgEnter || m.id == kMsgTick) return ninja_close(d, kStNinjaSword, kzNinjaStealthRun);
     return skeleton(d, m);
 }
@@ -679,6 +689,7 @@ int state_ninja_stand_fire(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         set_angle_to_obj(d, d.opponent, 0.0f, true);
         anim_call(d, 0, kzNinjaAimStand);
         return 1;
@@ -727,6 +738,7 @@ int state_astronaut_hit(Drone& d, const Msg& m) {
 
 int state_astronaut_death(Drone& d, const Msg& m) {
     if (m.id == kMsgNone || m.id == kMsgEnter || m.id == kMsgTick) {
+        if (m.id == kMsgEnter) notify_death(d);
         anim_call(d, 0, kAstro_Death1, 0, kStDead);
         return 1;
     }
@@ -739,6 +751,7 @@ int state_astronaut_combat(Drone& d, const Msg& m) {
         return 1;
     case kMsgEnter:
         anim_call(d, 0, kAstro_Hover);
+        d.flags |= flag::kAware;
         return 1;
     case kMsgTick:
         if (!d.opponent.valid()) return 1;
@@ -756,6 +769,7 @@ int state_astronaut_combat(Drone& d, const Msg& m) {
 
 int state_astronaut_combat_move(Drone& d, const Msg& m) {
     if (m.id == kMsgNone) return 1;
+    if (m.id == kMsgEnter) d.flags |= flag::kAware;
     if (m.id == kMsgEnter || m.id == kMsgTick) {
         if (!d.opponent.valid()) {
             d.set_state(kStAstronautCombat);

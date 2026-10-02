@@ -70,6 +70,9 @@ public:
         grip_rear_ = grip_rear;
         extra_drag_ = drag;
     }
+    // Shove the whole car (car-car separation in Mission): translates the body; the wheel
+    // poses re-derive from it on the next step.
+    void nudge(const Vec3& dp) { body_.set_position(body_.position() + dp); }
     const VehicleParams& params() const { return params_; }
 
 private:

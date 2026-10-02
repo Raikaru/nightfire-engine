@@ -81,8 +81,12 @@ replay fills a missed frame with the next recorded pad and the previous rate.
 
 Savestate 2 always restores the same state (counter 8635), so a scenario is exactly reproducible: re-recording
 `walk` gives the same numbers as below. The pad the game saw is recorded, not the commanded one, so replays use
-what the game used. vpad quirk: the evdev button names differ from the DS2 labels: `press square` reaches the
-game as Triangle (jump) and `triangle` as Square; L2 is `trig LT 1`.
+what the game used. vpad button names are DS2 labels, verified per-button over PINE (tSlot Sony word):
+square/circle/cross/triangle set exactly their own bits, as do the shoulders and start. (Before 2026-10-02
+square and triangle were swapped: vpad.py mapped them to BTN_WEST/BTN_NORTH, but in Linux evdev BTN_NORTH is
+the X button (0x133, left) and BTN_WEST the Y button (0x134, top) — the names do not mean top/left. Old traces
+are unaffected: they record the pad the game saw, and the jump scenario's `square` presses are renamed to
+`triangle` in the script to match.) L2 is `trig LT 1`.
 
 ### What the replay proves
 
@@ -92,24 +96,34 @@ every following frame. `--sync` additionally re-seats the player at the recorded
 its column is the per-frame model error and the free column the error after the whole scenario. The action
 floats and flags computed from the recorded pad are compared against the game's own (`max_act`, `flag_mismatch`).
 
-Skyrail (`07000024.bin`), positions in centimetres, all from `tools/oracle/run_scenarios.sh`:
+Skyrail (`07000024.bin`), positions in centimetres, all from `tools/oracle/run_scenarios.sh`
+(re-recorded 2026-10-01; traces under `~/.cache/movement-2-tmp/oracle-run/`, walk re-recorded once to
+dodge a missed tracer frame — walk2 below):
 
 | Scenario | Input | Frames | Free max / end | `--sync` max | Free, constant foot height (max) |
 |----------|-------|--------|----------------|--------------|----------------------------------|
-| stand | idle | 58 | 0.000 / 0.000 | 0.000 | 0.000 |
-| turn | left stick X both ways, right stick Y | 147 | 0.000 / 0.000 (yaw 4e-6 rad) | 0.000 | 0.000 |
-| walk | left stick forward up a ramp | 129 | 3.6 / 2.9 | 0.87 | 5.6 |
+| stand | idle | 60 | 0.000 / 0.000 | 0.000 | 0.000 |
+| turn | left stick X both ways, right stick Y | 148 | 0.000 / 0.000 (yaw 5e-6 rad) | 0.000 | 0.000 |
+| walk | left stick forward up a ramp | 128 | 3.6 / 2.9 | 0.87 | 5.6 |
 | strafe | right stick X, off a ledge, land | 100 | 1.2 / 0.8 | 0.37 | 2.0 |
-| wall | forward into a wall | 267 | 3.6 / 3.2 | 0.59 | 5.6 |
+| wall | forward into a wall | 270 | 3.6 / 3.2 | 0.45 | 5.6 |
 | slide | forward, turn into the wall, slide along it | 270 | 4.7 / 4.7 | 0.45 | 6.2 |
-| jump | jump on the spot, walk, jump while walking | 161 | 13.7 / 6.6 | 10.5 (1) | 13.0 |
-| crouch | crouch, crouch-walk, stand | 174 | 23.6 / 7.7 | 7.8 (2) | 41.9 |
+| jump | jump on the spot, walk, jump while walking | 168 | 3.7 / 0.2 | 0.84 (1) | 13.0 |
+| crouch | crouch, crouch-walk, stand | 180 | 9.2 / 8.1 | 2.88 (2) | 41.9 |
 
-(1) the 10.5 cm is the single frame after a frame the tracer missed (no recorded position to re-seat on); every
-other frame is below 1.5 cm. (2) the crouch<->stand transitions, where the animated foot height changes by up
-to 0.1 per frame and the resting capsule flips the ground bit on rounding noise.
+(1) jump is clean: the old 10.5 cm was the single frame after a frame the tracer missed; a clean
+recording keeps every synced frame below 1 cm. Jump takeoff also matches the instruction stream
+exactly (`WldGravity * -0.4`, delay 4; verified with nfmips). (2) crouch was 7.8: the frames where the
+player walks off an edge while crouched applied the animated-foot delta in midair, which the original
+does not do — fixed by gating the delta on grounded-or-transitioning (now 0.00 on those frames,
+verified). The remaining 2.88 (4 stair-climbing frames, instant reconverge, end 0.014) is tangent-contact
+marginality: capsule dist sits within ~1 mm of the radius and the floor test normalises a near-zero
+vector, so millimetre capsule differences (from unseated velocity micro-drift) flip push/no-push and the
+ground bit between the two runs. All capsule/param/velocity/foot inputs verified identical; only the
+boundary verdicts differ — the documented chaotic-contact class, not model error. The constant-foot-height
+column is prior-wave values (that mechanism is unchanged).
 
-Yaw is exact in every scenario (max 4e-6 rad over 147 frames of stick-driven turning at both frame rates),
+Yaw is exact in every scenario (max 5e-6 rad over 148 frames of stick-driven turning at both frame rates),
 action floats match to 1.2e-7 and the flag bytes match except around frames the tracer missed.
 
 ### Residual differences

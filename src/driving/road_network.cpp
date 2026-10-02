@@ -1,8 +1,27 @@
 #include "driving/road_network.hpp"
 
 #include <cmath>
-
+#include <queue>
 namespace nf::driving {
+
+RoadNetwork RoadNetwork::build_route(const std::vector<Vec3>& points) {
+    RoadNetwork net;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        Node n;
+        n.pos = points[i];
+        if (i + 1 < points.size()) {
+            const Vec3 d = points[i + 1] - points[i];
+            n.length = length(d);
+            n.dir = n.length > 1e-6f ? d * (1.0f / n.length) : Vec3{0, 0, 1};
+            n.next = static_cast<int>(i + 1);
+        } else {
+            n.dir = net.nodes_.empty() ? Vec3{0, 0, 1} : net.nodes_.back().dir;
+        }
+        n.width = 8.0f;
+        net.nodes_.push_back(n);
+    }
+    return net;
+}
 
 RoadNetwork RoadNetwork::build(const std::vector<RoadSeg>& segs) {
     RoadNetwork net;
@@ -48,12 +67,20 @@ int RoadNetwork::nearest(const Vec3& p) const {
 int RoadNetwork::successor(int i, const Vec3& dir) const {
     if (i < 0 || std::size_t(i) >= nodes_.size()) return -1;
     const int chained = nodes_[std::size_t(i)].next;
-    if (chained < 0) return -1;
-    float best = dot(nodes_[std::size_t(chained)].dir, dir);
-    int pick = chained;
-    const Vec3 end = nodes_[std::size_t(i)].pos + nodes_[std::size_t(i)].dir * nodes_[std::size_t(i)].length;
+    // The precomputed link wins when it is near and continues the heading (route-built
+    // networks chain i -> i+1; the distance cap keeps index-order gaps from teleporting).
+    if (chained >= 0 && nodes_[std::size_t(i)].length < 120.0f &&
+        dot(nodes_[std::size_t(chained)].dir, dir) > 0.5f)
+        return chained;
+    float best = -2.0f;
+    // Near-chained fallback keeps continuity through sharp turns; across index-order gaps
+    // there is no local continuation, so report none (-1) instead of teleporting.
+    int pick = (chained >= 0 && nodes_[std::size_t(i)].length < 120.0f) ? chained : -1;
+    // Capped projection: on index-order gaps the raw segment end can be kilometres away;
+    const Vec3 end = nodes_[std::size_t(i)].pos +
+                     nodes_[std::size_t(i)].dir * std::min(nodes_[std::size_t(i)].length, 40.0f);
     for (std::size_t j = 0; j < nodes_.size(); ++j) {
-        if (int(j) == chained || int(j) == i) continue;  // never succeed yourself
+        if (int(j) == i) continue;  // never succeed yourself
         if (length(nodes_[j].pos - end) > 25.0f) continue;
         const float q = dot(nodes_[j].dir, dir);
         if (q > best) best = q, pick = static_cast<int>(j);
@@ -97,28 +124,181 @@ std::vector<int> RoadNetwork::chain_from(int start, std::size_t max_len) const {
 }
 
 std::vector<int> RoadNetwork::walk_from(int start) const {
+    // Mission-route walk: follow the road with heading coherence (prefer the candidate most
+    // ahead), bridging gaps up to 400 m (sparse submarine-level waypoints need it; in dense
+    // grids nearer aligned candidates always win the score below). Always terminates (unvisited only).
     std::vector<int> walk;
     if (start < 0 || std::size_t(start) >= nodes_.size()) return walk;
     std::vector<char> seen(nodes_.size(), 0);
     int n = start;
+    Vec3 heading = nodes_[std::size_t(start)].dir;
     while (n >= 0 && walk.size() < nodes_.size()) {
         walk.push_back(n);
         seen[std::size_t(n)] = 1;
-        // Exact successor first (chained street grids); else nearest unvisited node.
-        int nx = successor(n, nodes_[std::size_t(n)].dir);
+        const Vec3 here = nodes_[std::size_t(n)].pos;
+        int nx = successor(n, heading);
         if (nx < 0 || seen[std::size_t(nx)]) {
-            float best = 1e30f;
+            float best_score = 1e30f;
             nx = -1;
             for (std::size_t j = 0; j < nodes_.size(); ++j) {
                 if (seen[j]) continue;
-                const Vec3 d = nodes_[j].pos - nodes_[std::size_t(n)].pos;
-                const float q = dot(d, d);
-                if (q < best) best = q, nx = static_cast<int>(j);
+                const Vec3 d = nodes_[j].pos - here;
+                const float dist = length(d);
+                if (dist > 400.0f) continue;
+                // Score: distance penalised by misalignment (heading coherence).
+                const float align = dist > 1.0f ? dot(d * (1.0f / dist), heading) : 1.0f;
+                const float score = dist + (1.0f - align) * 100.0f;
+                if (score < best_score) best_score = score, nx = static_cast<int>(j);
             }
         }
+        if (nx >= 0) {
+            const Vec3 d = nodes_[std::size_t(nx)].pos - here;
+            if (length(d) > 1.0f) heading = d * (1.0f / length(d));
+        }
+        n = nx;
         n = nx;
     }
+    // Strip out-and-back spikes (parallel-lane ping-pong where index order interleaves
+    // carriageways): a middle node whose neighbours nearly meet behind it is a detour,
+    // not a corner. Offset returns (hairpins, switchbacks) survive the ratio test.
+    for (bool cut = true; cut;) {
+        cut = false;
+        for (std::size_t k = 1; k + 1 < walk.size(); ++k) {
+            const Vec3 a = nodes_[std::size_t(walk[k - 1])].pos;
+            const Vec3 b = nodes_[std::size_t(walk[k])].pos;
+            const Vec3 c = nodes_[std::size_t(walk[k + 1])].pos;
+            const float lab = length(b - a), lbc = length(c - b), lac = length(c - a);
+            if (lab < 1.0f || lbc < 1.0f) {
+                walk.erase(walk.begin() + long(k));
+                cut = true;
+                break;
+            }
+            const float backtrack = dot((b - a) * (1.0f / lab), (c - b) * (1.0f / lbc));
+            if (backtrack < -0.5f && lac < 0.55f * std::min(lab, lbc)) {
+                walk.erase(walk.begin() + long(k));
+                cut = true;
+                break;
+            }
+        }
+    }
     return walk;
+}
+namespace {
+// Lane segments usable for bridging (real street spans). The `rs` tag also holds parameter
+// blocks of the form a=(k,k,z) (small matching ints, e.g. (5,5,774), (2,2,738), (0,0,0)):
+// lane-count headers, not geometry. True segment endpoints are float world coords.
+struct Lane {
+    Vec3 a, b;
+};
+bool lane_ok(const Vec3& a, const Vec3& b) {
+    if (a[0] == a[1] && a[0] >= 0 && a[0] <= 8 && a[0] == std::floor(a[0])) return false;
+    const float L = length(b - a);
+    return L > 5.0f && L < 200.0f;
+}
+float flat_dist(const Vec3& p, const Vec3& q) {
+    const Vec3 d = p - q;
+    return std::sqrt(d[0] * d[0] + d[2] * d[2]);
+}
+// BFS lane path from `from` to near `to` (end-to-start chaining, 25 m tolerance, bidirectional
+// travel). Returns the far endpoints in order, excluding `from`. Empty when unroutable or
+// when the detour exceeds 3x the direct distance (wrong side of the map, not a corner).
+std::vector<Vec3> lane_bridge(const std::vector<Lane>& lanes, const Vec3& from, const Vec3& to) {
+    const float direct = flat_dist(from, to);
+    if (direct <= 0 || lanes.empty()) return {};
+    struct Visit {
+        int prev = -2;
+        bool enter_a = true;  // entered this lane at its `a` end (exit at `b`)
+        float cost = 1e30f;
+    };
+    std::vector<Visit> vis(lanes.size());
+    int start = -1;
+    float bd = 1e30f;
+    for (std::size_t i = 0; i < lanes.size(); ++i) {
+        const float d = flat_dist(lanes[i].a, from) + flat_dist(lanes[i].b, from);
+        if (d < bd) bd = d, start = int(i);
+    }
+    if (start < 0 || bd > 80.0f) return {};
+    vis[std::size_t(start)] = {-1, flat_dist(lanes[std::size_t(start)].a, from) <
+                                       flat_dist(lanes[std::size_t(start)].b, from),
+                               0};
+    auto exit_of = [&](int i) {
+        return vis[std::size_t(i)].enter_a ? lanes[std::size_t(i)].b : lanes[std::size_t(i)].a;
+    };
+    // A* over lanes (goal-directed: plain BFS wanders down parallel streets instead of
+    // taking the corner). Each lane is settled once, so no stale queue entries.
+    using PQ = std::priority_queue<std::pair<float, int>>;
+    PQ q;
+    q.emplace(-flat_dist(exit_of(start), to), start);
+    const float budget = 3.0f * direct + 60.0f;
+    int found = -1;
+    std::size_t expansions = 0;
+    while (!q.empty() && expansions < 20000) {
+        ++expansions;
+        const int i = q.top().second;
+        q.pop();
+        const Vec3 exit = exit_of(i);
+        if (flat_dist(exit, to) < 30.0f) {
+            found = i;
+            break;
+        }
+        if (vis[std::size_t(i)].cost > budget) continue;
+        for (std::size_t j = 0; j < lanes.size(); ++j) {
+            if (vis[j].prev != -2) continue;
+            const float la = flat_dist(lanes[j].a, exit);
+            const float lb = flat_dist(lanes[j].b, exit);
+            const bool use_a = la < lb;
+            if ((use_a ? la : lb) > 25.0f) continue;
+            const float nc = vis[std::size_t(i)].cost + (use_a ? la : lb) + length(lanes[j].b - lanes[j].a);
+            if (nc > budget) continue;
+            vis[j] = {i, use_a, nc};
+            const Vec3 j_exit = use_a ? lanes[j].b : lanes[j].a;
+            q.emplace(-(nc + flat_dist(j_exit, to)), int(j));
+        }
+    }
+    if (found < 0) return {};
+    std::vector<int> rev;
+    for (int i = found; i >= 0; i = vis[std::size_t(i)].prev) rev.push_back(i);
+    std::vector<Vec3> out;
+    for (std::size_t k = rev.size(); k-- > 0;) out.push_back(exit_of(rev[k]));
+    return out;
+}
+}  // namespace
+
+RoadNetwork RoadNetwork::splice_jumps(const RoadNetwork& base, const std::vector<int>& walk,
+                                      const std::vector<RoadSeg>& lanes_in) {
+    std::vector<Lane> lanes;
+    for (const RoadSeg& s : lanes_in)
+        if (lane_ok(s.a, s.b)) lanes.push_back({s.a, s.b});
+    std::vector<Vec3> pts;
+    for (const int i : walk) pts.push_back(base.node(std::size_t(i)).pos);
+    std::vector<Vec3> out;
+    for (std::size_t k = 0; k < pts.size(); ++k) {
+        if (k > 0 && length(pts[k] - pts[k - 1]) > 60.0f && !lanes.empty()) {
+            for (const Vec3& p : lane_bridge(lanes, pts[k - 1], pts[k])) {
+                if (out.empty() || length(p - out.back()) > 3.0f) out.push_back(p);
+            }
+        }
+        if (out.empty() || length(pts[k] - out.back()) > 3.0f) out.push_back(pts[k]);
+    }
+    if (out.size() < 2) return base;
+    return build_route(out);
+}
+
+Vec3 RoadNetwork::snap_to_lanes(const std::vector<RoadSeg>& lanes_in, const Vec3& p, float max_dist) {
+    Vec3 best = p;
+    float bd = max_dist;
+    for (const RoadSeg& s : lanes_in) {
+        if (!lane_ok(s.a, s.b)) continue;
+        const Vec3 ab = s.b - s.a;
+        const float denom = dot(ab, ab);
+        if (denom <= 0) continue;
+        float t = dot(p - s.a, ab) / denom;
+        t = t < 0 ? 0 : (t > 1 ? 1 : t);
+        const Vec3 q = s.a + ab * t;
+        const float d = length(q - p);
+        if (d < bd) bd = d, best = q;
+    }
+    return best;
 }
 
 }  // namespace nf::driving

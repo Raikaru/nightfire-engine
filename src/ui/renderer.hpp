@@ -56,6 +56,9 @@ public:
     // The whole texture.
     bool draw(std::uint32_t hash, Rect dst, Color color);
     void fill(Rect dst, Color color);
+    // Live video frame (movie playback): uploads/replaces the single dynamic texture and draws
+    // it over `dst`. Pixels are R-in-low-byte RGBA, like the sprite library.
+    void draw_frame(Rect dst, int width, int height, const std::uint32_t* rgba);
 
     // Texture size in texels, or {0,0} when missing.
     std::pair<std::uint32_t, std::uint32_t> texture_size(std::uint32_t hash) const;
@@ -71,7 +74,8 @@ private:
     void push_quad(Rect dst, float u0, float v0, float u1, float v1, Color color);
 
     const SpriteLibrary& sprites_;
-    GLuint program_ = 0, vao_ = 0, vbo_ = 0, white_ = 0, bound_ = 0;
+    GLuint program_ = 0, vao_ = 0, vbo_ = 0, white_ = 0, bound_ = 0, frame_ = 0;
+    int frame_w_ = 0, frame_h_ = 0;
     GLint u_size_ = -1;
     Blend blend_ = Blend::Alpha;
     std::unordered_map<std::uint32_t, GLuint> textures_;

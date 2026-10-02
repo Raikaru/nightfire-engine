@@ -34,8 +34,8 @@ int state_hostage_killer(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kStandAlert);
-        if (Drone* h = hostage_killer_of(d)) set_angle_to_obj(d, TargetRef::drone(h->id), 0.0f, true);
         return 1;
     case kMsgTick: {
         const int next = enemy_look_for_opponent(d);
@@ -59,6 +59,7 @@ int state_hostage_killer_attack(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         set_as_attacking(d);
         return 1;
     case kMsgTick:
@@ -82,6 +83,7 @@ int state_hostage(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kCrouch);
         return 1;
     case kMsgTick:
@@ -139,6 +141,7 @@ int state_hostage_idle(Drone& d, const Msg& m) {
 int state_hostage_hide(Drone& d, const Msg& m) {
     if (m.id == kMsgNone) return 1;
     if (m.id == kMsgEnter) {
+        d.flags |= flag::kAware;
         anim_call(d, 0, kCrouch);
         return 1;
     }
@@ -181,6 +184,7 @@ int state_civilian(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         stand_idle_anim(d, false);
         return 1;
     case kMsgTick: {
@@ -203,6 +207,7 @@ int state_civilian_scared(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         talk(d, Speech::CivilianScared);
         anim_call(d, 0, kStandAlertLook);
         set_idle_timeout(d, 2, 2);
@@ -222,6 +227,7 @@ int state_civilian_hiding(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kCrouch);
         set_idle_timeout(d, 10, 10);
         return 1;
@@ -240,6 +246,7 @@ int state_civilian_patrol(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         return 1;
     case kMsgTick:
         if (d.shot_at) {
@@ -259,6 +266,7 @@ int state_civilian_mission(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         refind_mission_path(d);
         return 1;
     case kMsgTick:
@@ -278,6 +286,7 @@ int state_civilian_mission_wait(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         stand_idle_anim(d, false);
         set_idle_timeout(d, 5, 5);
         return 1;
@@ -297,6 +306,7 @@ int state_kiko_mission(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         refind_mission_path(d);
         return 1;
     case kMsgTick:
@@ -312,6 +322,7 @@ int state_kiko_mission_run(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         refind_mission_path(d);
         return 1;
     case kMsgTick:
@@ -328,6 +339,7 @@ int state_enemy_mission(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         refind_mission_path(d);
         return 1;
     case kMsgTick: {
@@ -359,6 +371,7 @@ int state_party_girl(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         stand_idle_anim(d, false);
         return 1;
     case kMsgTick:
@@ -379,6 +392,7 @@ int state_civilian_guard(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kStandAlert);
         return 1;
     case kMsgTick: {
@@ -414,6 +428,7 @@ int state_ambush_wait(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kCrouch);
         return 1;
     case kMsgTick: {
@@ -431,6 +446,7 @@ int state_civilian_door_guard(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kStandAlert);
         set_idle_timeout(d, 4, 4);
         return 1;
@@ -474,6 +490,7 @@ int state_truck_driver_idle(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         stand_idle_anim(d, false);
         return 1;
     case kMsgTick: {
@@ -491,6 +508,7 @@ int state_truck_driver_mission(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         refind_mission_path(d);
         return 1;
     case kMsgTick:
@@ -507,6 +525,7 @@ int state_castle_chat_guard(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         stand_idle_anim(d, false);
         set_idle_timeout(d, 6, 6);
         return 1;
@@ -543,6 +562,7 @@ int state_interogate_assist_wait(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         stand_idle_anim(d, false);
         set_idle_timeout(d, 8, 8);
         return 1;
@@ -569,6 +589,7 @@ int state_interogate(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kChallenge);
         set_idle_timeout(d, 10, 5);
         return 1;
@@ -587,6 +608,7 @@ int state_interogate_walk(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         refind_mission_path(d);
         return 1;
     case kMsgTick:
@@ -603,6 +625,7 @@ int state_civilian_challenge(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         if (d.opponent.valid()) set_angle_to_obj(d, d.opponent, 0.0f, true);
         anim_call(d, 0, kChallenge);
         talk(d, Speech::Other);   // "Hold it right there"
@@ -627,6 +650,7 @@ int state_enemy_run_to_point(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         return 1;
     case kMsgTick: {
         const int next = enemy_look_for_opponent(d);
@@ -649,6 +673,7 @@ int state_run_away(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter: {
+        d.flags |= flag::kAware;
         SpExt& e = sx(d);
         e.scared_hiding = true;
         set_ai_goal(d, e.scary.pos, e.scary.radius);
@@ -674,6 +699,7 @@ int state_hide_from_scary(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kCrouch);
         return 1;
     case kMsgTick: {
@@ -705,6 +731,7 @@ int state_run_to_alarm(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter: {
+        d.flags |= flag::kAware;
         SpExt& e = sx(d);
         e.running_to_alarm = true;
         if (!find_alarm_point(d)) {

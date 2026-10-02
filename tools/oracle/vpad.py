@@ -17,8 +17,11 @@ import time
 
 from evdev import AbsInfo, UInput, ecodes as e
 
+# Linux evdev quirk (input-event-codes.h): BTN_NORTH is the X button (0x133, LEFT position) and
+# BTN_WEST is the Y button (0x134, TOP position) — the names do NOT mean top/left. Map by position:
+# DS2 Square is left, Triangle is top. Verified over PINE: each name now sets its own Sony bit.
 BUTTONS = {
-    "cross": e.BTN_SOUTH, "circle": e.BTN_EAST, "square": e.BTN_WEST, "triangle": e.BTN_NORTH,
+    "cross": e.BTN_SOUTH, "circle": e.BTN_EAST, "square": e.BTN_NORTH, "triangle": e.BTN_WEST,
     "start": e.BTN_START, "select": e.BTN_SELECT, "l1": e.BTN_TL, "r1": e.BTN_TR,
     "l3": e.BTN_THUMBL, "r3": e.BTN_THUMBR,
 }

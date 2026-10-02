@@ -142,6 +142,7 @@ private:
     std::vector<Sound> sounds_;
     std::vector<Message> messages_;
     std::vector<Music> music_;
+    std::vector<Light> lights_;
 };
 
 }  // namespace nf

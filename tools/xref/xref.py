@@ -145,4 +145,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BrokenPipeError:  # e.g. piped into `head`
+        sys.stderr.close()

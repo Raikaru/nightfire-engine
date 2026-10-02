@@ -131,11 +131,13 @@ detonation. Gadgets: stunner refund on world hits, grapple hook → `Player::beg
 (trigger detonates in flight, owner frozen), remote-mine/shaver detonators (pellets 0 → blow live charges),
 tripbomb proximity, smoke/stun visual-only blasts. Damage goes through `Player::hurt` (armour first, location
 and difficulty multipliers in `apply_player_pain`) and `DamageTarget` for bots/drones.
+
 First-person view: `viewmodel()` (gun offset + recoil/bob, muzzle flash timer/colour, hidden when scoped)
 drawn by `WeaponView` (`src/game/nfgame_weapon_view.cpp`) after the Z clear; `WeaponEffects`
 (`src/game/nfgame_effects.cpp`) draws impact decals/sparks/puffs, blood, explosion sprites, live projectile
-models and tracers from `WeaponEvents`, and owns the transient dynamic lights (muzzle, explosions, F2&0x2000
-projectiles) merged with the map lights for character lighting. Sounds reach `AudioSystem` via `GameAudio`;
+models and tracers from `WeaponEvents`, and owns the transient dynamic lights through Characters'
+`DynamicLights` (`muzzle()` for the flash, `create()` for explosions and F2&0x2000 projectiles, `lights_for()`
+for character lighting). Sounds reach `AudioSystem` via `GameAudio`;
 `WeaponSystem::fill_hud` fills the `HudState` weapon/ammo/aim/crosshair fields for the UI slice.
 Headless scripts (`--script`, `src/game/weapon_script.hpp`): `@frame hold/give/ammo/select/teleport/face/
 health/print/throw`; `--events` dumps sounds/impacts/explosions per tick.
@@ -177,9 +179,12 @@ messages (`to_hud_message`), clock/results text (`format_match_clock`, `describe
 
 - **Animated foot height.** `collbody+0xCC` is `sAnimObject+0x5C` (the sAnimObject starts at collbody+0x70):
   `AnimFrameResolve` sets it to the blended root-bone translation Y of the current pose plus `sAnimObject+0x60`,
-  times 0.8627321 in multiplayer (flag `+0x58 & 0x400` clear), and moves the object by the change of the root
-  translation. Player_Collision builds the capsule from it and Player_FeetOnPoint probes to it, and `pos.y`
-  moves by every change of it (measured: a frame's dy minus the collision push equals its change of
+  times 0.8627321 in multiplayer (flag `+0x58 & 0x400` clear). It moves the object by the change of the root
+  translation **while a transition script runs** (nfmips frame diffs); idle or in-air wobble of the height
+  leaves the body where it is. The port applies the height delta provisionally and reverts it
+  when the frame ends airborne outside a transition (`crouch_timer_ != 0` covers both directions across the
+  substate flip). Player_Collision builds the capsule from it and Player_FeetOnPoint probes to it, and `pos.y`
+  moves by every grounded change of it (measured: a frame's dy minus the collision push equals its change of
   `collbody+0xCC` exactly, both signs). Values for the multiplayer skin 0x05000089: 1.0328 idle, a 1.050..1.077
   double hump every ~13.5 frames at 60 Hz while walking, ~0.61 crouched, ~0.93 crouch-walking. `Player::stand_height`
   is the input: replays supply the recorded value, and the port keeps the idle value otherwise because the
@@ -470,3 +475,78 @@ plus the frame's displacement, with a script id). `collide()` pushes the capsule
 midpoint out of them (hits carry `placement == SIZE_MAX`) and a grounded player standing on one's top
 face is carried by `ride_displacement()`. [INFERENCE: the carry path is a reimplementation; no
 ACTION.ELF lift trace pins down the original's frame order.] Scripting/Driving own the per-tick update.
+
+## Single-player missions (`src/game/mission.*`, `objects.*`, `script_player.*`)
+
+`MissionSystem : System` runs the SP level flow for ACTION story maps (`0x070000xx`; DRIVING.ELF
+owns the `0x09` missions). `nfgame` builds one per SP level (never for arenas; `--no-mission`
+runs bare movement for oracle traces): `pre_tick` updates the objects before the players collide,
+the system phase runs objectives, scripts and channel sync.
+
+### Objectives (`Mission_MonitorObjectives`)
+
+One entry of `MissionData` per level (docs/formats.md): each objective watches a switch channel.
+Objectives with a `channel2` (neither 0 nor 255) start in state 1 and announce once it sets,
+the rest announce at level start; state 2 (inverted flags) fails the mission when its channel
+clears, state 3 completes when its channel sets; all channels set ends the mission
+(`Music_Event(8, 1)`, "mission complete" label `0x02000006`, 4 s hold, `Done`).
+Player death fails it (`0x04000034`, `Music_Event(6, 1)`); failure ends to
+`mission_fail_destination()` (the level OR `0x300000`, else `0x07000008`).
+`objectives()` exposes labels + states for the pause tab and results; `kills()` reads Bots'
+`SpSystem::stats.deaths`.
+
+Level-goal channels are mostly drone-driven, not trigger-driven (pinned against the GameCube
+`Trigger_Update`/`NDrone2_UpdateMissionRoute` counterparts: trigger touch/timer edges and the
+writer). NPC statics carry mission channels in class-15 params 3/6 (e.g. several L1 guards with 34/164):
+on the static side the OR-34 net folds the three guard-post touch latches (35/36/37), which stick
+once the player reaches them; on the drone side (Bots) each guard's channel latches at death
+(`SpSystem::notify_death`) and spawner completion latches its done channel. There is no
+live clear-on-last-death: once set, these channels stick (the multiplex re-eval only clears its
+output while ALL its inputs are clear, and touch inputs latch).
+`pre_tick` runs the object tick first (multiplex re-eval stores its outputs unconditionally),
+then OR-merges the drone channels (`SpSystem`: spawner completion, deaths, mission states) and
+exports the merged state back, so drone one-shot writes stay sticky in both stores even on
+numbers a multiplex also drives (e.g. 34/164); the system phase re-merges before evaluating
+objectives. `fail_mission`
+lets `SpSystem::on_mission_fail` fail the level through the same path as drone mission-fail events.
+
+### Dynamic objects (`parsemap_create_dynamic_objects`)
+
+`SpObjects` builds doors, triggers (+ Touch/TouchOnce/Multiplex/LoadLevel/MoviePlayer), switches,
+SS gates, breakables/destroyables, sensors/searchlights, turrets (copter/gun/shooter/creature),
+hurt volumes, mines, locks/monitors/fuseboxes, hints, sound/music triggers, pickups, thirdcams and
+script-player anchors from the map statics; everything else stays static. Doors open on proximity
+(flag 2), their unlock channel, or Cross (`activate_at`, shared with Movement's `Player_Activate`
+probe); lock edges freeze them with the "locked" line (`0x02000003`). Closed poses publish solid
+`Mover` AABBs and open poses move with the panel (spline tracks sampled by progress, swing
+otherwise [INFERENCE: hinge approximated at the placement origin]); the renderer hides the taken
+statics and draws the panels via `draw_objects`. Touch volumes latch channels, multiplex nets run
+AND/OR/fan-out/sequence logic, sensors trip alarm channels in their cones, breakables fall to
+bullets/blasts from the weapon events, pickups grant through `WeaponSystem`, turrets and mines
+hurt on range/proximity. Sounds, HUD texts, music events, drone spawns and level/movie requests
+queue out of the tick for the frontend.
+
+### Cutscenes (`Script_Run`, `Script_Update`, `Script_EventHandler`)
+
+`CutscenePlayer` runs one level `.bin` type-7 entry: stream times advance in 60 Hz frames, waits
+gate commands, cameras/entities interpolate the KEYED_POSROT keys (line/spline [INFERENCE: key
+assignment and spline weights]), and text/sound/fade/music/channel/drone/level/scriptcam events
+fire through the host. Script-player anchors auto-play level-start NIS cutscenes or fire on their
+trigger channel; `MoviePlayer` volumes play theirs on touch. While a camera runs, `nfgame` renders
+from it; `Script_FadeStart` drives a fullscreen fade value. Coder-spawns queue raw
+(`Drone_CoderCreate` args) for a Bots-owned hook; `Drone_EnableAll` maps onto `enable_drone`.
+
+### Level flow and loadouts
+
+`sp_level` order selects missions; `Trigger_LoadLevelCreate` volumes exit to their destination
+bin (blocker channel shows `0x0200021` while clear), `Trigger_MoviePlayer` to cutscenes.
+`apply_loadout` ports `Player_InitWeapon`'s per-level grants (PP7/taser/gadgets, sniper, PDW,
+crossbow, samurai laser); continuation levels restore the `RamSave` snapshot (weapons/ammo/armour)
+topped up when the pistol is missing. There are no mid-level checkpoints on the disc.
+`nfgame <gamedir> 07000005.bin --frames N [--shot out.bmp]` runs the first SP ACTION level
+("Breach the castle walls") headless; mission texts/music/transitions print to stdout.
+`--sp` adds Bots' drones (spawners, patrols, deaths, drone-written channels); `--trace f.jsonl`
+dumps the per-frame objective/channel log. `--no-mission` runs bare movement/collision (oracle
+traces), `--channel CH=VAL` presets a switch channel at start (debug hook for driving objective
+completion headless), and every channel transition logs as
+`mission channel: f<frame> ch <id> = <val>` for tracing objective drivers.

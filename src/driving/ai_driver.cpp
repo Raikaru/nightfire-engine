@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>  // rand (AI MG accuracy rolls; deterministic sequence)
 
 namespace nf::driving {
 namespace {
@@ -46,7 +47,7 @@ void AiDriver::reset(const Vec3& pos, float yaw, const TrackCollision& collision
     else vehicle_->reset(p, yaw);
     stuck_timer_ = 0;
     unstuck_phase_ = 0;
-    fire_timer_ = 1.0f;
+    // fire_timer_ keeps its spawn value (8 s grace: no spawn-camping).
 }
 
 Vec3 AiDriver::position() const {
@@ -71,6 +72,13 @@ Mat4 AiDriver::body_matrix() const {
         return {c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, heli_pos_[0], heli_pos_[1], heli_pos_[2], 1};
     }
     return vehicle_->model_matrix();
+}
+
+void AiDriver::nudge(const Vec3& dp) {
+    if (dyn_ == AiDynamics::Sled) sled_->nudge(dp);
+    else if (dyn_ == AiDynamics::Sub) sub_->nudge(dp);
+    else if (dyn_ == AiDynamics::Heli) heli_pos_ += dp;
+    else vehicle_->nudge(dp);
 }
 
 float AiDriver::speed() const {
@@ -120,13 +128,20 @@ AiEvents AiDriver::step(const Vec3& player_pos, const Vec3& player_vel, const Ro
         if (fire_timer_ <= 0) {
             const float pd = length(player_pos - heli_pos_);
             if (pd < 150.0f && pd > 8.0f) {
+                // Line of sight: hold fire through terrain (canopy/buildings block AI gunners).
+                SegmentHit blocked;
+                if (collision.segment_hit(heli_pos_, player_pos, blocked) &&
+                    blocked.t * pd < pd - 4.0f) {
+                    fire_timer_ = 1.0f;
+                    return ev;
+                }
                 const Vec3 dir = (player_pos - heli_pos_) * (1.0f / pd);
                 const Vec3 muzzle = heli_pos_ + dir * 4.0f;
                 if (weapons_.spec().machine_guns)
                     if (weapons_.fire_primary(now, muzzle, dir, 0.4f, sfx)) ++ev.shots_fired;
                 if (!weapons_.secondaries().empty())
                     if (weapons_.fire_secondary(now, muzzle, dir, false, projectiles, sfx)) ++ev.shots_fired;
-                fire_timer_ = 2.5f;
+                fire_timer_ = 4.0f;
             }
         }
         return ev;
@@ -207,7 +222,7 @@ AiEvents AiDriver::step(const Vec3& player_pos, const Vec3& player_vel, const Ro
                 const Vec3 lead = player_pos + player_vel * 0.5f;
                 in = lane_drive(pos, yaw, lead, cruise_speed_ + 14.0f);
                 aim = player_pos;
-                fire_range = 70.0f;
+                fire_range = 55.0f;
                 const float dist = length(player_pos - pos);
                 if (dist < 6.0f) ev.rammed_player = true;
                 break;
@@ -237,16 +252,25 @@ AiEvents AiDriver::step(const Vec3& player_pos, const Vec3& player_vel, const Ro
     if (fire_range > 0 && fire_timer_ <= 0 && !held && smoke_blind_ <= 0) {
         const Vec3 to = aim - pos;
         const float dist = length(to);
-        if (dist < fire_range && dist > 4.0f && dot(to * (1.0f / dist), fwd) > 0.5f) {
+        if (dist < fire_range && dist > 4.0f && dot(to * (1.0f / dist), fwd) > 0.65f) {
+            // Line of sight: no shooting through hills/buildings.
+            SegmentHit blocked;
+            if (collision.segment_hit(pos + Vec3{0, 1.0f, 0}, aim, blocked) &&
+                blocked.t * dist < dist - 3.0f) {
+                fire_timer_ = 1.0f;
+                return ev;
+            }
             const Vec3 dir = to * (1.0f / dist);
             const Vec3 muzzle = pos + dir * 3.0f + Vec3{0, 1.0f, 0};
             if (weapons_.spec().machine_guns) {
                 if (weapons_.fire_primary(now, muzzle, dir, 1.0f - accuracy_, sfx)) ++ev.shots_fired;
+                // Accuracy roll: some bursts chip the player (mission applies 2 hp).
+                if (dist < 45.0f && std::rand() < RAND_MAX * accuracy_ * 0.5) ev.mg_hit = true;
             }
-            if (!weapons_.secondaries().empty() && dist < 60.0f && dist > 10.0f) {
+            if (!weapons_.secondaries().empty() && dist < 50.0f && dist > 10.0f) {
                 if (weapons_.fire_secondary(now, muzzle, dir, false, projectiles, sfx)) ++ev.shots_fired;
             }
-            fire_timer_ = 1.5f + (1.0f - accuracy_) * 2.0f;
+            fire_timer_ = 2.5f + (1.0f - accuracy_) * 3.0f;
         }
     }
     (void)zones;

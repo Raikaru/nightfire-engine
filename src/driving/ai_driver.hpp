@@ -36,6 +36,7 @@ enum class AiDynamics : std::uint8_t { Car, Sled, Sub, Heli };
 struct AiEvents {
     int shots_fired = 0;
     bool rammed_player = false;
+    bool mg_hit = false;  // an MG burst struck the player (accuracy roll; mission damages)
 };
 
 class AiDriver {
@@ -66,6 +67,8 @@ public:
     WeaponSet& weapons() { return weapons_; }
     void set_heli_anchor(const Vec3& a) { heli_anchor_ = a; }
     const WeaponSet& weapons() const { return weapons_; }
+    void set_wake_range(float r) { wake_range_ = r; }  // per-spawn AIEl wake (clamped by caller)
+    void nudge(const Vec3& dp);                        // car-car separation (kind-dispatched)
     float speed() const;
     bool awake(const Vec3& player_pos) const;  // inside wake range
 
@@ -80,7 +83,7 @@ private:
     float wake_range_ = 400.0f;
     float stuck_timer_ = 0;     // CancelStuck: reversing recovery
     float unstuck_phase_ = 0;
-    float fire_timer_ = 0;      // AI fire rate (GetAccuracy/difficulty equivalent)
+    float fire_timer_ = 8.0f;   // spawn grace: AI holds fire for the opening seconds
     float smoke_blind_ = 0;     // seconds of lost target after smoke (GetBeenInSmoke)
     float accuracy_ = 0.6f;
     float cruise_speed_ = 14.0f;

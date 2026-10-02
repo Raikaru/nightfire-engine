@@ -31,7 +31,16 @@ std::vector<Frontend::Impl::WheelItem> Frontend::Impl::wheel_items(const std::ve
     return v;
 }
 
-std::vector<Frontend::Impl::WheelItem> Frontend::Impl::sp_level_items() const { return wheel_items(sp_data->levels); }
+std::vector<Frontend::Impl::WheelItem> Frontend::Impl::sp_level_items() const {
+    std::vector<WheelItem> items = wheel_items(sp_data->levels);
+    // Campaign unlocks (fresh saves open the first two missions): completed missions stay open
+    // and so does the mission after the furthest completed one (table order = campaign order).
+    int furthest = 1;
+    for (std::size_t i = 0; i < sp_data->levels.size(); ++i)
+        if (profile.completed(sp_data->levels[i].value)) furthest = std::max(furthest, int(i) + 1);
+    for (std::size_t i = 0; i < items.size() && i <= std::size_t(furthest); ++i) items[i].enabled = true;
+    return items;
+}
 std::vector<Frontend::Impl::WheelItem> Frontend::Impl::difficulty_items() const { return wheel_items(sp_data->difficulties); }
 
 // Menu_UpdateCodenameWheel: the five names around the current row, the "new codename" / "codename" picture and

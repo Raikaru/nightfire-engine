@@ -281,7 +281,28 @@ void Player::update(const ActionInput& input, const PlayerSettings& settings, co
     if ((sub < 8 || sub > 12) && sub != 16) aim(input, timing);
     pitch = std::clamp(pitch, -1.0f, 1.0f);   // Player_ViewClamping
 
-    pos[1] += stand_height - applied_height_;
+    // The animation keeps the feet planted: obj+0x30 follows every change of collbody+0xCC. The
+    // follow runs along the last supporting surface (the nearest floor-facing hit of the previous
+    // tick's cylinder pass; world Y when there was none), so first contact with a stair nosing
+    // deflects along its tread while flat ground behaves exactly like a vertical follow. Applied
+    // here so the capsule below is built from the shifted position; resolve_collisions reverts it
+    // for a non-transitioning crouch that ends the frame airborne and non-jumping. applied_height_
+    // tracks regardless.
+    last_height_delta_ = stand_height - applied_height_;
+    // Vertical while a crouch transition runs (the Stand2Crouch/Crouch2Stand root drops straight
+    // down); along the support afterwards, where first nosing contact deflects along its tread.
+    Vec3 follow = {0.0f, 1.0f, 0.0f};
+    if (crouch_timer_ == 0) {
+        for (const CollisionHit& h : last_cylinder_.hits) {
+            if (h.normal[1] > 0.5f) {
+                follow = h.normal;
+                break;
+            }
+        }
+    }
+    last_height_vec_ = follow * last_height_delta_;
+    pos += last_height_vec_;
+    if (std::getenv("NF_DH_PROBE")) std::fprintf(stderr, "DH d=%.6f dir=(%.4f,%.4f,%.4f) sub=%d pos=(%.4f,%.4f,%.4f)\n", last_height_delta_, follow[0], follow[1], follow[2], int(substate), pos[0], pos[1], pos[2]);
     applied_height_ = stand_height;
 
     const auto axes = orientation();
@@ -392,6 +413,12 @@ void Player::resolve_collisions(const CollisionWorld& world) {
         const Vec3 anchor = feet.ground ? feet.ground->point : pos;
         pos += object_world_->ride_displacement(anchor, capsule_radius);
     }
+    // Foot-height follow (see update) is already in pos; a non-transitioning crouch that ends the
+    // frame airborne and non-jumping reverts it: the animation leaves a wobbling height frozen out
+    // of the body there.
+    const bool frozen_air =
+        substate == SubState::Crouch && crouch_timer_ == 0 && jump_state == 0 && (body_flags & body::kOnGround) == 0;
+    if (frozen_air) pos -= last_height_vec_;
     if ((body_flags & body::kOnGround) != 0 && jump_state != 1) {
         velocity[1] = 0.0f;
         fall_velocity = {};
@@ -430,6 +457,8 @@ void Player::reset_motion(const Vec3& position, float new_yaw) {
     creep_dir_ = 0;
     creep_script_ = 0;
     icon_context_ = icon_next_ = 0xFF;
+    last_height_delta_ = 0.0f;
+    last_height_vec_ = {};
     vehicle_ = BoardedVehicle{};
     cam_mode_ = CamMode::FirstPerson;
     spawn_timer_ = 0;

@@ -604,7 +604,16 @@ struct AudioSystem::Impl {
             std::lock_guard lock(mutex);
             s = std::exchange(stream, nullptr);
         }
-        if (s) SDL_DestroyAudioStream(s);  // joins the callback, so it must not hold the mutex
+        // Pause first so the device thread issues no new callbacks, then lock the stream to wait
+        // out any in-flight one: SDL_DestroyAudioStream frees the queue and must not run while the
+        // audio thread is inside device_callback (SDL mutexes are recursive, so destroy alone does
+        // not exclude it). No locks are held here, so this cannot deadlock with the callback's render().
+        if (s) {
+            SDL_PauseAudioStreamDevice(s);
+            SDL_LockAudioStream(s);
+            SDL_UnlockAudioStream(s);
+            SDL_DestroyAudioStream(s);
+        }
         if (std::exchange(sdl_audio_started, false)) SDL_QuitSubSystem(SDL_INIT_AUDIO);
     }
 };

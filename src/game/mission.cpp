@@ -19,7 +19,8 @@ MissionSystem::MissionSystem(Level& level, std::uint32_t level_id, const Mission
     for (const MissionObjective& o : entry_.objectives) {
         Objective obj;
         obj.def = o;
-        obj.state = o.channel2 != 0 ? ObjectiveState::WaitSecond : ObjectiveState::Announce;
+        // `Mission_MonitorObjectives` treats both 0 and 255 as "no second channel".
+        obj.state = (o.channel2 != 0 && o.channel2 != 255) ? ObjectiveState::WaitSecond : ObjectiveState::Announce;
         objectives_.push_back(obj);
         if (o.channel != 0) channels_.set(int(o.channel), o.init != 0);
     }
@@ -29,7 +30,8 @@ MissionSystem::MissionSystem(Level& level, std::uint32_t level_id, const Mission
 MissionSystem::~MissionSystem() = default;
 
 void MissionSystem::add_scripts(std::vector<std::pair<std::uint32_t, CutsceneBin>> scripts) {
-    scripts_ = std::move(scripts);
+    // Append: frontends add entries one at a time (`session_sp`) or all at once (`nfgame`).
+    scripts_.insert(scripts_.end(), std::make_move_iterator(scripts.begin()), std::make_move_iterator(scripts.end()));
 }
 
 void MissionSystem::apply_loadout(int slot) {
@@ -123,7 +125,10 @@ void MissionSystem::ram_load(int slot, const Inventory& inv) {
 }
 
 void MissionSystem::pre_tick(World& world, const std::vector<bool>& use) {
-    // Touchers: live players plus SP drones (drones touch volumes, never use).
+    // NOTE: the drone-channel import lives after `objects_->tick` below: the multiplex
+    // re-eval unconditionally stores its outputs (e.g. OR-34/164), so importing before the
+    // tick would let it stomp drone one-shot writes (deaths, spawner completion) on shared
+    // numbers. Import-after + export-merged keeps drone 1-bits sticky in both stores.
     std::vector<SpObjects::Toucher> touchers;
     for (int i = 0; i < World::kMaxPlayers; ++i) {
         Player* p = world.player(i);
@@ -150,36 +155,43 @@ void MissionSystem::pre_tick(World& world, const std::vector<bool>& use) {
     }
     const float dt = 2.0f;  // pre_tick runs once per 30 Hz tick like the object updates
     objects_->tick(touchers, use, weapons_.events(), dt, &weapons_,
-                   [&](int slot, float dmg, DamageType type, const std::array<float, 3>& from) {
-                       Vec3 f{from[0], from[1], from[2]};
+                   [&](int slot, float dmg, DamageType type, const std::array<float, 3>&) {
                        weapons_.hurt_player(slot, dmg, type, -1);
-                       (void)f;
                    });
     world.objects().set_movers(objects_->movers());
-}
-
-void MissionSystem::sync_channels(World& world) {
+    // Import drone one-shot writes AFTER the object tick (multiplex re-eval above stores its
+    // outputs unconditionally), then export the merged state so drone 1-bits stay sticky.
+    if (sp_) {
+        for (int i = 0; i < 256; ++i)
+            if (sp_->channels.on(i)) channels_.set(i, true);
+    }
     for (int i = 0; i < 256; ++i) {
         const bool on = channels_.on(i);
         world.objects().set_channel(unsigned(i), on);  // ladders/icons read these
-        if (sp_) sp_->channels.set(i, on);             // spawners/cover read these
+        if (sp_) sp_->channels.set(i, on);
     }
 }
-
 void MissionSystem::play_script(std::uint32_t hash) {
     for (const auto& [h, bin] : scripts_) {
         if (h != hash) continue;
         auto player = std::make_unique<CutscenePlayer>(&bin, hash, this);
         player->play(false);
         players_.push_back(std::move(player));
+        std::printf("mission nis: %08x (%zu streams)\n", hash, bin.scripts.size());
         return;
     }
+    std::printf("mission nis: %08x missing!\n", hash);
 }
 
 void MissionSystem::tick(World& world, FrameTiming timing) {
     ++frame_;
     stats_.frames++;
-    sync_channels(world);
+    world_ = &world;
+    // Import drone-side writes (spawner completion, deaths, mission states) before evaluating.
+    if (sp_) {
+        for (int i = 0; i < 256; ++i)
+            if (sp_->channels.on(i)) channels_.set(i, true);
+    }
     // Script-player anchors: auto-play intros, channel edges for the rest.
     for (SpObjects::ScriptPlayerAnchor& a : objects_->script_players()) {
         if (a.started) continue;
@@ -225,6 +237,7 @@ void MissionSystem::tick(World& world, FrameTiming timing) {
             music_.push_back({int(m.id), m.value});
             if (hooks_.music) hooks_.music(int(m.id), m.value);
         }
+        for (const auto& l : p->take_lights()) lights_.push_back({l.pos, l.intensity, l.type});
     }
     // Re-enable the player when no cutscene holds it. Player death fails the mission.
     if (player_disabled_) {
@@ -244,6 +257,15 @@ void MissionSystem::tick(World& world, FrameTiming timing) {
     }
     if (state_ == State::Playing) monitor_objectives();
     update_state(timing);
+    // Poll-based channel watch for headless driver tracing.
+    for (int i = 0; i < 256; ++i) {
+        const bool on = channels_.on(i);
+        if (!watch_init_ || on != (channel_watch_[std::size_t(i)] != 0)) {
+            if (watch_init_) channel_log_.push_back({frame_, i, on});
+            channel_watch_[std::size_t(i)] = on ? 1 : 0;
+        }
+    }
+    watch_init_ = true;
     // Fade easing toward its target.
     if (fade_ != fade_target_) {
         const float step = fade_rate_ * frames / 60.0f;
@@ -267,7 +289,7 @@ void MissionSystem::monitor_objectives() {
             o.state = o.def.inverted() ? ObjectiveState::Monitored : ObjectiveState::DoneShown;
             break;
         case ObjectiveState::WaitSecond:
-            if (o.def.channel2 != 0 && channels_.on(int(o.def.channel2))) {
+            if (o.def.channel2 != 0 && o.def.channel2 != 255 && channels_.on(int(o.def.channel2))) {
                 texts_.push_back({o.def.label, 300, 2});
                 if (hooks_.message) hooks_.message(o.def.label, 300, 2);
                 o.state = o.def.inverted() ? ObjectiveState::Monitored : ObjectiveState::DoneShown;
@@ -351,6 +373,26 @@ std::vector<MissionSystem::Spawn> MissionSystem::take_spawns() {
     return out;
 }
 
+std::vector<MissionSystem::Light> MissionSystem::take_lights() {
+    std::vector<Light> out;
+    out.swap(lights_);
+    return out;
+}
+
+std::vector<MissionSystem::ChannelEvent> MissionSystem::take_channel_log() {
+    std::vector<ChannelEvent> out;
+    out.swap(channel_log_);
+    return out;
+}
+
+std::vector<MissionSystem::ObjectiveInfo> MissionSystem::objectives() const {
+    std::vector<ObjectiveInfo> out;
+    for (const Objective& o : objectives_) out.push_back({o.def, o.state});
+    return out;
+}
+
+std::uint64_t MissionSystem::kills() const { return sp_ ? sp_->stats.deaths : 0; }
+
 bool MissionSystem::channel(std::uint16_t ch) const { return channels_.on(int(ch)); }
 
 void MissionSystem::set_channel(std::uint16_t ch, std::uint8_t value) { channels_.set(int(ch), value != 0); }
@@ -387,7 +429,18 @@ void MissionSystem::camera_mode(std::uint32_t mode) { (void)mode; }  // `Player_
 
 void MissionSystem::disable_player(bool disable) {
     player_disabled_ = disable;
-    // The World pointer is only valid during tick(); the flag applies there.
+    if (world_ && world_->player(0)) {
+        if (disable) world_->player(0)->disable();
+        else world_->player(0)->enable();
+    }
+}
+
+void MissionSystem::fail_mission(std::uint32_t label) {
+    if (state_ != State::Playing) return;
+    state_ = State::Failed;
+    state_timer_ = 240;
+    fail_label_ = label;
+    music(6, 1);
 }
 
 void MissionSystem::ram_save() {

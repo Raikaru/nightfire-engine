@@ -25,7 +25,7 @@ namespace nf {
 //   +12 u8  channel      the switch channel this objective watches (0 = none)
 //   +13 u8  init         `Mission_Init` presets `switch_channels[channel] = init`
 //   +14 u8  spare2
-//   +15 u8  channel2     the announce channel of state 1 objectives (0 = none)
+//   +15 u8  channel2     the announce channel of state 1 objectives (0/255 = none)
 //   +16 u8  flags        bit 1 (0x02): the watched channel reads inverted
 //   +20 u32 state        runtime: 0 announce-when-reached, 1 wait for channel2, 2 monitored,
 //                        3 done-shown, 4 done, 5 failed (never stored on disc, always 0)

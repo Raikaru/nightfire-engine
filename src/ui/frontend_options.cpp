@@ -36,6 +36,16 @@ constexpr std::uint32_t kMpOptRadar = 0x10000128, kMpOptHandicap = 0x1000011C, k
 constexpr std::uint32_t kStyleList = 0x10000025, kInvertLabel = 0x100000C9;
 // P_CNCONTROLS style names (the original's 0x10000025 rows).
 constexpr std::uint32_t kStyleNames[8] = {0x82, 0x91, 0xA0, 0xAF, 0xBE, 0xCD, 0x100018B, 0x100019A};
+// Menu_DisplayControllerStyle (ACTION.ELF 0x1F3558, jumptable at 0x305F50; the Ghidra/IDA output
+// drops the 8 bodies, the completed switch was read from the cross-platform xref): per style the
+// label hash base and the T label. Diagram controls take base+[1,2,3,4,6,7,8,9,10,11,12,13],
+// 0x66 takes base+5, 0xc8 takes base, 0x163 and the 0x225 memo take T; the 0x61 glyphs hide.
+constexpr std::uint32_t kStyleBases[8] = {0x83, 0x92, 0xA1, 0xB0, 0xBF, 0xCE, 0x100018C, 0x100019B};
+constexpr std::uint32_t kStyleT[8] = {0x2F5, 0x2F6, 0x2F7, 0x2F8, 0x2F9, 0x2FA, 0x10001CD, 0x10001CE};
+constexpr std::uint32_t kStyleDiagram[12] = {0x10000062, 0x10000063, 0x10000064, 0x10000065, 0x10000067,
+                                              0x10000068, 0x10000069, 0x1000006A, 0x1000006B, 0x1000006C,
+                                              0x1000006D, 0x1000006E};
+constexpr std::uint32_t kStyleOffsets[12] = {1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13};
 // P_CNAVOPTIONS sliders and radios (page 0x31).
 constexpr std::uint32_t kMusicSlider = 0x10000135, kSfxSlider = 0x10000134, kSubRadio = 0x10000136,
                         kSplitRadio = 0x1000019A, kSpeakerRadio = 0x10000198, kWideRadio = 0x10000223;
@@ -119,8 +129,8 @@ bool Frontend::Impl::c_sb_cn_options(ui::Control& c, const ui::Msg& m) {
             if (row >= 0 && row < 6) {
                 change_page_close_iris(kHubPages[row], kHubFader);
             } else {
-                // Row 6 saves the codename. No memory card: say so and stay.
-                option_box(label(0x10000BB), true, 9, 0x10001D6);
+                save_profile_snapshot();  // row 6 writes the codename file (was the card save)
+                set_text(kHubName, profile_name);
             }
             break;
         }
@@ -129,38 +139,66 @@ bool Frontend::Impl::c_sb_cn_options(ui::Control& c, const ui::Msg& m) {
     return true;
 }
 
-// P_CNSELECT: the codename wheel. Row 0 is "new codename", row 1 the in-memory profile.
+// P_CNSELECT: the codename wheel. Row 0 is "new codename", the rest are saved profiles
+// (Menu_SelectCodenameInControl lists the card codenames; here the profile files).
 bool Frontend::Impl::p_cn_select(ui::Control&, const ui::Msg& m) {
     if (m.type == kPageShown) {
         iris_start(m.a == kPageMain ? 0 : 4, kCnFader);
         set_text(kCnRows, " ");
-        send(kCnScroll, kScrollSet, 1);  // default to the profile row (cf. Menu_SelectCodenameInControl)
+        saved_profiles = nf::list_profiles();
+        // Range here too (the 0x51 creation message predates the listing).
+        send(kCnScroll, kScrollRange, 0, std::uint32_t(saved_profiles.size()));
+        send(kCnScroll, kScrollSet, saved_profiles.empty() ? 0 : 1);
     } else if (m.type == kIdle) {
         iris_play(true, kCnFader);
+        unsigned type = 0;
+        const unsigned answer = take_box_answer(&type);
+        if (type == 10 && answer == 1 && delete_armed < saved_profiles.size()) {
+            nf::delete_profile(saved_profiles[delete_armed]);
+            saved_profiles = nf::list_profiles();
+        }
+        delete_armed = std::size_t(-1);
     }
     return true;
 }
 
 bool Frontend::Impl::c_sb_cn_select(ui::Control& c, const ui::Msg& m) {
     switch (m.type) {
-        case 0x51: mgr->send_to(c, ui::Msg{kScrollRange, 0, 1}); break;
+        case 0x51:
+            mgr->send_to(c, ui::Msg{kScrollRange, 0, std::uint32_t(saved_profiles.size())});
+            break;
         case 0x49: case 0x54: {
-            // Menu_SelectCodenameInControl without a card: "new" + the default codename.
-            // (A typed profile name is used on accept; the wheel shows the default label.)
-            std::vector<WheelItem> items(2);
+            std::vector<WheelItem> items(saved_profiles.size() + 1);
             items[0].name = 0x1F5;  // "Enter New Codename"
             items[0].enabled = true;
-            items[1].name = (mp_data && mp_data->codenames.size() > 1) ? mp_data->codenames[1].name : 0;
-            items[1].enabled = true;
             update_wheel(c, items, kCnRows, kCnImage, kCnDesc, kCnFader, m.type == 0x49);
+            // Saved names are literals: patch the visible rows showing them (row i+1).
+            const int value = mgr->send_to(c, ui::Msg{kScrollGet});
+            for (int i = 0; i < 5; ++i) {
+                const int item = value - 2 + i;
+                if (item >= 1 && std::size_t(item - 1) < saved_profiles.size())
+                    send_ex(kCnRows, std::uint32_t(i), kSetText, saved_profiles[std::size_t(item - 1)]);
+            }
             break;
         }
         case kAccept: {
             const int row = mgr->send_to(c, ui::Msg{kScrollGet});
-            if (row == 0) {
+            if (row <= 0) {
                 change_page_close_iris(kPageCnName, kCnFader);
-            } else {
-                change_page_close_iris(kPageCnMenu, kCnFader);
+            } else if (std::size_t(row - 1) < saved_profiles.size()) {
+                if (auto loaded = nf::load_profile(saved_profiles[std::size_t(row - 1)])) {
+                    apply_profile(*std::move(loaded));
+                    change_page_close_iris(kPageCnMenu, kCnFader);
+                }
+            }
+            break;
+        }
+        case kAlt: {
+            // Circle deletes the highlighted profile (the original's 0x5e row).
+            const int row = mgr->send_to(c, ui::Msg{kScrollGet});
+            if (row > 0 && std::size_t(row - 1) < saved_profiles.size()) {
+                delete_armed = std::size_t(row - 1);
+                option_box(label(0x10002D3), false, 10, 0x266);
             }
             break;
         }
@@ -182,24 +220,29 @@ bool Frontend::Impl::p_cn_name(ui::Control&, const ui::Msg& m) {
     return true;
 }
 
-// C_KEYBOARD: the pressed button's own label is the key (A-Z, 0-9, Space, Del, End).
+// C_KEYBOARD: letter/digit buttons append their label; the three sprite-only keys (no 0x18 label)
+// dispatch by control index like the original (1000 Del, 0x3e9 Space, 0x3ea End). End skips the
+// original's Menu_IsValidCodename box: any nonempty entry is accepted.
 bool Frontend::Impl::c_keyboard(ui::Control& c, const ui::Msg& m) {
     if (m.type != kAccept && m.type != kRepeat) return true;
-    const std::string key = label(c.label.text_hash);
-    if (key == "End") {
+    if (c.index == 0x3ea) {
         if (!name_entry.empty()) {
             profile_name = name_entry;
+            profile.name = name_entry;  // new codename keeps the session; hub save writes it
             change_page_close_iris(kPageCnMenu, kCnFader);
         }
-    } else if (key == "Del") {
+    } else if (c.index == 1000) {
         if (!name_entry.empty()) name_entry.pop_back();
         set_text(kNameText, name_entry);
-    } else if (key == "Space") {
+    } else if (c.index == 0x3e9) {
         if (name_entry.size() < 8) name_entry.push_back(' ');
         set_text(kNameText, name_entry);
-    } else if (key.size() == 1 && name_entry.size() < 8) {
-        name_entry.push_back(key[0]);
-        set_text(kNameText, name_entry);
+    } else {
+        const std::string key = label(c.label.text_hash);
+        if (key.size() == 1 && name_entry.size() < 8) {
+            name_entry.push_back(key[0]);
+            set_text(kNameText, name_entry);
+        }
     }
     return true;
 }
@@ -257,13 +300,14 @@ bool Frontend::Impl::p_cn_mp_options(ui::Control&, const ui::Msg& m) {
 }
 
 // P_CNCONTROLS: the controller style radio (8 styles, the P_CNCONTROLS label set) plus Y-axis
-// inversion. The style diagrams stay script-side.
+// inversion, and the per-style button diagram (Menu_DisplayControllerStyle).
 bool Frontend::Impl::p_cn_controls(ui::Control&, const ui::Msg& m) {
     if (m.type == kPageShown) {
         send(kStyleList, kClear);
         for (std::uint32_t i = 0; i < 8; ++i)
             mgr->send(kStyleList, kAddItem, label(kStyleNames[i]), i);
         send(kStyleList, kSelectValue, std::uint32_t(std::clamp(player_options.controller_style, 0, 7)));
+        display_controller_style();
         if (!player_options.invert_y)
             set_label(kInvertLabel, 0x3BD);  // "Normal"
         else
@@ -272,11 +316,24 @@ bool Frontend::Impl::p_cn_controls(ui::Control&, const ui::Msg& m) {
     return true;
 }
 
-// C_RBCONTROL: picking a style stores it (Menu_DisplayControllerStyle refreshes the diagram).
+// C_RBCONTROL: picking a style stores it and refreshes the diagram.
 bool Frontend::Impl::c_rb_control(ui::Control& c, const ui::Msg& m) {
-    if (m.type == kAccept || m.type == 0x49 || m.type == 0x54)
+    if (m.type == kAccept || m.type == 0x49 || m.type == 0x54) {
         player_options.controller_style = mgr->send_to(c, ui::Msg{kGetValue});
+        display_controller_style();
+    }
     return true;
+}
+
+// Menu_DisplayControllerStyle: the per-style diagram labels (see the tables above).
+void Frontend::Impl::display_controller_style() {
+    const int style = std::clamp(player_options.controller_style, 0, 7);
+    for (std::size_t i = 0; i < 12; ++i) set_label(kStyleDiagram[i], kStyleBases[style] + kStyleOffsets[i]);
+    set_label(0x10000066, kStyleBases[style] + 5);
+    set_label(0x100000C8, kStyleBases[style]);
+    set_label(0x10000163, kStyleT[style]);
+    set_label(0x10000225, kStyleT[style]);
+    send(0x10000061, kSetFlags, 1);
 }
 
 // C_KEYPAD: toggles Y-axis inversion.
@@ -313,6 +370,10 @@ bool Frontend::Impl::p_cn_av_options(ui::Control&, const ui::Msg& m) {
         options.music_volume = mgr->send(kMusicSlider, kScrollGet) * 5;
         options.sfx_volume = mgr->send(kSfxSlider, kScrollGet) * 5;
     } else if (m.type == kAccept) {
+        // Accepts bubble here as well as to the source control's own navigation script (Credits label,
+        // Trailer button): when the source carries its own script the script wins, otherwise the accept
+        // would pop back to the hub underneath the scripted transition on a revisiting page.
+        if (m.cb && m.cb->def && !m.cb->def->scripts.empty() && (m.cb->type == 1 || m.cb->type == 5)) return true;
         // Accept on the confirm button (0x138) keeps the edits (volumes already applied live).
         av_confirmed = true;
         options.subtitles = mgr->send(kSubRadio, kGetValue) != 0;

@@ -121,27 +121,105 @@ float distance_to_ai_point(const Drone& d) {
     return std::sqrt(dx * dx + dz * dz);
 }
 
-void refind_mission_path(Drone& d) {
-    // NDrone2_ReFindMissionPath: re-anchor the patrol at the mission-route node nearest the drone and
-    // make it the AI goal, so the GoToGoalPosition transition walks back onto the path.
-    if (!d.nav || !d.sys->nav()) return;
-    const NavNetwork& net = *d.sys->nav();
-    const NavRoute& mr = d.nav->mission_route();
-    if (!mr.valid() || mr.path < 0 || std::size_t(mr.path) >= net.paths().size()) return;
-    const NavPath& path = net.paths()[std::size_t(mr.path)];
-    const Vec3 f = d.nav_pos();
-    const NavNode* best = nullptr;
-    float best_d2 = 1e18f;
-    for (const std::uint16_t id : mr.nodes) {
-        if (id >= path.nodes.size()) continue;
-        const NavNode& n = path.nodes[id];
-        const float dx = f[0] - n.pos[0], dz = f[2] - n.pos[2];
+RefindChoice choose_mission_node(const std::vector<Vec3>& nodes, const Vec3& feet, bool stationary, bool has_opp,
+                                 const Vec3& opp, const std::function<int(const Vec3&)>& find_cel,
+                                 const std::function<int(const CelPos&, const CelPos&)>& move_test,
+                                 const std::function<int(const Vec3&, float)>& move_to_goal) {
+    // NDrone2_ReFindMissionPath 0x1542c0 decision core: full scan over the mission-route nodes (the
+    // original never early-exits: every node gets a MoveTest unless the drone is stationary). Empty route
+    // = opponent goal with no MoveToGoal call. The setup path (nothing reachable) runs MoveToGoalPosition
+    // on the nearest node: verdicts 0-3 take SetState(99,0), 4+ falls through to the opponent goal.
+    RefindChoice out;
+    if (nodes.empty()) {
+        if (has_opp) {
+            out.pos = opp;
+            out.radius = 2.0f;
+            out.has_choice = true;
+        }
+        return out;
+    }
+    const CelPos from{feet, find_cel(feet)};
+    float reach_d2 = 1e18f, near_d2 = 1e18f;
+    std::size_t reach_pos = 0, near_pos = 0;
+    Vec3 reach{}, near{};
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        const Vec3& n = nodes[i];
+        const float dx = feet[0] - n[0], dz = feet[2] - n[2];
         const float d2 = dx * dx + dz * dz;
-        if (d2 < best_d2) {
-            best_d2 = d2;
-            best = &n;
+        if (d2 < near_d2) {
+            near_d2 = d2;
+            near_pos = i;
+            near = n;
+        }
+        if (stationary) continue;
+        if (move_test(from, {n, find_cel(n)}) == 1 && d2 < reach_d2) {
+            reach_d2 = d2;
+            reach_pos = i;
+            reach = n;
         }
     }
-    if (best) set_ai_goal(d, best->pos, 2.0f);
+    if (reach_d2 < 1e18f) {
+        // Move path: the route is (re)built by MoveToGoalPosition; its verdict is ignored, never SetState.
+        out.move_goal_called = true;
+        move_to_goal(reach, 2.0f);
+        out.found = true;
+        out.selected = true;
+        out.has_choice = true;
+        out.position = reach_pos;
+        out.pos = reach;
+        out.radius = 2.0f;
+        return out;
+    }
+    out.move_goal_called = true;
+    if (move_to_goal(near, 1.0f) <= 3) {
+        out.selected = true;
+        out.has_choice = true;
+        out.position = near_pos;
+        out.pos = near;
+        out.radius = 1.0f;
+        out.goto_goal_state = true;
+        return out;
+    }
+    if (has_opp) {
+        out.pos = opp;
+        out.radius = 2.0f;
+        out.has_choice = true;
+    }
+    return out;
+}
+
+void refind_mission_path(Drone& d) {
+    // NDrone2_ReFindMissionPath 0x1542c0: re-anchor the mission route at the nearest reachable node and
+    // point the AI goal at it (radius 2.0), so the GoToGoalPosition transition walks back onto the path.
+    // With no reachable node the goal is the nearest node anyway (radius 1.0) plus the GoToGoalPosition
+    // state when the route rebuild succeeds (verdict 0-3), else the player position (radius 2.0). With no
+    // mission route at all the goal is the player position. The mission index tracks the selected array
+    // position (EE +0x9f0); with no selection it is left alone.
+    if (!d.nav || !d.sys->nav()) return;
+    NavNetwork& net = *d.sys->nav();
+    const NavRoute& mr = d.nav->mission_route();
+    if (!mr.valid() || mr.path < 0 || std::size_t(mr.path) >= net.paths().size() || mr.nodes.empty()) {
+        if (d.opponent.valid()) set_ai_goal(d, target_pos(*d.sys, d.opponent), 2.0f);
+        return;
+    }
+    const NavPath& path = net.paths()[std::size_t(mr.path)];
+    std::vector<Vec3> nodes;
+    nodes.reserve(mr.nodes.size());
+    for (const std::uint16_t id : mr.nodes) {
+        if (id >= path.nodes.size()) continue;
+        nodes.push_back(path.nodes[id].pos);
+    }
+    const Vec3 f = d.nav_pos();
+    const bool stationary = (d.flags & flag::kStationary) != 0;
+    const bool has_opp = d.opponent.valid();
+    const Vec3 opp = has_opp ? target_pos(*d.sys, d.opponent) : Vec3{};
+    RefindChoice c = choose_mission_node(
+        nodes, f, stationary, has_opp, opp, [&](const Vec3& p) { return net.find_cel(p); },
+        [&](const CelPos& a, const CelPos& b) { return net.move_test(a, b); },
+        [&](const Vec3& p, float r) { return move_to_goal_position(d, p, r); });
+    if (!c.has_choice) return;
+    if (c.selected) d.nav->mission_route().index = int(c.position);
+    set_ai_goal(d, c.pos, c.radius);
+    if (c.goto_goal_state) d.set_state(st::kStGoToGoalPosition, 0);
 }
 }  // namespace nf::sp

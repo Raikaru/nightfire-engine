@@ -319,6 +319,7 @@ void cyl_geom(const Collision& c, Local& h, Found& d, Vec3& delta, std::size_t& 
                 if (ns < -kFacingCos && s < 0.5f) continue;
                 p = h.a + seg0 * s;
                 near_tri = dist_to_tri(p, v0, v1, v2, n, pd);
+                if (std::getenv("NF_CYL_PROBE")) std::fprintf(stderr, "CYL t=%zu cap_a=(%.6f,%.6f,%.6f) cap_b=(%.6f,%.6f,%.6f) ns=%.9g s=%.6f p=(%.6f,%.6f,%.6f) flag=%u dist=%.9g\n", t, h.a[0], h.a[1], h.a[2], h.b[0], h.b[1], h.b[2], ns, s, p[0], p[1], p[2], near_tri.flag, near_tri.dist);
                 if (near_tri.flag != 0 && near_tri.flag != 0x63) {
                     // Outside the face: re-aim at the axis point closest to the triangle's nearest point.
                     const Vec3 seg = h.b - h.a;
@@ -354,6 +355,7 @@ void cyl_geom(const Collision& c, Local& h, Found& d, Vec3& delta, std::size_t& 
                 const Vec3 dir = dist == 0.0f ? Vec3{0, 0, 0} : diff * (1.0f / dist);
                 if (h.radius <= dist) continue;
                 const Vec3 push = dir * (h.radius - dist);
+                if (std::getenv("NF_CYL_PROBE")) std::fprintf(stderr, "CYL t=%zu PUSH (%.6f,%.6f,%.6f)\n", t, push[0], push[1], push[2]);
                 delta += push;
                 qmin += push;
                 qmax += push;
@@ -661,6 +663,7 @@ CylinderResult CollisionWorld::cylinder(const CylinderQuery& q) const {
         h.contact = res.contact;
         Found d;
         d.flags = std::uint8_t(q.hit & 0xFF);
+        if (std::getenv("NF_CYL_PROBE")) std::fprintf(stderr, "CYLACE pl=%zu\n", item.placement);
         Vec3 delta{};
         cyl_geom(*item.coll, h, d, delta, stats_.triangles_tested);
         float dist;

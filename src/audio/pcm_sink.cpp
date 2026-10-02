@@ -39,7 +39,15 @@ bool PcmSink::open() {
 }
 
 void PcmSink::close() {
-    if (stream_) SDL_DestroyAudioStream(std::exchange(stream_, nullptr));  // joins the callback
+    // Pause, then lock the stream to wait out any in-flight callback before destroying it:
+    // SDL_DestroyAudioStream frees the queue while the audio thread may still be inside callback
+    // (SDL mutexes are recursive, so destroy alone does not exclude it). See AudioSystem::close_device.
+    if (SDL_AudioStream* s = std::exchange(stream_, nullptr)) {
+        SDL_PauseAudioStreamDevice(s);
+        SDL_LockAudioStream(s);
+        SDL_UnlockAudioStream(s);
+        SDL_DestroyAudioStream(s);
+    }
     if (std::exchange(sdl_started_, false)) SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 

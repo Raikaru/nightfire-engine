@@ -24,10 +24,22 @@ public:
     };
 
     static RoadNetwork build(const std::vector<RoadSeg>& segs);
-
     bool empty() const { return nodes_.empty(); }
     std::size_t size() const { return nodes_.size(); }
     const Node& node(std::size_t i) const { return nodes_[i]; }
+    // Route-first construction from ordered lane points (MissionData::route): node i looks
+    // down the route, linked i -> i+1. Used on every track; build() stays for rs chains.
+    static RoadNetwork build_route(const std::vector<Vec3>& points);
+    // Spliced route: `walk` (indices into `base`) with `rs`-lane bridges spliced across
+    // index-order jumps. The `rn` route skips corner nodes the `rs` lanes keep (a 110 m
+    // jump where the street turns), which strands lookahead steering; the bridge follows
+    // real lane segments instead. Unbridged jumps stay jumps (existing guards handle them).
+    static RoadNetwork splice_jumps(const RoadNetwork& base, const std::vector<int>& walk,
+                                    const std::vector<RoadSeg>& lanes);
+    // Snap a steering target onto the nearest graded lane (same lane filter as the
+    // bridges). `rn` waypoints wander off the graded surface (rocks, berms); the lanes
+    // are what wheels belong on. Returns `p` unchanged when no lane is near.
+    static Vec3 snap_to_lanes(const std::vector<RoadSeg>& lanes_in, const Vec3& p, float max_dist);
 
     // Nearest node to p (full scan; networks are small: 811 segments in Paris).
     int nearest(const Vec3& p) const;

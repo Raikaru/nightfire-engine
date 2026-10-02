@@ -6,6 +6,8 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
+#include "assets/credit_data.hpp"
 #include "assets/mp_data.hpp"
 #include "assets/sp_menu.hpp"
 #include "assets/ui_assets.hpp"
@@ -19,14 +21,18 @@ namespace nf {
 struct Frontend::Impl : ui::MenuHost {
     using Handler = bool (Impl::*)(ui::Control&, const ui::Msg&);
 
-    Impl(const UiAssets& a, const MenuFile& m, const MpData* mp_data, const SpMenuData* sp_data);
+    Impl(const UiAssets& a, const MenuFile& m, const MpData* mp_data, const SpMenuData* sp_data,
+         const TweakData* tweaks);
 
     const UiAssets& assets;
     const MenuFile& menu;
     const MpData* mp_data;
     const SpMenuData* sp_data;
+    const TweakData* tweak_data;         // dev-menu tables (may be null outside level menus)
     std::unique_ptr<MpSetup> mp;
     std::unique_ptr<ui::MenuManager> mgr;
+    std::map<std::uint32_t, float> tweak_vars;  // live tuning values by scroll control
+    std::uint32_t nis_request = 0;       // C_NIS accept: script hash for the game to play
     FrontendResult result;
     FrontendMode mode = FrontendMode::MainMenu;
     std::unordered_map<std::uint32_t, Handler> handlers;
@@ -41,20 +47,32 @@ struct Frontend::Impl : ui::MenuHost {
     GameOptions options;             // session options (options/AV/controls/MP-options/screen pages)
     MissionResults mission_results;  // mission results screens (P_NFRESULTS and friends)
     DebriefInfo debrief;             // P_MPDEBRIEFING table
-    std::string profile_name = "Bond";  // in-memory codename (no memory card: typed on P_CNNAME)
+    std::string profile_name = "Bond";  // active codename (profiles replace the memory card)
+    Profile profile;                     // active save (fresh until a profile loads)
+    std::vector<std::string> saved_profiles;  // codenames with files (P_CNSELECT wheel)
+    std::size_t delete_armed = std::size_t(-1);  // P_CNSELECT circle: profile pending delete
+    void apply_profile(Profile profile);
+    bool save_profile_snapshot();
     std::map<std::uint32_t, int> tweaks;     // P_TWEAKS/P_TWEAKS2 cheats by control id (C_CH*)
     std::string name_entry;          // P_CNNAME letter grid buffer (max 8 chars)
-    bool av_confirmed = false;       // P_CNAVOPTIONS 0x138: keep slider/radio edits on hide
+    bool av_confirmed = false;       // P_CNAVOPTIONS confirm keeps slider/radio edits
     int screen_entry_x = 0, screen_entry_y = 0;  // P_SCREENADJUST entry values (0x6b restores)
     bool options_dirty = false;      // P_CNOPTIONS/P_CNMPOPTIONS accept: hub triangle asks (cGpffff8eb7)
     DossierInfo dossier;             // dossier pages (P_DS*), set by the game
     std::optional<MpLaunch> last_mp_launch;  // P_MPDEBRIEFING Replay restarts it
-    int movie_frames = 0;            // movie placeholder pages: idle frames before auto-advance
-
+    int movie_frames = 0;            // movie pages: idle frames before the fallback transition
+    std::uint32_t pending_movie = 0;  // PSS id the game should play (take_movie_request)
+    bool movie_taken = false;        // the game took the request and owns the transition
+    std::uint32_t movie_source = 0;  // page id the movie page came from
+    std::vector<CreditRow> credits;  // P_CREDITS roll (set_credits; empty = script text)
+    std::size_t credit_cursor = 0;   // next table row to assign
+    unsigned credit_slot = 0;        // label-pair index 0..25 being filled
+    int credit_tick = 0;             // ticks since show (14 per row)
+    std::uint32_t credit_source = 0;  // page id the credits came from (wingame -> main menu)
+    bool credits_done_ = false;      // the end transition already ran
     bool handle(ui::MenuManager& m, ui::Control& ctrl, const ui::Msg& msg) override;
 
     void after_update();             // MenuManager_Monitor
-
     // ---- helpers the handlers share (Menu_Send & friends) ----
     int send(std::uint32_t control, std::uint32_t type, std::uint32_t a = 0, std::uint32_t b = 0) {
         return mgr->send(control, type, a, b);
@@ -86,8 +104,6 @@ struct Frontend::Impl : ui::MenuHost {
     bool p_start(ui::Control&, const ui::Msg&);
     bool p_main(ui::Control&, const ui::Msg&);
     bool p_paris_enum(ui::Control&, const ui::Msg&);
-    bool p_esthero(ui::Control&, const ui::Msg&);
-    bool p_intro(ui::Control&, const ui::Msg&);
     bool p_language(ui::Control&, const ui::Msg&);
     bool c_language(ui::Control&, const ui::Msg&);
     bool c_go_nightfire(ui::Control&, const ui::Msg&);
@@ -185,6 +201,7 @@ struct Frontend::Impl : ui::MenuHost {
     bool p_cn_mp_options(ui::Control&, const ui::Msg&);
     bool p_cn_controls(ui::Control&, const ui::Msg&);
     bool c_rb_control(ui::Control&, const ui::Msg&);
+    void display_controller_style();
     bool c_keypad(ui::Control&, const ui::Msg&);
     bool p_cn_av_options(ui::Control&, const ui::Msg&);
     bool p_screen_adjust(ui::Control&, const ui::Msg&);
@@ -202,15 +219,18 @@ struct Frontend::Impl : ui::MenuHost {
     bool p_nf_results(ui::Control&, const ui::Msg&);
     bool p_nf_stats(ui::Control&, const ui::Msg&);
     bool p_nf_bonus(ui::Control&, const ui::Msg&);
-    bool p_wingame(ui::Control&, const ui::Msg&);
     bool p_mp_debriefing(ui::Control&, const ui::Msg&);
     bool p_movie(ui::Control&, const ui::Msg&);
+    void movie_finished();
+    bool p_credits(ui::Control&, const ui::Msg&);
+    void assign_credit_row(unsigned slot, const CreditRow& row);
     // ---- frontend_level.cpp ----
     bool p_end_mission(ui::Control&, const ui::Msg&);
     bool p_nis(ui::Control&, const ui::Msg&);
     bool c_nis(ui::Control&, const ui::Msg&);
     bool p_cheat_medal(ui::Control&, const ui::Msg&);
     bool p_tweaks(ui::Control&, const ui::Msg&);
+    void refresh_tweak_values(bool second);
     bool p_tweaks_cheat(ui::Control&, const ui::Msg&);
 };
 

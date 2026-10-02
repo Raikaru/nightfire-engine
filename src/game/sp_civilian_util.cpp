@@ -8,12 +8,17 @@ namespace nf::sp {
 using namespace nf::drone;
 
 bool check_surrender(const Drone& d) {
-    // NDrone2_CheckSurrender 0x14a060.
+    // NDrone2_CheckSurrender 0x14a060 as used by DroneFunc_FirstSightState: behaviour bit 0x43, an
+    // opponent, alertness < 0.66, within 2.0 m with the target facing away (|0x1d4| > 2.094 = 120 deg),
+    // visible (bone 5), the target armed, and the target facing the drone (BondIsFacingMe, 45 deg).
     if (!d.has_beh(beh::kMaySurrender)) return false;
     if (!d.opponent.valid()) return false;
     if (d.alertness >= 0.66f) return false;
     if (d.opp_dist >= 2.0f) return false;
-    return true;
+    if (std::fabs(d.opp_facing_b) <= 2.0943952f) return false;
+    if (!can_see_object(const_cast<Drone&>(d), d.opponent, 5)) return false;
+    if (!opponent_armed(d)) return false;
+    return opponent_facing_me(d, 45.0f);
 }
 
 void mission_fail(Drone& d, int reason, std::uint32_t label) {
@@ -87,6 +92,61 @@ void release_waiting(Drone& d) {
     if (d.dtype == 0x17) d.set_state(kStTruckDriverInit);
     else if (d.script_id == 0 || d.script_id == 0x6000000) d.set_state(d.initial_state);
     else d.set_state(kStPlayScript);
+}
+
+bool cover_usable(Drone& d, std::size_t index) {
+    const SpSystem& sp = sp_of(d);
+    const CoverNodeDef& n = sp.level().cover_nodes[index];
+    if (n.require_on != 0 && !sp.channels.on(n.require_on)) return false;
+    if (n.require_off != 0 && sp.channels.on(n.require_off)) return false;
+    for (Drone* o : sp_of(d).sp_drones()) {
+        if (o != &d && sx(*o).cover_node == int(index)) return false;
+    }
+    return true;
+}
+
+bool cover_available(Drone& d) {
+    // NDrone2_CoverAvailable: needs an opponent and free cover (Drone+0x4f8 & 0x1000 not set).
+    if (!d.opponent.valid()) return false;
+    if (d.flags & flag::kCoverClaimed) return false;
+    const SpLevel& level = sp_of(d).level();
+    for (std::size_t i = 0; i < level.cover_nodes.size(); ++i)
+        if (cover_usable(d, i)) return true;
+    return false;
+}
+
+bool find_cover(Drone& d) {
+    SpExt& e = sx(d);
+    const SpLevel& level = sp_of(d).level();
+    const Vec3 f = d.feet();
+    int best = -1;
+    float best_d2 = 1e18f;
+    for (std::size_t i = 0; i < level.cover_nodes.size(); ++i) {
+        if (!cover_usable(d, i)) continue;
+        const Vec3& p = level.cover_nodes[i].pos;
+        const float dx = f[0] - p[0], dz = f[2] - p[2];
+        const float d2 = dx * dx + dz * dz;
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            best = int(i);
+        }
+    }
+    if (best < 0) return false;
+    e.cover_node = best;
+    d.flags |= flag::kCoverClaimed;
+    set_ai_goal(d, level.cover_nodes[std::size_t(best)].pos, 1.0f);
+    return true;
+}
+
+void release_cover(Drone& d) {
+    sx(d).cover_node = -1;
+    d.flags &= ~(flag::kCoverClaimed | flag::kCoverClaimed2);
+}
+
+void notify_death(Drone& d) {
+    SpExt* e = sx_or_null(d);
+    if (!e || !e->sp || e->death_channel == 0) return;
+    e->sp->channels.set(e->death_channel, true);
 }
 
 }  // namespace nf::sp
