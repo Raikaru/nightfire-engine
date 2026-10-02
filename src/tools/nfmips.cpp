@@ -576,7 +576,7 @@ int cmd_diff_acc(const std::string& elf_path) {
     const float dists[] = {1.0f, 5.0f, 30.0f};
     const float draws[] = {0.0f, 33.333f, 66.666f, 99.999f};
     const u32 levels[] = {0, 0x700000cu, 0x700000du, 0x700000eu};
-    const float bearings[][3] = {{0, 0, 1}, {0.7071f, 0, 0.7071f}};
+    const float bearings[][3] = {{0, 0, 1}, {0.70710678f, 0, 0.70710678f}};
     std::vector<u8> clean_dc(0x100, 0), clean_obj(0x280, 0);
     for (int acc : accs)
         for (float dist : dists)
@@ -594,7 +594,12 @@ int cmd_diff_acc(const std::string& elf_path) {
                                                         m.mem.write_block(dc, clean_dc.data(), 0x100);
                                                         m.mem.write_block(obj, clean_obj.data(), 0x280);
                                                         m.mem.write<u32>(dc + 4, obj);
-                                                        m.mem.write<u32>(dc + 0xec, phase);
+                                                        // DCVars[0] is an obj_tag* (passed to FeetPos /
+                                                        // control_link_object_to_cel); the wobble phase is
+                                                        // read as *(DCVars[0] + 236), so point it at the
+                                                        // drone blob and poke the phase there.
+                                                        m.mem.write<u32>(dc, obj);
+                                                        m.mem.write<u32>(obj + 0xec, phase);
                                                         m.mem.write<u32>(obj + 0x170, 0x12345678u);
                                                         m.mem.write<u8>(obj + 0x174, 0);
                                                         m.mem.write<u8>(obj + 0xb4, u8(acc));
@@ -607,11 +612,10 @@ int cmd_diff_acc(const std::string& elf_path) {
                                                         m.mem.write<u8>(obj + 0x41, u8(lost));
                                                         m.write_vec3(obj + 0x1c0, b[0], b[1], b[2]);
                                                         m.mem.write<u32>(game_state + 12, level);
-                                                        m.mem.write<u32>(game_state + 0x40, diff);
-                                                        // +0x52 is 2-aligned; the original does an unaligned
-                                                        // 4-byte load, so write it byte-wise here.
-                                                        const u32 frame = 100;
-                                                        m.mem.write_block(game_state + 0x52, &frame, 4);
+                                                        // Ghidra ._NN_4_ fields are decimal: difficulty @
+                                                        // +40 dec (0x28), frame @ +52 dec (0x34, aligned).
+                                                        m.mem.write<u32>(game_state + 40, diff);
+                                                        m.mem.write<u32>(game_state + 52, 100);
                                                         scripted_draw = draw;
                                                         CallArgs a;
                                                         a.i(dc);
@@ -622,14 +626,452 @@ int cmd_diff_acc(const std::string& elf_path) {
                                                         const auto [oy, oyh] = rd_f32(obj + 0x204);
                                                         const auto [oz, ozh] = rd_f32(obj + 0x208);
                                                         const int hit = (oxh == 0 && oyh == 0 && ozh == 0) ? 1 : 0;
-                                                        std::printf("%d,%g,%d,%d,%d,%u,%u,0x%x,%u,%d,%u,"
-                                                                    "%g,%g,%g,%g,%d,%g,%g,%g,0x%08x,0x%08x,0x%08x\n",
+                                                        std::printf("%d,%.9g,%d,%d,%d,%u,%u,0x%x,%u,%d,%u,"
+                                                                    "%.9g,%.9g,%.9g,%.9g,%d,%.9g,%.9g,%.9g,0x%08x,0x%08x,0x%08x\n",
                                                                     acc, (double)dist, moving, fm, fs, sub, diff,
                                                                     level, seen, lost, phase, (double)b[0],
                                                                     (double)b[1], (double)b[2], (double)draw,
                                                                     hit, (double)ox, (double)oy, (double)oz,
                                                                     oxh, oyh, ozh);
                                                     }
+    return 0;
+}
+// ---- PS2Sinf__Ff sweep --------------------------------------------------------------------------
+// EE sine truth table for the Bots polynomial replica: 2001 args across [-pi/2, pi/2] plus large args.
+int cmd_diff_sin(const std::string& elf_path) {
+    Machine m(elf_path);
+    m.install_libc_hooks();
+    const u32 entry = m.addr("PS2Sinf__Ff");
+    std::printf("# PS2Sinf__Ff truth table (in/out at %%.9g plus out bits)\n");
+    std::printf("x,y,yh\n");
+    constexpr double kPi = 3.141592653589793;
+    auto emit = [&](float x) {
+        CallArgs a;
+        a.f(x);
+        const u32 yb = m.call(entry, a).f0;
+        float y;
+        std::memcpy(&y, &yb, 4);
+        std::printf("%.9g,%.9g,0x%08x\n", (double)x, (double)y, yb);
+    };
+    for (int k = 0; k <= 2000; k++) emit(float(-kPi / 2 + k * (kPi / 2000)));
+    for (float x : {78.77f, -78.77f, 157.54f, -157.54f, 1000.0f, -1000.0f}) emit(x);
+    return 0;
+}
+// ---- DroneFunc_CombatState sweep ------------------------------------------------------------------
+// EE truth table for the Bots combat-state diff. One-factor-plus-combo rows over a base case that
+// reaches the grenade leg; world-dependent services scripted + logged (CoverAvailable, Rand_Rand coin,
+// CanDoAnimState, MoveToObject verdict, ChooseCombatMove if it traps, CallAnim/SetCombatMoveAnim
+// record-only), everything else real (InTransition, getProperty, SetAngleToObj, fptoui, Vec fns).
+// Outputs: return state id + branch evidence (anim/call logs, +0x3b fire byte, +0x9f0 untouched check).
+int cmd_diff_combat(const std::string& elf_path) {
+    Machine m(elf_path);
+    m.install_libc_hooks();
+    const u32 entry = m.addr("DroneFunc_CombatState__FP10DCVars_tag");
+    const u32 game_state = m.addr("GameState");
+    const u32 dc = m.alloc(0x100), drone = m.alloc(0xC00), obj = m.alloc(0x300);
+    const u32 opp = m.alloc(0x300), params = m.alloc(0x100);
+    const u32 rng_state[4] = {0x30D0A0u, 0x30D0A4u, 0x30D0A8u, 0x30D0ACu};
+    int coin_script = 0, cover_script = 0, animok_script = 1, moveverdict = 0, choosemove_ret = 0;
+    bool hook_choose = false;
+    std::vector<std::string> call_log, rand_log;
+    auto log_call = [&](const char* fmt, auto v) {
+        char b[64];
+        std::snprintf(b, sizeof b, fmt, v);
+        call_log.emplace_back(b);
+    };
+    m.hook("Rand_Rand__FUi", [&](nf::ee::Cpu& c) {
+        char b[64];
+        std::snprintf(b, sizeof b, "rand(%u)->%d", c.r[4].w[0], coin_script);
+        rand_log.emplace_back(b);
+        c.r[2].d[0] = u64(coin_script);
+        c.r[2].d[1] = 0;
+        return true;
+    });
+    m.hook("NDrone2_CoverAvailable__FP10DCVars_tagSc", [&](nf::ee::Cpu& c) {
+        log_call("cover(%u)", c.r[5].w[0]);
+        c.r[2].d[0] = u64(cover_script);
+        c.r[2].d[1] = 0;
+        return true;
+    });
+    m.hook("DroneAnim_CanDoAnimState__FP10DCVars_tagss", [&](nf::ee::Cpu& c) {
+        log_call("animok(0x%x)", c.r[5].w[0]);
+        c.r[2].d[0] = u64(animok_script);
+        c.r[2].d[1] = 0;
+        return true;
+    });
+    m.hook("NDrone2_MoveToObject__FP10DCVars_tagP7obj_tagfSc", [&](nf::ee::Cpu& c) {
+        float f;
+        u32 fb = c.f[12];
+        std::memcpy(&f, &fb, 4);
+        char b[64];
+        std::snprintf(b, sizeof b, "moveto(%g)", (double)f);
+        call_log.emplace_back(b);
+        c.r[2].d[0] = u64(moveverdict);
+        c.r[2].d[1] = 0;
+        return true;
+    });
+    m.hook("NDrone2_ChooseCombatMove__FP10DCVars_tag", [&](nf::ee::Cpu& c) {
+        (void)c;
+        if (!hook_choose) return false;
+        call_log.emplace_back("choosemove*");
+        c.r[2].d[0] = u64(choosemove_ret);
+        c.r[2].d[1] = 0;
+        return true;
+    });
+    m.hook("DroneAnim_CallAnim__FUiUisUifScP10DCVars_tag", [&](nf::ee::Cpu& c) {
+        log_call("callanim(%u)", c.r[5].w[0]);
+        c.r[2].d[0] = 0;
+        c.r[2].d[1] = 0;
+        return true;
+    });
+    m.hook("DroneAnim_SetCombatMoveAnim__FP10DCVars_tagf", [&](nf::ee::Cpu& c) {
+        float f;
+        u32 fb = c.f[12];
+        std::memcpy(&f, &fb, 4);
+        char b[64];
+        std::snprintf(b, sizeof b, "setmoveanim(%g)", (double)f);
+        call_log.emplace_back(b);
+        c.r[2].d[0] = 0;
+        c.r[2].d[1] = 0;
+        return true;
+    });
+    auto rd_u32 = [&](u32 va) {
+        u32 w = 0;
+        m.mem.read_block(va, &w, 4);
+        return w;
+    };
+    (void)rd_u32;
+    std::printf("# DroneFunc_CombatState truth table\n");
+    std::printf("# dc=0x%x drone=0x%x obj=0x%x opp=0x%x params=0x%x frame=10000\n", dc, drone, obj, opp,
+                params);
+    std::printf("case,opp,dist,engage,idle,flags,sight,lost,bnd,ammo,coin,animok,cover,stamp,level,anim,"
+                "p88,d8,move,lastseen,ret,fire3b,calls,rand\n");
+    struct Row {
+        const char* name;
+        int use_opp;
+        float dist;
+        float engage;
+        int idle;
+        u32 flags;
+        int sight;
+        int lost;
+        int bnd;
+        int ammo;
+        int coin;
+        int animok;
+        int cover;
+        u32 stamp;
+        u32 level;
+        u32 anim;
+        float p88;
+        int d8;
+        int move;
+        u32 lastseen;
+    };
+    // engage gates the case-0/2 legs (engage <= dist returns early); lastseen gates the no-opponent
+    // proceed path (+0x238 + 30 >= frame 10000). Grenade legs need engage > dist with dist in [8,20).
+    const Row rows[] = {
+        {"base", 1, 10.0f, 8.0f, 0x58, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"noopp0", 0, 10.0f, 8.0f, 0x58, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"noopp9990", 0, 10.0f, 8.0f, 0x58, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 9990},
+        {"idle68", 1, 10.0f, 8.0f, 0x68, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"idle70", 1, 10.0f, 8.0f, 0x70, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"idle00", 1, 10.0f, 8.0f, 0x00, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"idle5a", 1, 10.0f, 8.0f, 0x5a, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"dist5", 1, 5.0f, 8.0f, 0x58, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"dist25", 1, 25.0f, 8.0f, 0x58, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"stat", 1, 10.0f, 8.0f, 0x58, 0x10, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"sight4", 1, 10.0f, 25.0f, 0x58, 0, 4, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"lost16", 1, 10.0f, 25.0f, 0x58, 0, 0, 16, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"bnd2", 1, 10.0f, 25.0f, 0x58, 0, 0, 0, 2, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"g_noammo", 1, 10.0f, 25.0f, 0x70, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"g_coin1", 1, 10.0f, 25.0f, 0x70, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"g_animok0", 1, 10.0f, 25.0f, 0x70, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"g_base", 1, 10.0f, 25.0f, 0x70, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"g_cover1", 1, 10.0f, 25.0f, 0x70, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"g_stampmax", 1, 10.0f, 25.0f, 0x70, 0, 0, 0, 0, 1, 0, 1, 0, 0xFFFFFFFFu, 0, 0x02000000u, 0.0f,
+         0, 0, 0},
+        {"g_d8", 1, 10.0f, 25.0f, 0x70, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 9, 0, 0},
+        {"c2lost0", 1, 10.0f, 8.0f, 0x5a, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"c2lost16", 1, 10.0f, 8.0f, 0x5a, 0, 0, 16, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"c2mv2", 1, 10.0f, 8.0f, 0x5a, 0, 0, 16, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 2, 0},
+        {"c2mv3", 1, 10.0f, 8.0f, 0x5a, 0, 0, 16, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 3, 0},
+        {"c2mv5", 1, 10.0f, 8.0f, 0x5a, 0, 0, 16, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 5, 0},
+        {"c2mv9", 1, 10.0f, 8.0f, 0x5a, 0, 0, 16, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 9, 0},
+        {"c2mv10", 1, 10.0f, 8.0f, 0x5a, 0, 0, 16, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 10, 0},
+        {"c2mvb", 1, 10.0f, 8.0f, 0x5a, 0, 0, 16, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0xb, 0},
+        {"c2mvc", 1, 10.0f, 8.0f, 0x5a, 0, 0, 16, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0xc, 0},
+        {"c2mv99", 1, 10.0f, 8.0f, 0x5a, 0, 0, 16, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 99, 0},
+        {"c2lvl", 1, 10.0f, 8.0f, 0x5a, 0, 0, 16, 0, 1, 0, 1, 0, 0, 0x7000005u, 0x02000000u, 0.0f, 0, 0,
+         0},
+        {"c2lvl3", 1, 10.0f, 8.0f, 0x5a, 0, 0, 16, 0, 1, 0, 1, 0, 0, 0x7000005u, 0x02000000u, 3.0f, 0, 0,
+         0},
+        {"c2mv2p3", 1, 10.0f, 8.0f, 0x5a, 0, 0, 16, 0, 1, 0, 1, 0, 0, 0x7000005u, 0x02000000u, 3.0f, 0,
+         2, 0},
+        {"animblk", 1, 10.0f, 25.0f, 0x70, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000100u, 0.0f, 0, 0, 0},
+        {"d8-9", 1, 10.0f, 25.0f, 0x58, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 9, 0, 0},
+        {"level5", 1, 10.0f, 25.0f, 0x58, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0x7000005u, 0x02000000u, 0.0f, 0, 0,
+         0},
+        {"p88-3", 1, 10.0f, 25.0f, 0x58, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 3.0f, 0, 0, 0},
+    };
+    std::vector<u8> clean_drone(0xC00, 0), clean_small(0x300, 0), clean_dc(0x100, 0);
+    for (const Row& r : rows) {
+        m.mem.write_block(drone, clean_drone.data(), 0xC00);
+        m.mem.write_block(obj, clean_small.data(), 0x300);
+        m.mem.write_block(opp, clean_small.data(), 0x300);
+        m.mem.write_block(dc, clean_dc.data(), 0x100);
+        m.mem.write<u32>(dc, obj);
+        m.mem.write<u32>(dc + 4, drone);
+        m.mem.write<u32>(dc + 12, 0xEEEEEEEEu);
+        m.mem.write<u32>(drone + 0x170, r.use_opp ? opp : 0);
+        m.mem.write<u32>(drone + 0x174, 0);
+        m.mem.write<u16>(drone + 0x10c, u16(r.idle));
+        m.write_f32(drone + 0xf0, r.engage);
+        m.mem.write<u32>(drone + 0x4f8, r.flags);
+        m.mem.write<u32>(drone + 0x4d8, 0);
+        m.mem.write<u8>(drone + 0x3b, 0);
+        m.mem.write<u32>(drone + 0x238, r.lastseen);
+        m.mem.write<u32>(drone + 0x274, u32(r.lost));
+        m.mem.write<u32>(drone + 0x228, u32(r.sight));
+        m.mem.write<u32>(drone + 0x31c, u32(r.bnd));
+        m.mem.write<u32>(drone + 0x568, r.anim);
+        m.mem.write<u32>(drone + 0x854, params);
+        m.mem.write<u32>(drone + 0x11c, r.stamp);
+        m.mem.write<u16>(drone + 0xd8, u16(r.d8));
+        m.write_f32(drone + 0x1a0, r.dist);
+        m.mem.write<u16>(drone + 0xbcc, u16(r.ammo));
+        m.mem.write<u16>(drone + 0xbce, u16(r.ammo));
+        m.write_f32(params + 0x88, r.p88);
+        m.write_vec3(obj + 0x30, 0, 0, 0);
+        m.write_vec3(opp + 0x30, 5, 0, 5);
+        m.mem.write<u32>(game_state + 12, r.level);
+        m.mem.write<u32>(game_state + 52, 10000);
+        m.mem.write<u32>(rng_state[0], 1);
+        m.mem.write<u32>(rng_state[1], 2);
+        m.mem.write<u32>(rng_state[2], 3);
+        m.mem.write<u32>(rng_state[3], 4);
+        coin_script = r.coin;
+        cover_script = r.cover;
+        animok_script = r.animok;
+        moveverdict = r.move;
+        call_log.clear();
+        rand_log.clear();
+        try {
+            CallArgs a;
+            a.i(dc);
+            const auto res = m.call_keep(entry, a, 50'000'000);
+            std::string calls, rands;
+            for (const auto& s : call_log) calls += (calls.empty() ? "" : " ") + s;
+            for (const auto& s : rand_log) rands += (rands.empty() ? "" : " ") + s;
+            if (calls.empty()) calls = "-";
+            if (rands.empty()) rands = "-";
+            std::printf("%s,%d,%g,%g,0x%x,0x%x,%d,%d,0x%x,%d,%d,%d,%d,0x%x,0x%x,0x%08x,%g,%d,%d,%u,"
+                        "ret=0x%x,fire=0x%x,calls=%s,rand=%s\n",
+                        r.name, r.use_opp, (double)r.dist, (double)r.engage, r.idle, r.flags, r.sight,
+                        r.lost, r.bnd, r.ammo, r.coin, r.animok, r.cover, r.stamp, r.level, r.anim,
+                        (double)r.p88, r.d8, r.move, r.lastseen, int(res.v0 & 0xFFFFFFFF),
+                        m.mem.read<u8>(drone + 0x3b), calls.c_str(), rands.c_str());
+        } catch (const nf::ee::Trap& t) {
+            std::printf("%s,TRAP %s at %08x\n", r.name, nf::ee::trap_kind_name(t.kind), t.pc);
+        }
+    }
+    return 0;
+}
+// ---- NDrone2_ReFindMissionPath sweep -------------------------------------------------------------
+// EE truth table for the Bots mission-route diff. Per case builds a drone blob (>= 0xAA0) with a
+// mission u16 array (+0xa60), a node table (+0xa64 -> +0x30 entries, stride 0x40, +0x10 vec4, +0xc cel),
+// and an obj blob; hooks script NDrone2_MoveTest reachability, record Drone_SM_SetState, and provide
+// NDrone2_Player. Everything else (LinkCreep, FindCel, SetupGoalPosition, MoveToGoalPosition,
+// GetAnglesToMoveTarget, FeetPos, Vec fns) runs real. Traps are recorded per row, not fatal.
+int cmd_diff_refind(const std::string& elf_path) {
+    Machine m(elf_path);
+    m.install_libc_hooks();
+    const u32 entry = m.addr("NDrone2_ReFindMissionPath__FP10DCVars_tag");
+    const u32 dc = m.alloc(0x100), drone = m.alloc(0xC00), obj = m.alloc(0x300);
+    const u32 player = m.alloc(0x100), table = m.alloc(0x100), entries = m.alloc(4 * 0x40);
+    const u32 mission = m.alloc(16);
+    int movetest_mode = 0, movetest_calls = 0;  // 0: always 1, 1: always 0, 2: alternating
+    u32 findcel_script = 0x22220000u;
+    std::vector<std::string> sm_log;
+    m.hook("NDrone2_MoveTest__FP10CelPos_tagT0P7obj_tagT2P7_VECTORScSc", [&](nf::ee::Cpu& c) {
+        int r = 1;
+        if (movetest_mode == 1) r = 0;
+        else if (movetest_mode == 2) r = (movetest_calls++ % 2 == 0) ? 1 : 0;
+        c.r[2].d[0] = u64(r);
+        c.r[2].d[1] = 0;
+        return true;
+    });
+    m.hook("Drone_SM_SetState__FP20StateMachineInfo_tagUiUi", [&](nf::ee::Cpu& c) {
+        char b[64];
+        std::snprintf(b, sizeof b, "setstate(%u,%u)", c.r[5].w[0], c.r[6].w[0]);
+        sm_log.emplace_back(b);
+        c.r[2].d[0] = 0;
+        c.r[2].d[1] = 0;
+        return true;
+    });
+    m.hook("NDrone2_Player__Fv", [&](nf::ee::Cpu& c) {
+        c.r[2].d[0] = player;
+        c.r[2].d[1] = 0;
+        return true;
+    });
+    // CalcRouteToPosition loops forever without nav data; script the verdict
+    // (route planning gets its own table) and record the call for the replica.
+    int mtg_ret = 0;
+    std::vector<std::string> mtg_log;
+    m.hook("NDrone2_MoveToGoalPosition__FP10DCVars_tagP10CelPos_tagfUs", [&](nf::ee::Cpu& c) {
+        char b[64];
+        std::snprintf(b, sizeof b, "mtg(f12=0x%08x)", c.f[12]);
+        mtg_log.emplace_back(b);
+        c.r[2].d[0] = u64(mtg_ret);
+        c.r[2].d[1] = 0;
+        return true;
+    });
+    // build_FindCel loops forever on an empty world, so script it: the search
+    // cel comes from the row input and is recorded, like MoveTest outcomes.
+    m.hook("NDrone2_FindCel__FP7_VECTOR", [&](nf::ee::Cpu& c) {
+        c.r[2].d[0] = findcel_script;
+        c.r[2].d[1] = 0;
+        return true;
+    });
+    // LinkCreep_ForNodes loops forever on empty routes, and Dest/NavPath need
+    // nav data; script all three (route planning gets its own table) and log them.
+    int linkcalc_ret = 0;
+    float dest_pos[3] = {12, 0, 12};
+    u32 dest_cel = 0x33330000u;
+    std::vector<std::string> dest_log, nav_log;
+    m.hook("LinkCreep_Calc__FP11AIRoute_tagSc", [&](nf::ee::Cpu& c) {
+        c.r[2].d[0] = u64(linkcalc_ret);
+        c.r[2].d[1] = 0;
+        return true;
+    });
+    m.hook("LinkCreep_Dest__FP11AIRoute_tagsP10CelPos_tag", [&](nf::ee::Cpu& c) {
+        const u32 out = c.r[6].w[0];
+        char b[64];
+        std::snprintf(b, sizeof b, "dest(%u)", c.r[5].w[0]);
+        dest_log.emplace_back(b);
+        m.write_vec3(out, dest_pos[0], dest_pos[1], dest_pos[2]);
+        m.mem.write<u32>(out + 0x10, dest_cel);
+        c.r[2].d[0] = 0;
+        c.r[2].d[1] = 0;
+        return true;
+    });
+    m.hook("AINetwork_NavPathForPosition__FP7_VECTORP7cel_tagSc", [&](nf::ee::Cpu& c) {
+        nav_log.emplace_back("navpath");
+        c.r[2].d[0] = 0x44440000u;
+        c.r[2].d[1] = 0;
+        return true;
+    });
+    auto rd_u32 = [&](u32 va) {
+        u32 w = 0;
+        m.mem.read_block(va, &w, 4);
+        return w;
+    };
+    auto rd_f32 = [&](u32 va) {
+        u32 w = 0;
+        m.mem.read_block(va, &w, 4);
+        float v;
+        std::memcpy(&v, &w, 4);
+        return v;
+    };
+    auto rd_vec = [&](u32 va) {
+        float v[4];
+        m.mem.read_block(va, v, 16);
+        return std::array<float, 4>{v[0], v[1], v[2], v[3]};
+    };
+    std::printf("# NDrone2_ReFindMissionPath truth table\n");
+    std::printf("# dc=0x%x drone=0x%x obj=0x%x player=0x%x\n", dc, drone, obj, player);
+    std::printf("count,flags,d8,movetest,nodes,fc,mg,lk,dp,ret,ndx,cel,goal,dist,rate,move,ang,aipoint,sm,mtg,dest,nav\n");
+    const float line[4][3] = {{10, 0, 10}, {20, 0, 20}, {30, 0, 30}, {40, 0, 40}};
+    const float scat[4][3] = {{10, 0, 40}, {35, 0, 12}, {8, 0, 30}, {50, 0, 50}};
+    const char* modes[] = {"all1", "all0", "alt"};
+    std::vector<u8> clean(0xC00, 0);
+    for (int count : {0, 1, 4})
+        for (u32 flags : {0u, 0x10u})
+            for (u32 d8 : {0u, 9u})
+                for (int mt = 0; mt < 3; mt++)
+                    for (int ni = 0; ni < 2; ni++)
+                        for (u32 fc : {0x22220000u, 0u})
+                            for (int mg : {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14})
+                                for (int lk : {0, 1})
+                                    for (int dp = 0; dp < 2; dp++) {
+                            findcel_script = fc;
+                            mtg_ret = mg;
+                            mtg_log.clear();
+                            linkcalc_ret = lk;
+                            dest_log.clear();
+                            nav_log.clear();
+                            if (dp == 0) {
+                                dest_pos[0] = 12;
+                                dest_pos[1] = 0;
+                                dest_pos[2] = 12;
+                                dest_cel = 0x33330000u;
+                            } else {
+                                dest_pos[0] = 100;
+                                dest_pos[1] = 0;
+                                dest_pos[2] = 100;
+                                dest_cel = 0x33330001u;
+                            }
+                            m.mem.write_block(drone, clean.data(), 0xC00);
+                            m.mem.write<u32>(dc, obj);
+                            m.mem.write<u32>(dc + 4, drone);
+                            m.mem.write<u32>(dc + 12, 0xEEEEEEEEu);  // SetState hooked, never touched
+                            m.mem.write<u32>(drone + 0x4f8, flags);
+                            m.mem.write<u16>(drone + 0x9f2, u16(count));
+                            m.mem.write<u16>(drone + 0x9f0, 0);  // output; initial value never read
+                            m.mem.write<u16>(drone + 0xd8, u16(d8));
+                            m.mem.write<u32>(drone + 0xa60, mission);
+                            m.mem.write<u32>(drone + 0xa64, table);
+                            m.mem.write<u32>(drone + 0x704, 0);
+                            m.mem.write<u32>(table + 0x30, entries);
+                            for (int k = 0; k < 4; k++) {
+                                m.mem.write<u16>(mission + 2 * k, u16(k));
+                                const float* p = (ni == 0 ? line : scat)[k];
+                                m.write_vec3(entries + 64 * k + 0x10, p[0], p[1], p[2]);
+                                m.mem.write<u32>(entries + 64 * k + 0xc, 0x11110000u + u32(k));
+                            }
+                            m.write_vec3(obj + 0x20, 0, 0, 0);
+                            m.write_vec3(obj + 0x30, 0, 0, 0);
+                            // Player CelPos assembles as [P+0x30..+0x3c, P+0x20-as-cel]; keep cel 0 so
+                            // FindCel (scripted) resolves it and the goal carries a real position.
+                            m.write_vec3(player + 0x30, 10, 20, 30);
+                            m.mem.write<u32>(player + 0x20, 0);
+                            movetest_mode = mt;
+                            movetest_calls = 0;
+                            sm_log.clear();
+                            try {
+                                CallArgs a;
+                                a.i(dc);
+                                // call_keep: verdicts live in RAM (drone blob), which call() rolls back.
+                                const auto r = m.call_keep(entry, a, 50'000'000);
+                                const std::string sm = sm_log.empty() ? "-" : sm_log.back();
+                                const auto gv = rd_vec(drone + 0x9d0);
+                                const auto mv = rd_vec(drone + 0x670);
+                                const auto av = rd_vec(drone + 0x690);
+                                std::string goal;
+                                for (int q = 0; q < 64; q += 4) {
+                                    char hb[12];
+                                    std::snprintf(hb, sizeof hb, "%08x", rd_u32(drone + 0x6f0 + q));
+                                    goal += (q ? " " : "") + std::string(hb);
+                                }
+                                std::printf("%d,0x%x,%u,%s,%d,fc=0x%x,mg=%d,lk=%d,dp=%d,ret=%d,ndx=0x%x,"
+                                            "cel=0x%x,goal=%g/%g/%g/%g/0x%x,dist=%g,rate=%g,"
+                                            "move=%g/%g/%g,ang=%g/%g/%g,aipoint=%s,sm=%s,mtg=%s,"
+                                            "dest=%s,nav=%s\n",
+                                            count, flags, d8, modes[mt], ni, fc, mg, lk, dp,
+                                            int(r.v0 & 0xFFFFFFFF), rd_u32(drone + 0x9f0) & 0xFFFFu,
+                                            rd_u32(drone + 0x9e0), gv[0], gv[1], gv[2], gv[3],
+                                            rd_u32(drone + 0x9d0 + 0x10), rd_f32(drone + 0x660),
+                                            rd_f32(drone + 0x664), mv[0], mv[1], mv[2], av[0], av[1],
+                                            av[2], goal.c_str(), sm.c_str(),
+                                            mtg_log.empty() ? "-" : mtg_log.back().c_str(),
+                                            dest_log.empty() ? "-" : dest_log.back().c_str(),
+                                            nav_log.empty() ? "-" : nav_log.back().c_str());
+                            } catch (const nf::ee::Trap& t) {
+                                std::printf("%d,0x%x,%u,%s,%d,fc=0x%x,mg=%d,lk=%d,dp=%d,TRAP %s at %08x\n",
+                                            count, flags, d8, modes[mt], ni, fc, mg, lk, dp,
+                                            nf::ee::trap_kind_name(t.kind), t.pc);
+                            }
+                        }
     return 0;
 }
 
@@ -642,6 +1084,9 @@ void usage() {
                  "       nfmips <elf> symbols [substr]\n"
                  "       nfmips <elf> diff [--count N] [--seed N] [--state p2s]\n"
                  "       nfmips <elf> diff-acc (DroneWeap_DoBulletAccuracy truth table, Bots diff)\n"
+                 "       nfmips <elf> diff-sin (PS2Sinf__Ff truth table, Bots poly replica)\n"
+                 "       nfmips <elf> diff-refind (NDrone2_ReFindMissionPath truth table, Bots diff)\n"
+                 "       nfmips <elf> diff-combat (DroneFunc_CombatState truth table, Bots diff)\n"
                  "args: i:<int> | f:<float> | f:0x<bits> | bare numbers (int, or float with ./e/)\n"
                  "call/trace writes: --poke addr:hexbytes | --vf32 addr:v0,v1,.. (scratch: 0x1E00000)\n"
                  "stubs: --noop <sym> (repeatable, v0 = 0) | --stub-sound (Sound_Play/Play3D no-ops)\n"
@@ -769,6 +1214,9 @@ int main(int argc, char** argv) {
             return cmd_diff(elf, count, seed, state);
         }
         if (cmd == "diff-acc") return cmd_diff_acc(elf);
+        if (cmd == "diff-sin") return cmd_diff_sin(elf);
+        if (cmd == "diff-refind") return cmd_diff_refind(elf);
+        if (cmd == "diff-combat") return cmd_diff_combat(elf);
         usage();
         return 2;
     } catch (const std::exception& e) {

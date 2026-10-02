@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """Match GC / Xbox functions to PS2 symbols from ghidra_export.py feature dumps.
 
-Evidence, strongest first (each accepted pair records method + confidence):
-  str      unique shared string literal(s)              high (>=2 strings) else medium
-  strset   identical set of shared strings, unique      medium/high
-  bsim     GC BSim tables (gc/*_matches.tsv), sim>=0.7  high if sim>=0.9 else medium
-  call     call-graph propagation from matched pairs    high (>=2 votes) else medium
-  const    >=2 rare shared float/int constants          medium
-  order    unique gap between monotone anchors          medium
-  via-gc   Xbox<->GC match composed with GC<->PS2       confidence = min of both
-Nothing below "medium" is written; a pair is only accepted when it is the unique
-best candidate for both sides (no ties).
+Evidence (each accepted pair records method + confidence; see docs/xref.md):
+  str      unique shared string literal(s)                   high (>=2 strings) else medium
+  strset   identical set of shared strings, unique           high (>=2 strings) else medium
+  bsim     GC BSim tables (gc/*_matches.tsv), sim>=0.7       high if sim>=0.9 else medium
+  call/data/const/weak  summed votes from call-sequence gaps, mapped globals, rare
+           constants and weak BSim rows (Matcher.propagate)  high at total>=2 else medium
+  order    gap between anchors adjacent on both sides         medium
+  via-gc   PS2->GC->Xbox composition (seed for PS2<->Xbox)   weaker of the two legs
+A pair is only accepted as the unique mutual best with a plausible size; audit()
+removes pairs whose call-graph neighbours point at a better partner.
 
-Writes $XREF/matches/<a>__<b>.tsv and prints stats.
+Usage: match.py [action|driving]   writes $XREF/matches/<a>__<b>.tsv and prints stats.
 """
 from __future__ import annotations
 
@@ -87,13 +87,17 @@ class Matcher:
         return True
 
     def audit(self) -> int:
-        """Drop non-string pairs whose matched call-graph neighbours contradict them.
+        """Drop non-string pairs when the call graph points at a better partner.
 
-        support = matched caller/callee pairs that agree (a calls/is called by x and
-        b calls/is called by x's partner); contradiction = matched neighbour on one
-        side whose partner is not a neighbour on the other.  Inlining causes some
-        contradictions, so a pair is only dropped when contradictions >= 2 and exceed
-        support.  Dropped pairs are banned so propagation cannot re-add them.
+        support(a,b) = matched callers of a whose partner calls b (and vice versa).
+        alternative  = the function most often called by the partners of a's
+        matched callers instead of b (or, symmetrically, by the partners of b's
+        callers instead of a).  A pair is dropped when an alternative has >= 2
+        votes and strictly more than its support -- typical for near-identical
+        siblings (e.g. PlayerAnimSetInitNormal/Crouch) that BSim or a gap vote
+        swapped.  Callee-side differences are ignored: platform helpers (VU0 asm
+        on PS2, inlining on MSVC) make them noisy.  Dropped pairs are banned so
+        propagation cannot re-add them.
         """
         A, B = self.A, self.B
         callees_a = {a: set(v) for a, v in A.callees.items()}
@@ -104,32 +108,31 @@ class Matcher:
             for a, b in self.ab.items():
                 if self.meta[a][0] in ("str", "strset"):
                     continue
-                sup = con = 0
+                sup_a = sup_b = 0
+                alt_b, alt_a = collections.Counter(), collections.Counter()
                 for ca in A.callers.get(a, ()):
                     cb = self.ab.get(ca)
-                    if cb is not None:
-                        if b in callees_b.get(cb, ()):
-                            sup += 1
-                        else:
-                            con += 1
+                    if cb is None:
+                        continue
+                    cs = callees_b.get(cb, set())
+                    if b in cs:
+                        sup_a += 1
+                    # callees already explained as partners of ca's other callees are siblings, not rivals
+                    explained = {self.ab[x] for x in callees_a.get(ca, ()) if x in self.ab}
+                    alt_b.update(y for y in cs - explained - {b} if self.size_sim(a, y) >= 0.5)
                 for cb in B.callers.get(b, ()):
                     ca = self.ba.get(cb)
-                    if ca is not None and a not in callees_a.get(ca, ()):
-                        con += 1
-                ea, eb = callees_a.get(a, set()), callees_b.get(b, set())
-                for x in ea:
-                    y = self.ab.get(x)
-                    if y is not None:
-                        if y in eb:
-                            sup += 1
-                        else:
-                            con += 1
-                for y in eb:
-                    x = self.ba.get(y)
-                    if x is not None and x not in ea:
-                        con += 1
-                if con >= 2 and con >= sup:
-                    drop.append((con - sup, a, b))
+                    if ca is None:
+                        continue
+                    cs = callees_a.get(ca, set())
+                    if a in cs:
+                        sup_b += 1
+                    explained = {self.ba[y] for y in callees_b.get(cb, ()) if y in self.ba}
+                    alt_a.update(x for x in cs - explained - {a} if self.size_sim(x, b) >= 0.5)
+                best = max(max(alt_b.values(), default=0) - sup_a, max(alt_a.values(), default=0) - sup_b)
+                worst_alt = max(max(alt_b.values(), default=0), max(alt_a.values(), default=0))
+                if worst_alt >= 2 and best > 0:
+                    drop.append((best, a, b))
             if not drop:
                 break
             # remove the worst offender(s) first; their removal may clear others
@@ -152,8 +155,13 @@ class Matcher:
         return self.ratio_lo / slack <= r <= self.ratio_hi * slack
 
     def calibrate(self) -> None:
-        rs = sorted(self.B.ninstr(b) / self.A.ninstr(a) for a, b in self.ab.items()
-                    if self.meta[a][1] == "high" and self.A.ninstr(a) >= 8)
+        """Instruction-count ratio bounds from high-confidence pairs (all pairs if <50)."""
+        def ratios(pred):
+            return sorted(self.B.ninstr(b) / self.A.ninstr(a) for a, b in self.ab.items()
+                          if pred(a) and self.A.ninstr(a) >= 8)
+        rs = ratios(lambda a: self.meta[a][1] == "high")
+        if len(rs) < 50:
+            rs = ratios(lambda a: True)
         if len(rs) >= 50:
             lo = rs[int(len(rs) * 0.03)]
             hi = rs[int(len(rs) * 0.97)]
@@ -183,6 +191,10 @@ class Matcher:
                 continue
             if not self.size_ok(a, b):
                 self.rejected["vote:size"] += 1
+                continue
+            if w < 2 and "str" not in votes[(a, b)] and self.size_sim(a, b) < 0.5 \
+                    and abs(self.B.ninstr(b) - self.A.ninstr(a) * self.median_ratio) > 4:
+                self.rejected["vote:size-weak"] += 1  # single weak vote: demand similar size
                 continue
             conf = "high" if w >= 2 else "medium"
             ev = " ".join(f"{s}={v:g}" for s, v in sorted(votes[(a, b)].items()) if v > 0)
@@ -260,7 +272,7 @@ class Matcher:
             for a, b in list(self.ab.items()):
                 sa, sb = A.callees.get(a, []), B.callees.get(b, [])
                 if sa and sb:
-                    self._align_votes(sa, sb, self.ab, self.ba, votes, "call")
+                    self._align_votes(sa, sb, self.ab, self.ba, votes, "call", sized=True)
                 ua = [x for x in A.callers.get(a, ()) if x not in self.ab]
                 ub = [y for y in B.callers.get(b, ()) if y not in self.ba]
                 if len(ua) == 1 and len(ub) == 1:
@@ -278,7 +290,11 @@ class Matcher:
                 break
         return total
 
-    def _align_votes(self, sa, sb, ab, ba, votes, src) -> None:
+    def size_sim(self, a: int, b: int) -> float:
+        s = self.B.ninstr(b) / (self.A.ninstr(a) * self.median_ratio)
+        return min(s, 1 / s)
+
+    def _align_votes(self, sa, sb, ab, ba, votes, src, sized=False) -> None:
         posb = {y: j for j, y in enumerate(sb)}
         anchors = []
         for i, x in enumerate(sa):
@@ -292,11 +308,38 @@ class Matcher:
             gb = [y for y in sb[j0 + 1:j1] if y not in ba]
             if not ga or not gb:
                 continue
+            local = collections.Counter()
             if len(ga) == 1 and len(gb) == 1:
-                votes[(ga[0], gb[0])][src] += 1
+                local[(ga[0], gb[0])] += 1
             elif len(ga) == len(gb) and len(ga) <= 4 and (i1 - i0) == (j1 - j0):
                 for x, y in zip(ga, gb):
-                    votes[(x, y)][src] += 0.5
+                    local[(x, y)] += 0.5
+            elif sized and len(ga) <= 8 and len(gb) <= 8:
+                # unequal gap (inlining on one side): walk in from both ends while sizes agree
+                for seq_a, seq_b in ((ga, gb), (ga[::-1], gb[::-1])):
+                    for x, y in zip(seq_a, seq_b):
+                        if self.size_sim(x, y) < 0.6:
+                            break
+                        local[(x, y)] = 0.5
+            if sized and 1 < len(ga) == len(gb) <= 8:
+                # order-free fallback for members the positional pass left unpaired in an
+                # equal-length gap: switch cases get reordered (MSVC) -> pair distinctive sizes
+                paired_a = {x for x, _ in local}
+                paired_b = {y for _, y in local}
+                for x in ga:
+                    if x in paired_a:
+                        continue
+                    sims = sorted(((self.size_sim(x, y), y) for y in gb if y not in paired_b), reverse=True)
+                    if not sims:
+                        continue
+                    s, y = sims[0]
+                    if s < 0.75 or (len(sims) > 1 and sims[1][0] > s - 0.15):
+                        continue
+                    back = max((self.size_sim(x2, y) for x2 in ga if x2 != x), default=0)
+                    if back <= s - 0.15:
+                        local[(x, y)] = 0.5
+            for k, w in local.items():
+                votes[k][src] += w
 
     def _data_votes(self, votes) -> None:
         A, B = self.A, self.B
@@ -432,6 +475,7 @@ def run_pair(a_prog: str, b_prog: str, bsim_target: str | None = None, seeds=Non
         n = 0
         for a, b, meth, conf, ev in seeds:
             if m.ab.get(a) == b:
+                m.rejected["seed:agree"] += 1  # independent PS2<->Xbox string match confirms it
                 continue
             if a in m.ab or b in m.ba:
                 m.rejected["seed:conflict"] += 1
@@ -442,6 +486,7 @@ def run_pair(a_prog: str, b_prog: str, bsim_target: str | None = None, seeds=Non
         stats["seed"] = n
         m.calibrate()
     for rnd in range(6):
+        m.calibrate()
         p = m.propagate(weak)
         o = m.by_order()
         d = m.audit()

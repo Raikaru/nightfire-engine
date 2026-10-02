@@ -75,7 +75,9 @@ struct SpExt : drone::DroneExt {
     bool heard_noise = false;              // Drone+0x33: heard something (EnemyAlerts keeps the return state while set)
     bool alert_turned = false;             // Drone+0x34: already turned towards the alert position
     std::uint8_t noise_level = 0;          // Drone+0x43: HeardNoise escalation 2 aware / 3 suspect / 4 alert
+    std::uint32_t last_combat_move = 0;    // Drone+0x11c: last NDrone2_ChooseCombatMove time (AimCrouchFire cooldown)
     Vec3 home_pos{};                       // Drone+0x5b0: feet position when the alert arrived (SearchArea walks back to it)
+    std::uint8_t death_channel = 0;        // Drone+0x13c (DIVars key12): switch channel set on death (DroneFunc_SetDeathChannel)
     // Civilian / hostage / alarm layer (sp_civilian_util.hpp, sp_states_civilian.cpp); other areas read them.
     bool running_to_alarm = false;         // Drone+0x16: RunToAlarm sets, PressAlarm clears (GoToGoalPosition / alerts read it)
     bool scared_hiding = false;            // Drone+0x2b: Run-away / HideFromScaryObject; ConsiderExplosive ignores while set
@@ -162,6 +164,11 @@ public:
     // One NPC (used by spawn_placed and by the spawners). `feet` overrides the position when non-null.
     Drone* spawn_npc(const SpNpcSpec& spec, std::uint32_t static_index, const Vec3* feet = nullptr, int spawner = -1,
                      int template_index = -1);
+    // Cutscene event-8 coder spawn (Drone_CoderCreate): `feet` is the event object position, `args` the 4
+    // event dwords (engage_dist bits, range_f4 bits, unused, d0). The drone is otherwise default-configured
+    // (zeroed DIVars: default type/mode/skin) with initial state Idle, like the original. Consumed from
+    // MissionSystem::take_spawns() after World::tick by the session (see DroneCli --sp wiring for the call).
+    Drone* spawn_scripted(const Vec3& feet, const std::uint32_t args[4]);
     // NDrone2_DefaultInit results onto a spawned drone (config, behaviour, ranges, flags, skin swap for captains).
     void apply_config(Drone& d, const NpcResolved& r);
 

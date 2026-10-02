@@ -6,8 +6,9 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "game/drone_anim.hpp"
-#include "game/drone_demo.hpp"
+ #include "game/drone_anim.hpp"
+ #include "game/drone_demo.hpp"
+ #include "game/mission.hpp"
 #include "game/sp_civilian_util.hpp"
 #include "game/sp_common.hpp"
 #include "game/sp_placement.hpp"
@@ -61,6 +62,9 @@ bool DroneCli::parse(int argc, char** argv, int& i) {
         sp_ = true;
     } else if (a == "--sp-enable-all") {
         sp_enable_all_ = true;   // Drone_EnableAll: release every WaitSwitch drone (test hook for patrol/react)
+        sp_ = true;
+    } else if (a == "--sp-channels") {
+        sp_channels_ = true;   // log switch-channel transitions per tick (objective-driver hunt with MissionSystem)
         sp_ = true;
     } else if (a == "--difficulty" && need(1)) {
         difficulty_ = std::clamp(std::atoi(argv[++i]), 1, 3);
@@ -184,9 +188,29 @@ void DroneCli::after_tick(World& world) {
         for (int id : sp_ids_)
             if (Drone* d = sys_->find(id)) sp::release_waiting(*d);
     }
+    if (sp_channels_ && spsys_) {
+        // Switch-channel transitions with drone context (objective-driver hunt with MissionSystem's log).
+        for (int ch = 1; ch < 256; ++ch) {
+            const bool on = spsys_->channels.on(ch);
+            if (on == (channel_snap_[std::size_t(ch)] != 0)) continue;
+            channel_snap_[std::size_t(ch)] = on ? 1 : 0;
+            std::size_t alive = 0, attacking = 0;
+            for (Drone* o : spsys_->sp_drones())
+                if (o->alive()) {
+                    ++alive;
+                    if (o->state() == sp::st::kStAttack) ++attacking;
+                }
+            std::printf("frame %ld: channel %d -> %d (%zu SP drones alive, %zu in Attack)\n", frame, ch, int(on), alive,
+                        attacking);
+        }
+    }
     for (const Hit& h : hits_) {
-        if (h.frame != frame || h.drone < 1 || std::size_t(h.drone) > ids_.size()) continue;
-        Drone* d = sys_->find(ids_[std::size_t(h.drone - 1)]);
+        if (h.frame != frame || h.drone < 1) continue;
+        // Demo drones first, then placed SP drones (sp_ids_ parallels ids_ for --drone-hit N).
+        const std::size_t n = std::size_t(h.drone);
+        if (n > ids_.size() + sp_ids_.size()) continue;
+        const int id = n <= ids_.size() ? ids_[n - 1] : sp_ids_[n - ids_.size() - 1];
+        Drone* d = sys_->find(id);
         if (!d) continue;
         HitInfo hit;
         hit.damage = h.damage;
@@ -237,6 +261,22 @@ void DroneCli::after_tick(World& world) {
                         frame, d->id, d->pos[0], d->pos[1], d->pos[2], d->yaw, d->mv.speed, d->visibility, d->seen_frames,
                         d->lost_frames, dasc_name(d->anim.cur_state), d->anim.script);
     }
+}
+std::vector<int> DroneCli::drain_coder_spawns(MissionSystem& mission) {
+    // Coder spawns (Drone_CoderCreate for cutscene event 8): zeroed-DIVars default drones at the event
+    // feet (DMODE 0, Idle). SpSession calls this after World::tick; nfgame's headless loops too.
+    std::vector<int> ids;
+    if (!spsys_) return ids;
+    for (const MissionSystem::Spawn& s : mission.take_spawns()) {
+        std::printf("mission spawn: %.1f,%.1f,%.1f args %u %u %u %u\n", s.pos[0], s.pos[1], s.pos[2], s.args[0],
+                    s.args[1], s.args[2], s.args[3]);
+        Drone* d = spsys_->spawn_scripted({s.pos[0], s.pos[1], s.pos[2]}, s.args);
+        if (!d) continue;
+        ids.push_back(d->id);
+        std::printf("sp coder spawn: drone %d at %.1f,%.1f,%.1f args %u %u %u %u\n", d->id, double(d->pos[0]),
+                    double(d->pos[1]), double(d->pos[2]), s.args[0], s.args[1], s.args[2], s.args[3]);
+    }
+    return ids;
 }
 
 bool DroneCli::camera(Vec3& eye, float& yaw, float& pitch) const {

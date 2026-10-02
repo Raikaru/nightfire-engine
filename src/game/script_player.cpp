@@ -274,7 +274,19 @@ void CutscenePlayer::fire(const ScriptCommand& cmd, Stream& s) {
     }
     case CutsceneOp::AnimStart:
     case CutsceneOp::AnimEnd:
-    case CutsceneOp::LightStart:
+    case CutsceneOp::LightStart: {
+        // `DynamicLights::create` at the entity position (Characters-2's map).
+        Light l;
+        l.intensity = p[1];
+        l.type = p[2] == 1;
+        if (key_count() > 0) {
+            const float span = std::max(1.0f, end_time_ - s.entity_start);
+            const float f = std::clamp((s.time - s.entity_start) / span, 0.0f, 1.0f);
+            l.pos = key_pos(std::min(key_count() - 1, std::size_t(f * float(key_count() - 1))));
+        }
+        lights_.push_back(l);
+        break;
+    }
     case CutsceneOp::LightEnd:
     case CutsceneOp::SpriteStart:
     case CutsceneOp::SpriteEnd:
@@ -364,6 +376,12 @@ std::vector<CutscenePlayer::Sound> CutscenePlayer::take_sounds() {
 std::vector<CutscenePlayer::Message> CutscenePlayer::take_messages() {
     std::vector<Message> out;
     out.swap(messages_);
+    return out;
+}
+
+std::vector<CutscenePlayer::Light> CutscenePlayer::take_lights() {
+    std::vector<Light> out;
+    out.swap(lights_);
     return out;
 }
 

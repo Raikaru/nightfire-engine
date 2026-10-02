@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -67,6 +68,9 @@ public:
         Mat4 transform;
     };
     void draw_objects(const Camera& cam, float aspect, const std::vector<ObjectDraw>& objects);
+    // Placements the static pass skips (dynamic objects taken over by draw_objects: scripted
+    // doors/panels, spinning rotors, broken or taken objects).
+    void set_hidden_placements(std::vector<std::size_t> hide);
     Mat4 view_projection(const Camera& cam, float aspect) const;
 
 private:
@@ -113,6 +117,7 @@ private:
     std::map<std::pair<std::size_t, std::int32_t>, GpuTexture> textures_;
     std::map<std::pair<std::size_t, std::size_t>, Mesh> meshes_, coll_meshes_;
     std::vector<Item> sky_behind_, world_, hidden_, sky_front_, alpha_, weapon_;
+    std::unordered_set<const Placement*> skipped_;  // set_hidden_placements: skipped by draw_items
     std::optional<Material> bound_material_;
 };
 

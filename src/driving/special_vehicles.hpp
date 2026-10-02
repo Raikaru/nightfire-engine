@@ -42,7 +42,8 @@ public:
     Vec3 forward() const;
     CameraTarget camera_target() const;
     Mat4 model_matrix() const;
-    void set_boost(float seconds) { boost_ = seconds; }  // gadget rocket boost
+    void set_boost(float seconds) { boost_ = seconds; }  // gadget rocket boost (Submarine)
+    void nudge(const Vec3& dp) { pos_ += dp; }          // car-car separation
 
 private:
     float boost_ = 0;
@@ -69,7 +70,8 @@ public:
     Vec3 forward() const;
     CameraTarget camera_target() const;
     Mat4 model_matrix() const;
-    void set_boost(float seconds) { boost_ = seconds; }  // gadget rocket boost
+    void set_boost(float seconds) { boost_ = seconds; }  // gadget rocket boost (Ultralight)
+    void nudge(const Vec3& dp) { pos_ += dp; }          // car-car separation
 
 private:
     float boost_ = 0;
@@ -96,7 +98,8 @@ public:
     Vec3 forward() const;
     CameraTarget camera_target() const;
     Mat4 model_matrix() const;
-    void set_boost(float seconds) { boost_ = seconds; }  // gadget rocket boost
+    void set_boost(float seconds) { boost_ = seconds; }  // gadget rocket boost (Snowmobile)
+    void nudge(const Vec3& dp) { pos_ += dp; }          // car-car separation
 
 private:
     float boost_ = 0;

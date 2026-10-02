@@ -63,9 +63,8 @@ Renderer::Renderer(const SpriteLibrary& sprites) : sprites_(sprites) {
 
 Renderer::~Renderer() {
     for (auto& [hash, tex] : textures_) glDeleteTextures(1, &tex);
+    if (frame_) glDeleteTextures(1, &frame_);
     glDeleteTextures(1, &white_);
-    glDeleteBuffers(1, &vbo_);
-    glDeleteVertexArrays(1, &vao_);
 }
 
 GLuint Renderer::gl_texture(std::uint32_t hash) {
@@ -158,6 +157,25 @@ void Renderer::fill(Rect dst, Color color) {
     push_quad(dst, 0, 0, 1, 1, color);
 }
 
+void Renderer::draw_frame(Rect dst, int width, int height, const std::uint32_t* rgba) {
+    if (width <= 0 || height <= 0 || !rgba) return;
+    if (!frame_ || width != frame_w_ || height != frame_h_) {
+        if (!frame_) glGenTextures(1, &frame_);
+        frame_w_ = width;
+        frame_h_ = height;
+        glBindTexture(GL_TEXTURE_2D, frame_);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    } else {
+        glBindTexture(GL_TEXTURE_2D, frame_);
+    }
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    bind(frame_);
+    push_quad(dst, 0, 0, 1, 1, {0x80, 0x80, 0x80, 0x80});
+}
 std::pair<std::uint32_t, std::uint32_t> Renderer::texture_size(std::uint32_t hash) const {
     const Texture* t = sprites_.find(hash);
     return t ? std::make_pair(t->width, t->height) : std::make_pair(0u, 0u);

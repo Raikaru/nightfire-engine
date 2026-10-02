@@ -70,13 +70,17 @@ SDL3 is fetched and built statically. Needs a C++20 compiler and OpenGL 3.3.
   Q look back (gamepad: DualShock 2 layout), Esc quit; `--shot` runs headless (`docs/driving.md`).
 - `build/nightfire <gamedir> [--mission level.bin] [--mp ...] [--drive name] [--frames N] [--shot out.bmp]`:
   the playable game. With no session flags it boots the frontend (title -> main menu -> mission / arena /
-  options) and launches single-player ACTION missions (world, NPCs, HUD, SFX + music, pause, end-mission),
-  multiplayer arena matches with bots (split screen, per-viewer HUD, pause, debriefing) or driving missions
-  (chase camera, HUD, pause, win/lose banners), then returns to the frontend. Settings persist in
+  options) and launches single-player ACTION missions (world, NPCs, mission objectives / movers / cutscenes,
+  HUD, SFX + music, pause with objectives, end-mission fail path, results with stats and the next mission),
+  multiplayer arena matches with bots (split screen, per-viewer HUD, animated remote bodies, pause,
+  debriefing) or driving missions (chase camera, HUD, pause, win/lose banners), then returns to the
+  frontend (mission wins chain into the next sp_level row, driving rows included). Settings persist in
   `~/.config/nightfire/nightfire.cfg`. Direct flags start a session without the menus (`--mp` takes the
   nfgame option set); `--frames`/`--shot`/`--inputs`/`--press` run headless for verification.
 - `tools/oracle/`: PCSX2 PINE client, virtual pad, per-frame player + pad tracer, `compare.py` and
   `run_scenarios.sh` (replay vs oracle error report; `docs/oracle.md`).
+- `tools/xref/xref.py <ps2_symbol|substring>`: PS2 pseudocode side by side with the matched GameCube and
+  Xbox decompilations (pipeline, coverage and caveats: `docs/xref.md`).
 
 Formats: `docs/formats.md`.
 

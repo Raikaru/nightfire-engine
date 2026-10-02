@@ -310,11 +310,11 @@ int dump_sp(GameFiles& files, const std::filesystem::path& gamedir, const std::s
         for (const sp::PlacedNpc& n : data.npcs) {
             const sp::NpcResolved r = sp::resolve_npc(n.spec, make_env(tables, id, 2), stats);
             std::printf("  #%-4u %6.1f %6.1f %6.1f  skin %08x class %02x/%02x  min-diff %u group %u  dtype %2d %-14s state %3d alt %3d  "
-                        "hp %5.1f acc %u  sight %.0f/%.1f  script %08x%s\n",
+                        "hp %5.1f acc %u  sight %.0f/%.1f  script %08x voice %u variant %u dch %u%s\n",
                         n.static_index, double(n.spec.pos[0]), double(n.spec.pos[1]), double(n.spec.pos[2]), n.spec.skin,
                         r.char_class, r.sub_class, n.spec.min_difficulty, n.group(), r.dtype, dtype_name(r.dtype),
                         r.initial_state, r.alt_state, double(r.health), r.accuracy, double(r.sight_range),
-                        double(r.sight_cone), n.spec.script, r.captain ? " CAPTAIN" : "");
+                        double(r.sight_cone), n.spec.script, n.spec.voice_set, n.spec.variant, n.spec.key12, r.captain ? " CAPTAIN" : "");
         }
         for (const auto& s : data.spawners)
             std::printf("  spawner mode %u group %u max %u budget %u  ch act/stop/done/kill %u/%u/%u/%u  min-dist %.1f at %.1f %.1f %.1f\n",

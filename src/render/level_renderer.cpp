@@ -183,6 +183,14 @@ void LevelRenderer::set_level(std::uint32_t level_id) {
     fog_ = level_fog(level_id);
 }
 
+void LevelRenderer::set_hidden_placements(std::vector<std::size_t> hide) {
+    skipped_.clear();
+    const auto& placements = level_.placements();
+    for (std::size_t i : hide) {
+        if (i < placements.size()) skipped_.insert(&placements[i]);
+    }
+}
+
 std::array<float, 3> LevelRenderer::clear_color() const {
     return options.fog && fog_ ? fog_->color : std::array<float, 3>{0, 0, 0};
 }
@@ -266,6 +274,7 @@ void LevelRenderer::draw_items(const std::vector<Item>& items, const Camera& cam
     set_fog(options.fog && fogged);
     const std::uint64_t tick = options.animate ? ticks_ : 0;
     for (const Item& item : items) {
+        if (skipped_.count(item.placement) != 0) continue;  // taken over by draw_objects
         Mat4 model = item.placement->transform;
         if (item.sky) {
             if (level_id_ == kSpaceLevel)

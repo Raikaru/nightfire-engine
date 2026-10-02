@@ -247,10 +247,68 @@ Record = `0x4C + nparams * 8` bytes:
 
 World geometry pieces are instanced at identity; props carry their own transforms.
 
+### Cutscene scripts (level `.bin` entry type 7, `Script_Load`)
+
+`u16 magic` (28), `u16 a`, `u16 nscripts` (< 0x3F), `u16 c`, `u16 d` (end time, 60 Hz frames),
+then per script `u16 id`, `u16 flags`, `u32 size`, `u8 data[size - 4]`, then `u32 key_count`,
+`u32 skip` (header bytes before the keys), `key_count` x 48-byte KEYED_POSROT keys
+(`f32 pos[3]`, `f32 quat[4]`, `f32 +32`, `f32 +36`, `u32 spare`, `f32 time` at +44), then zero
+padding to a 16-byte boundary. Each script entry becomes one playback stream (`Script_Run`):
+opcodes `4 StreamEnd (u16 + u8)`, `5 wait (u16 time + u8)`, `6 cond-skip (u16 + u8)`,
+`7 EntityStart (u32 hash + 5 bytes + count x u32 + pad)`, `9/12/15/21/23/26/29 *End (1 byte)`,
+`10 AnimStart (3 x u32 + pad)`, `13 CameraStart (u8 + u16 key start + u16 key end + pad)`,
+`18 Event (u8 count + u8 id + count x u32 + pad)`, `19 FadeStart (f32 + pad)`,
+`20 SpriteStart (5 x u16 + u32 + pad)`, `22 SoundStart (u32 + 3 bytes + pad)`,
+`24 LightStart (3 bytes + pad)`, `27 SubScriptStart (u32 + 2 bytes + pad)`,
+`30 TextStart (u32 Txt label + u16 frames + pad)`. Generic events (`Script_EventHandler`
+cases 3..19): 4 disable player, 5 `Drone_EnableAll`, 8 `Drone_CoderCreate` (4 args),
+9 camera mode, 10 break object, 11 set linked byte, 13/17 set channels, 15 callback,
+18 `RamSave` + load level, 19 `ScriptCam`. Code: `src/assets/cutscene.*`,
+`src/game/script_player.*`; every type-7 entry on the disc parses (468 entries, `nfdump validate`).
+
+### Mission data (`Mission_Init`, `Mission_MonitorObjectives`, `sp_level`)
+
+ACTION.ELF `MissionData` (0x2a4350, 24 x 10 words): per row `u32 level`, `u32 base map`,
+`u32 order`, `u32 objectives pointer` (into `.data`), `u32 objective count`, ... `u32 profile`
+(always 0x5604), `u32 unlock`. One 24-byte objective: `u32 label` (0x04... Txt),
+`u32 fail label` (or -1), `u32 spare`, `u8 channel` + `u8 init` + `u8 spare` + `u8 second channel`,
+`u8 flags` (bit 1 = inverted) + 3 spare, `u32 runtime state` (0 on disc). `sp_level` (0x2df2e0,
+12 x 0x18 menu items) is the mission order: value = level id (`0x070000xx` ACTION story maps,
+`0x0900000x` DRIVING.ELF missions). Rows for 0x0700000e/0f/10 have no level bin (cut content).
+Code: `src/assets/mission_data.*`, `src/game/mission.*`.
+
+### Dynamic object params (`parsemap_create_dynamic_objects`)
+
+Static params are `{i32 key; u32 value}` pairs; `Create` functions read `level_tag+0x2c+4*key`
+(`StaticInstance::param(key)`). Channels are u8s (0 = none). The gameplay-relevant map:
+
+| class | params |
+|-------|--------|
+| 219 door | 0 flags (2 = proximity auto), 1 group, 2 unlock ch, 3 lock ch, 5/6/7 open/close/locked SFX (-1 silent), 8/9 mode bits; spline track from the static's path ref when present, else swing |
+| 220 trigger | 0 type, 1 out ch, 2..9 inputs, 10 gate; Touch (235) / TouchOnce (234) force type 2/1 with out = param 0 |
+| 232 load-level | 0 destination (`0x300000` bit = end-of-mission exit for the base id, like fail `LevelToEndTo`; else the next bin), 3 blocker ch ("can't leave" while clear) |
+| 244 movie | 0 script hash (0x06... type-7 entry) |
+| 236-239 multiplex | 0 out, 1.. inputs (AND / sequence / fan-out / OR) |
+| 41 switch | 0 channel, 1 lever script hash (type-7), 3 init value, 5 gate; use toggles |
+| 226 SS | 0 out, 1 class mask, 3 value ch, 4 sound; touch writes the touch state |
+| 32 breakable | 1 HP, 2 break SFX; 225 destroyable: 1 gate ch, 0 out, smashed by the channel |
+| 40 sensor | 3 alarm ch, 4 gate, cone trip sets the alarm (sounds 1193/1194/1245) |
+| 222 searchlight | 1 alarm ch (long static cone v1; sweep from 4/5 [INFERENCE]) |
+| 249 sound trigger | 0/4 channels, 2 SFX id (one-shot); 251 music trigger: 1 gate (alt 0), 2 `Music_Event` id |
+| 49 fusebox | 0 spark script, 1..4 channels, use powers p1 [INFERENCE] |
+| 51 hint | 0 Txt label, 1 SFX, 3 gate ch; 46/48 lock/monitor: use sets param 1 [INFERENCE] |
+| 240 pickup | 0 kind (1 weapon / 3 ammo / 6 weapon-empty [INFERENCE]), 1 id, 2 rounds, 4 SFX, 6 respawn frames |
+| 228 hurt | 0 damage per tick (kill-planes use 6); 254 mine: proximity blast (damage 50 [INFERENCE]) |
+| 231 thirdcam | 0 camera id; 217 script player: 0 script hash, 2 == 1 auto-plays, 6 trigger ch |
+| 47 copter / 52 turret / 210 shooter / 224 creature | scripted shooters (range + timed shots [INFERENCE]) |
+
+Classes 15/229/230/233/241/245/248 are Bots' NPC/spawner/cover/AI data, 34/58/62/63 Movement's
+climb anchors, 36/45 spawn markers, 250 ThirdIcon zones, 37/38 MP-only, the rest static visuals.
+Code: `src/game/objects.*`; `nfdump validate` checks every non-world static against this table.
+
 ## UI: fonts, strings, sprite textures
 
 ### Fonts (`Font_DrawText`, `Font_GetKernAdjust`, `Font_ParseFormat`, ELF `FontTable`, `specialchar`)
-
 There is no font file: the three bitmap fonts are ACTION.ELF data. `FontTable` is `{u32 texture_hash;
 u32 descriptor_ptr}` x3 (font numbers 1..3 = NFont2 `0x03000005`, SerpLight `0x03000003`, Medium
 `0x030000D8`; the textures are 512x128 / 512x64 / 512x128 in the shared level chunk `010001d8`).
@@ -378,6 +436,41 @@ Holding triangle suppresses accept/start; holding accept or start suppresses tri
 menus accept and start alias. `Input_ClearAllActions` runs on every page change: a button held across pages counts
 as pressed again.
 
+### Movies (`psiStartBackgroundMovie`, `playPssRsrcs`)
+
+FMVs live outside `FILES.BIN`: `MOVIES/30_FPS/*.PSS` on the disc (22 files, ~848 MB; absent from data
+distributions that only carry the filesystem's `ps2/` tree). They are standard MPEG-2 program streams
+(pack header `00 00 01 BA`; verified 512x448 mpeg2video, decodable with stock ffmpeg) named `%8.8X.PSS`
+after the movie id (`psiStartBackgroundMovie("%s%s%8.8x.pss%s")`: attract `0x73A/0x73B0048`, intro
+`0x7380048`, esthero `0x73B0048`, trailer `0x7390048`, wingame `0x73F0048`, plus per-mission `0x71xxxxxx`
+and trailer variants). Playback there is the PS2 PSS library (`StartUpBGFMV`/`playPssRsrcs`, IPU hardware
+decode to the framestore, `psiMovieFinished` polls). Video here is plain mpeg2video (512x448, 30 fps);
+audio is 48 kHz stereo s16le PCM in the 0xBD private packets (each PES payload is `ff a0 00 00` +
+samples; rate/channels from the first packet's SShd header; concatenated payloads decode gapless,
+track length matches the video duration to a frame). Playback: `cmake/MediaFFmpeg.cmake` (system
+libavformat/libavcodec/libswscale via pkg-config), `src/media/movie_player.*` (libav video + manual
+audio scan), `ui::Renderer::draw_frame`, PCM through a short-lived SDL device. Menu movie pages
+request their PSS id (`Frontend::take_movie_request`, `movie_finished` for the post-movie transition);
+`nfui <gamedir> movie <hex-id|path> [--at SEC] [--stats]` plays standalone (`--stats` decodes headless and
+prints frame count plus video/audio durations). Files must sit at
+`<gamedir>/MOVIES/30_FPS/` (copied from the ISO). The credits roll is data, not
+video: `Menu_SetupCredits` builds 578 12-byte rows (two label pointers + format/span bytes) from
+`Txt_BindLabel(0x10002a5..)` strings and `.rodata` English text; the page assigns one row every 14 ticks
+to 26 label pairs sliding up 2px per tick (`assets/credit_data.*` reproduces the table from label hashes
+and ELF addresses; per-row font variants stay script-default).
+
+### Profiles (memory-card codename save, `LS_Make*`/`LS_Load*`)
+
+The card save is bit-packed per-section blobs (`BIN_PushBits`): Mission (level id, `Menu_GetNightfireStatus`
+word, `PlrStats_GetScoreTable` rows, `GameState[0x52]`), Bonus (`Menu_GetBonus` u64 reward mask),
+GlobalSettings (volumes, `DrawInfo` bits, screen position), MPSettings (per-slot radar/health),
+PlrSettings (`PlayerSetting[0..12]` bits + style), Cheats (`CheatInfo` words), plus the codename and
+difficulty. This engine stores the same fields as versioned binary files (`NFPR`, `assets/profile.*`)
+under `XDG_CONFIG_HOME/nightfire` (one `<codename>.nfprof`), because reproducing the bit layout buys
+nothing: corrupt files fail load and the menus fall back to a fresh profile. MP handicap/radar globals
+(`MPSettings+0x40/+0x44`) and the live damage globals behind the TWEAKS scrolls are session state the
+game owns (`Frontend::tweak_vars` documents the targets).
+
 ## Skeletal animation and characters
 
 Code: `src/assets/anim.*` (skeleton, skin, sequence, script, pose sampling, palette), `src/assets/character.*`
@@ -435,7 +528,6 @@ Sleeve: weapon skins name no arm mesh; `AnimSleeveGetEntity(i)` picks the first 
 Flags: bits 0-2 root-motion distance table, bit 3 facial (channels are `+0x3A` morph weights instead of bones).
 Channel count is `3 * bones + 3 * popcount(skeleton mask)` (checked for 18k sequences); sequences for skeletons 26 and
 33 carry 30 further channels that no code reads.
-
 A channel is `u32 header = byte_length | first_entry << 16`, then entries stored as `u16` pairs: each entry is
 `frames << 6 | mask` and is followed (after its pair) by one `f32` per set mask bit. Entries are consecutive
 segments; segment *k* covers frames up to and including the cumulative sum of `frames`, and holds a quintic

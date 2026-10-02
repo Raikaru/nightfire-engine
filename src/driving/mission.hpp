@@ -49,7 +49,8 @@ struct AiCar {
     std::unique_ptr<AiDriver> driver;
     std::string car;
     int model = -1;     // into Mission::models_, -1 = player-model fallback
-    int node = -1;      // current road node
+    int node = -1;      // current road node (rs index: a spine_ value)
+    int walk = -1;      // position inside spine_ (monotonic route progress)
     int lap = 0;
     float lap_progress = 0;
 };
@@ -75,6 +76,8 @@ public:
     const DrivingHud& hud() const { return hud_; }
     const MissionData& data() const { return data_; }
     const RoadNetwork& road() const { return road_; }
+    // Spine node ids in route order (for progress display/probing).
+    const std::vector<int>& spine() const { return spine_; }
 
     const std::vector<AiCar>& ai() const { return ai_; }
     const std::vector<CarModel>& models() const { return models_; }
@@ -82,7 +85,12 @@ public:
     const std::vector<HazardZone>& zones() const { return zones_; }
     const std::vector<Pickup>& pickups() const { return pickups_; }
     std::vector<SoundEvent> drain_sfx();
-
+    // Checkpoints remaining (for progress display/probing).
+    std::size_t checkpoints_left() const { return checkpoints_.size(); }
+    // Position of the next checkpoint gate (player position when none remain).
+    Vec3 next_checkpoint() const;
+    // Route progress 0..1 along the spine (for HUD progress + probing).
+    float route_progress() const;
     // Vehicle-side of Movement-2's board/leave API (GT_LoseControl equivalent): autopilot drives
     // the player vehicle (engine idles through the normal audio path).
     void set_autodrive(bool on) { autodrive_ = on; }
@@ -94,6 +102,7 @@ public:
     Mat4 heli_matrix(const AiDriver& heli) const;
 
 private:
+    void update_walk();  // monotonic route progress for autopilot/checkpoints/AI
     void spawn_ai();
     void spawn_traffic();
     void spawn_pickups();
@@ -105,9 +114,10 @@ private:
     void damage_player(float amount, int zone, const std::string& what);
     void message(const std::string& text, float seconds = 3.0f);
     int car_model(const std::string& car);
-    // Start-line spawn: first walk node with ground and 8 m of clear space ahead at car
-    // height (the Paris rs#0 start faces into a start-line barrier). Falls back to rs#0.
-    bool find_start(Vec3& pos, float& yaw) const;
+    // Route lookahead: nearest walk node to p, then `ahead` further along the walk. Returns
+    // -1 when the walk is empty; callers must guard the target distance (walk teleports at
+    // section boundaries must not steer cars across the map).
+    int route_ahead(const Vec3& p, int ahead) const;
 
     DrivingLevel& level_;
     MissionData data_;
@@ -144,6 +154,23 @@ private:
     float clock_ = 0;
     int ticks_ = 0;
     float ram_cooldown_ = 0;  // shared ram-damage cooldown (seconds)
+    float stuck_clock_ = 0;   // autopilot reverse-out timer
+    float recover_cool_ = 0;  // out-of-world reset throttle
+    float lost_clock_ = 0;    // autopilot wrong-way timer (resets onto the walk)
+    float gun_clock_ = 0;     // demo-gunner cycle timer
+    int wedge_walk_ = -1;         // walk index of the last wedge reset (run-up counting)
+    int wedge_reps_ = 0;
+    int prog_walk_ = -1;          // walk index at the last progress (backstop tripwire)
+    float prog_clock_ = 0;
+    float beach_clock_ = 0;       // wheels-dangling timer (fast beached recovery)
+    bool kturning_ = false;   // latched K-turn (reverse with lock until nose comes around)
+    std::uint8_t kturn_lock_ = 0;  // latched K-turn lock side
+    bool braking_ = false;        // latched slow-down (starves turn/gas limit cycles)
+    float yaw_rate_ = 0;          // smoothed player yaw rate (spin detection)
+    float last_yaw_ = 0;
+    bool yaw_init_ = false;
+    PadState auto_gun();      // synthetic fire inputs for the demo driver (R1 gunner + L1 gadgets)
+    int player_walk_ = -1;    // player position inside spine_ (monotonic progress)
 };
 
 }  // namespace nf::driving

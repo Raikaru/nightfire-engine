@@ -80,14 +80,18 @@ struct PowerUpSpot {
     std::string kind;    // "missiles", "oil", "smoke", "emp", "boost", "shield", "health", ...
 };
 
-// Road-network segment (`rs` record, RNgp group; sub_220C28): a directed lane piece. Consecutive
-// segments chain end-to-start (rs#0 ends where rs#1 starts in Paris).
+// Road-network lane piece (`rs` record, RNgp group; sub_220C28): a start point `+0x00` plus
+// lane parameters. Only Paris stores chainable world-space starts; elsewhere the `+0x00`
+// x/y are small lane ids and only z carries route distance, so `rs` is not routable there.
 struct RoadSeg {
     Vec3 a{}, b{};
     std::uint32_t flags = 0;  // word +0x1C
     float width = 0;          // word +0x20 as float, when sane
 };
 
+// Routable road points: the main-road `rn` records (most populous road id of the RNgp group)
+// in index order. `rn` = {vec3 pos, u32 (self | road<<16), u32 (prev | self<<16), ...} and the
+// positions chain continuously along the mission route on every track with a network.
 struct MissionData {
     std::string mset_name;
     std::vector<std::uint32_t> mset_words;  // 182 words after the name
@@ -98,6 +102,7 @@ struct MissionData {
     std::vector<MissionRule> rules;
     std::vector<PowerUpSpot> powerups;      // Map instances of PowerUp* smackable articles
     std::vector<RoadSeg> road;              // all `rs` segments, index order
+    std::vector<Vec3> route;               // all `rn` positions, index order (the route)
     std::size_t cams = 0, windows = 0, elements = 0, paths = 0;
 
     static MissionData load(const CarpFile& carp);

@@ -20,7 +20,9 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
+#include "assets/nav_data.hpp"
 #include "game/object_world.hpp"
 
 namespace nf {
@@ -116,11 +118,14 @@ struct DoorObject {
     bool swing = true;       // false = spline path (`Door_SetupSwing` vs framelist)
     std::uint16_t path_index = 0;  // spline path when !swing
     bool has_path = false;
-    bool auto_door = false;  // opens on proximity without a channel (`obj+244 & 2`)
+    bool auto_door = false;  // opens on proximity (`obj+244 & 2`, data: p0 = 2)
     std::uint16_t flags = 0;        // param 0 (door mode bits)
     float idle_frames = 0;          // open frames with nobody near (auto-close)
     std::array<float, 3> last_max{};  // mover displacement tracking
     bool has_last = false;
+    std::vector<PathKey> path;    // spline track (`static_path_refs` match, else swing)
+    std::array<float, 3> local_mn{}, local_mx{};  // model-space bounds (rotated each tick)
+    bool has_local = false;
 };
 
 struct SoundRequest {
@@ -182,6 +187,9 @@ public:
     const std::vector<ScriptPlayerAnchor>& script_players() const { return script_players_; }
     std::vector<ScriptPlayerAnchor>& script_players() { return script_players_; }
     std::vector<SoundRequest> take_sounds();
+    // Use-action entry for Movement's `Player_Activate` probe (Cross): toggles the nearest
+    // door / switch / lock / monitor / fusebox in the sphere, true when something took it.
+    bool activate_at(const Vec3& center, float radius);
     // Music events (`MusicTrigger_Update`: id with value 2) for the music hook.
     std::vector<std::uint32_t> take_music();
     // HUD text (`Hint_Update`, locked doors): (label, frames, type).
@@ -266,6 +274,8 @@ private:
     void object_bounds(std::size_t placement, std::array<float, 3>& mn, std::array<float, 3>& mx) const;
     bool touch_test(std::size_t placement, const Toucher& t) const;
     void door_pose(DoorObject& d, std::array<float, 16>& out) const;
+    bool use_door(DoorObject& d);  // `Door_Activate` toggle/deny for one use edge
+    bool use_switch(Switch& sw);   // switch toggle / lock-out set for one use edge
     void tick_switches(const std::vector<Toucher>& touchers, const std::vector<bool>& use_pressed);
     void tick_damage(const std::vector<Toucher>& touchers, const WeaponEvents& weapon_events, float dt_frames,
                      WeaponSystem* weapons, const HurtSink& hurt);
@@ -293,6 +303,8 @@ private:
     std::vector<SoundRequest> sounds_;
     std::vector<std::uint32_t> music_;
     std::vector<Text> texts_;
+    // World-space bounds per placement with collision (touch tests + movers).
+    std::unordered_map<std::size_t, std::pair<std::array<float, 3>, std::array<float, 3>>> bounds_;
     std::uint32_t load_level_ = 0, movie_ = 0;
     std::array<std::uint8_t, 256> prev_{};  // channel snapshot for rising edges
     std::uint64_t tick_ = 0;

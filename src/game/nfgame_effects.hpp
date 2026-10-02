@@ -61,6 +61,7 @@ public:
     CharacterBank& bank_;
     const SpriteLibrary* sprites_;
     DynamicLights lights_;
+    SwitchChannels switches_;   // all off: channel-0 lights (all weapon lights) always enabled
     std::vector<Decal> decals_;
     std::vector<Puff> puffs_;
     std::vector<Blast> blasts_;

@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "app/app.hpp"
+#include "app/movie.hpp"
 #include "app/session_drive.hpp"
 #include "app/session_mp.hpp"
 #include "app/session_sp.hpp"
@@ -26,6 +27,7 @@
 #include "render/window.hpp"
 #include "ui/frontend.hpp"
 #include "ui/menu_audio.hpp"
+#include "driving/driving_level.hpp"
 #include "ui/renderer.hpp"
 #include "ui/text.hpp"
 
@@ -142,11 +144,23 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
         audio->update();
     };
     if (!press.empty() || !shot.empty()) {
-        // Headless verification: replay the button script, then screenshot.
+        // Headless verification: replay the button script, serve a pending movie
+        // request into the shot when the script lands on a movie page, else screenshot.
         if (!press.empty()) replay_press(frontend, pad, press);
         play_sounds();
         report_result(frontend.result());
         out = frontend.result();
+        if (std::uint32_t movie = frontend.take_movie_request()) {
+            if (shot.empty()) {
+                // Probe run: note the request and take the fallback transition (no playback).
+                std::printf("frontend movie %08X requested (use --shot to capture it)\n", movie);
+            } else {
+                MovieScreen screen(window, ui, text, audio, nullptr, ctx.gamedir);
+                screen.play(movie, shot, 90);
+            }
+            frontend.movie_finished();
+            return false;
+        }
         if (!shot.empty()) {
             int w, h;
             window.begin_frame(w, h);
@@ -179,6 +193,12 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
             pad.push(live_menu_pad(gamepad));
             frontend.update(pad);
             play_sounds();
+            // Movie pages hand their PSS id to the game (fallback transition when missing).
+            if (std::uint32_t movie = frontend.take_movie_request()) {
+                MovieScreen screen(window, ui, text, audio, gamepad, ctx.gamedir);
+                screen.play(movie);
+                frontend.movie_finished();
+            }
             accumulator -= 1.0 / 30.0;
         }
         if (trace && frontend.page_id() != last_page) {
@@ -228,10 +248,12 @@ struct Args {
     // Session selection (empty = boot to the frontend).
     std::string mission;
     int difficulty = -1;
+    std::vector<std::pair<int, int>> channels;  // --channel CH=VAL presets (nfgame debug hook)
     bool mp = false;
     std::vector<std::string> mp_args;
     std::string drive;
     std::string car;
+    std::string movie;  // direct PSS test: hex id or .PSS path
     // Headless.
     long frames = -1;
     std::string shot;
@@ -252,9 +274,16 @@ bool parse_args(int argc, char** argv, Args& a) {
         if (v == "--help" || v == "-h") a.help = true;
         else if (v == "--mission") need(a.mission);
         else if (v == "--difficulty" && i + 1 < argc) a.difficulty = std::atoi(argv[++i]);
+        else if (v == "--channel" && i + 1 < argc) {  // debug: preset a mission switch channel (CH=VAL)
+            const std::string spec = argv[++i];
+            const auto eq = spec.find('=');
+            if (eq == std::string::npos) throw std::runtime_error("--channel needs CH=VAL");
+            a.channels.emplace_back(std::atoi(spec.substr(0, eq).c_str()), std::atoi(spec.substr(eq + 1).c_str()));
+        }
         else if (v == "--mp") a.mp = true;
         else if (v == "--drive") need(a.drive);
         else if (v == "--car") need(a.car);
+        else if (v == "--movie") need(a.movie);
         else if (v == "--frames" && i + 1 < argc) a.frames = std::atol(argv[++i]);
         else if (v == "--shot") need(a.shot);
         else if (v == "--inputs") need(a.inputs);
@@ -288,8 +317,9 @@ bool parse_args(int argc, char** argv, Args& a) {
 
 void usage(const char* prog) {
     std::fprintf(stderr,
-                 "usage: %s <gamedir> [--mission level.bin [--difficulty 0|1|2]] [--mp MAP_OPTS] [--drive name "
-                 "[--car name]] [--frames N] [--shot out.bmp] [--inputs file] [--press a,b,...] [--mute]\n"
+                 "usage: %s <gamedir> [--mission level.bin [--difficulty 0|1|2] [--channel CH=VAL]] [--mp MAP_OPTS] "
+                 "[--drive name [--car name]] [--movie hexid] [--frames N] [--shot out.bmp] [--inputs file] "
+                 "[--press a,b,...] [--mute]\n"
                  "  no session flags: boot to the frontend (title -> main menu -> mission / arena / driving).\n"
                  "  --mp options: nfgame set (--mode/--players/--bots/--frag-limit/--time-limit/--weapons/...).\n",
                  prog);
@@ -308,6 +338,13 @@ int run(int argc, char** argv) {
 
     std::unique_ptr<AppContext> ctx = load_context(args.gamedir);
 
+    // Window first: it owns SDL/GL and must die last (teardown order: menu audio and the
+    // UI renderers hold live SDL/GL objects and are destroyed before it).
+    const bool direct = !args.mission.empty() || args.mp || !args.drive.empty() || !args.movie.empty();
+    const bool headless_opts = args.frames >= 0 || !args.shot.empty() || !args.press.empty() || !args.inputs.empty();
+    const bool hidden = (direct && headless_opts) || (!direct && (!args.press.empty() || !args.shot.empty()));
+    Window window("nightfire", kWindowW, kWindowH, hidden);
+
     // Frontend menu audio (best effort: the shared SFX ids, volumes from the settings).
     SoundArchive archive(args.gamedir);
     audio::AudioSystem menu_audio(archive);
@@ -315,18 +352,25 @@ int run(int argc, char** argv) {
     menu_audio.set_music_volume(cfg.music_volume);
     audio::AudioSystem* menu_audio_ptr = args.mute ? nullptr : &menu_audio;
     if (menu_audio_ptr && !menu_audio_ptr->open_device()) menu_audio_ptr = nullptr;
-
-    const bool direct = !args.mission.empty() || args.mp || !args.drive.empty();
-    const bool headless_opts = args.frames >= 0 || !args.shot.empty() || !args.press.empty() || !args.inputs.empty();
-    const bool hidden = (direct && headless_opts) || (!direct && (!args.press.empty() || !args.shot.empty()));
-
-    Window window("nightfire", kWindowW, kWindowH, hidden);
     ui::Renderer ui(ctx->assets.sprites);
     ui::TextRenderer text(ui, ctx->assets.fonts);
 
     // ---- direct session launches (headless verification / debug) ----
+    if (!args.movie.empty()) {
+        // Hex id (0x73B0048) or .PSS path; headless with --shot/--frames, skippable windowed.
+        std::uint32_t id = 0;
+        if (args.movie.size() > 4 &&
+            (args.movie.compare(args.movie.size() - 4, 4, ".PSS") == 0 || args.movie.compare(args.movie.size() - 4, 4, ".pss") == 0)) {
+            std::fprintf(stderr, "nightfire: --movie takes a hex id (paths play via nfui movie)\n");
+            return 2;
+        }
+        id = std::uint32_t(std::stoul(args.movie, nullptr, 16));
+        MovieScreen screen(window, ui, text, menu_audio_ptr, nullptr, args.gamedir);
+        screen.play(id, args.shot, args.frames);
+        return 0;
+    }
     if (!args.mission.empty()) {
-        SpLaunch launch{args.mission, args.difficulty >= 0 ? args.difficulty : cfg.difficulty + 1};
+        SpLaunch launch{args.mission, args.difficulty >= 0 ? args.difficulty : cfg.difficulty + 1, args.channels};
         SpSession session(*ctx, window, ui, text, launch, cfg);
         if (!session.ready()) return 1;
         if (args.frames >= 0 || !args.shot.empty() || !args.inputs.empty()) {
@@ -402,34 +446,82 @@ int run(int argc, char** argv) {
     }
 
     // ---- full game loop: frontend -> session -> results -> frontend ----
+    // A mission win chains into the next sp_level row (ACTION level or driving mission).
+    std::uint32_t pending_level = 0;  // nonzero: skip the frontend and launch this sp_level id
     while (true) {
-        FrontendResult result;
-        if (!run_frontend(*ctx, window, ui, text, cfg, menu_audio_ptr, args.press, args.shot, result)) {
-            if (!args.press.empty() || !args.shot.empty()) return 0;  // headless menu run done
+        if (pending_level == 0) {
+            FrontendResult result;
+            if (!run_frontend(*ctx, window, ui, text, cfg, menu_audio_ptr, args.press, args.shot, result)) {
+                if (!args.press.empty() || !args.shot.empty()) return 0;  // headless menu run done
+                if (result.action == FrontendResult::Action::Quit) return 0;
+                return 0;
+            }
+            args.press.clear();
+            args.shot.clear();
             if (result.action == FrontendResult::Action::Quit) return 0;
-            return 0;
-        }
-        args.press.clear();
-        args.shot.clear();
-        if (result.action == FrontendResult::Action::Quit) return 0;
-        if (result.action == FrontendResult::Action::StartMission) {
-            SpLaunch launch{result.level_bin, result.difficulty};
-            while (true) {
-                SpSession session(*ctx, window, ui, text, launch, cfg);
-                if (!session.ready()) break;
-                const SpResult r = session.run_interactive();
-                if (r.exit != SpExit::Restart) break;
+            if (result.action == FrontendResult::Action::StartMission) {
+                // The mission map can also name a driving mission: launch it on the DRIVING side.
+                if (driving::find_level(result.level_bin)) {
+                    DriveSessionApp drive(*ctx, window, ui, text, result.level_bin, "", cfg);
+                    if (drive.ready()) {
+                        while (true) {
+                            const DriveResult dr = drive.run_interactive();
+                            if (dr.exit != DriveExit::Restart) break;
+                        }
+                    }
+                    continue;
+                }
+                SpLaunch launch{result.level_bin, result.difficulty, {}};
+                while (true) {
+                    SpSession session(*ctx, window, ui, text, launch, cfg);
+                    if (!session.ready()) break;
+                    const SpResult r = session.run_interactive();
+                    if (r.exit == SpExit::Restart) continue;
+                    if (r.exit == SpExit::NextMission) pending_level = r.next_level;
+                    break;
+                }
+            } else if (result.action == FrontendResult::Action::StartMultiplayer && result.launch) {
+                MpDirect mp = MpSession::from_launch(*result.launch);
+                while (true) {
+                    MpSession session(*ctx, window, ui, text, mp, cfg);
+                    if (!session.ready()) break;
+                    const MpResult r = session.run_interactive();
+                    if (r.exit != MpExit::Rematch) break;
+                }
             }
-        } else if (result.action == FrontendResult::Action::StartMultiplayer && result.launch) {
-            MpDirect mp = MpSession::from_launch(*result.launch);
-            while (true) {
-                MpSession session(*ctx, window, ui, text, mp, cfg);
-                if (!session.ready()) break;
-                const MpResult r = session.run_interactive();
-                if (r.exit != MpExit::Rematch) break;
-            }
+            // Resume / RestartMission / MissionDone / None from the main menu: show it again.
+            continue;
         }
-        // Resume / RestartMission / MissionDone / None from the main menu: show it again.
+        // Mission chain: an ACTION row continues on foot, a driving row on the DRIVING side.
+        const std::uint32_t chained = pending_level;
+        pending_level = 0;
+        if ((chained & 0x0F000000) == 0x09000000) {
+            static const std::pair<std::uint32_t, const char*> kDriveMissions[] = {
+                {0x09000001, "paris"}, {0x09000003, "alps"}, {0x09000005, "underwater"}, {0x09000006, "jungle1"}};
+            const char* name = nullptr;
+            for (const auto& [id, n] : kDriveMissions) {
+                if (id == chained) name = n;
+            }
+            if (!name) continue;  // unmapped driving row (e.g. SnowMobile): back to the frontend
+            DriveSessionApp drive(*ctx, window, ui, text, name, "", cfg);
+            if (!drive.ready()) continue;
+            while (true) {
+                const DriveResult dr = drive.run_interactive();
+                if (dr.exit != DriveExit::Restart) break;
+            }
+            continue;
+        }
+        char bin[16];
+        std::snprintf(bin, sizeof(bin), "%08x.bin", chained);
+        SpLaunch launch{bin, cfg.difficulty + 1, {}};
+        while (true) {
+            SpSession session(*ctx, window, ui, text, launch, cfg);
+            if (!session.ready()) break;
+            const SpResult r = session.run_interactive();
+            if (r.exit == SpExit::Restart) continue;
+            if (r.exit == SpExit::NextMission) pending_level = r.next_level;
+            break;
+        }
     }
 }
 

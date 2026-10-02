@@ -92,14 +92,32 @@ public:
         std::array<float, 3> pos{};
         std::uint32_t args[4]{};
     };
+    struct Light {
+        std::array<float, 3> pos{};
+        std::uint8_t intensity = 0;
+        bool type = false;
+    };
     std::vector<Sound> take_sounds();
     std::vector<Text> take_texts();
     std::vector<Music> take_music();
     std::vector<Spawn> take_spawns();
+    std::vector<Light> take_lights();
+    // Channel transitions since the last call (frame, channel, value): poll-based watch for
+    // tracing objective drivers headless (e.g. which tick sets ch70 on 07000005).
+    struct ChannelEvent {
+        std::uint64_t frame = 0;
+        int channel = 0;
+        bool value = false;
+    };
+    std::vector<ChannelEvent> take_channel_log();
     // Movers/draws/hides for the collision world and the renderer.
     const std::vector<Mover>& movers() const;
     const std::vector<SpObjects::DrawOverride>& draws() const;
     const std::vector<std::size_t>& hides() const;
+    // Plays a level cutscene by hash now (pause-menu NIS requests, MoviePlayer fallbacks).
+    void play_nis(std::uint32_t hash) { play_script(hash); }
+    // Fails the mission now (`DroneFunc_SetMissionFailReason` via SpSystem::on_mission_fail).
+    void fail_mission(std::uint32_t label);
     sp::SwitchChannels& channels() { return channels_; }
     SpObjects& objects() { return *objects_; }
 
@@ -120,6 +138,15 @@ public:
         std::uint64_t frames = 0, shots = 0, hits = 0;
     };
     const Stats& stats() const { return stats_; }
+    // Objectives for the pause OBJECTIVES tab and results (`Mission_MonitorObjectives` states).
+    struct ObjectiveInfo {
+        MissionObjective def;
+        ObjectiveState state;
+    };
+    std::vector<ObjectiveInfo> objectives() const;
+    // Drones killed this level (Bots' `SpSystem::stats.deaths`); feeds the results score line
+    // together with stats() (frames/shots/hits) — the score formula itself is frontend-side.
+    std::uint64_t kills() const;
 
     // CutscenePlayer::Host implementation (routes into the hooks/queues above).
     bool channel(std::uint16_t ch) const override;
@@ -143,7 +170,6 @@ private:
     void monitor_objectives();
     void update_state(FrameTiming timing);
     void play_script(std::uint32_t hash);
-    void sync_channels(World& world);
 
     Level& level_;
     std::uint32_t level_id_ = 0;
@@ -171,6 +197,11 @@ private:
     std::vector<Text> texts_;
     std::vector<Music> music_;
     std::vector<Spawn> spawns_;
+    std::vector<Light> lights_;
+    World* world_ = nullptr;  // valid during tick() for player disable/enable
+    std::vector<ChannelEvent> channel_log_;
+    std::array<std::uint8_t, 256> channel_watch_{};
+    bool watch_init_ = false;
     Stats stats_;
     std::uint64_t frame_ = 0;
 };

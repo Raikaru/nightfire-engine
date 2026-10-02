@@ -79,7 +79,8 @@ std::unique_ptr<Scene> make_scene(const std::string& mode, SceneArgs& args) {
     if (mode == "font") return make_font_scene(args);
     if (mode == "menu") return make_menu_scene(args);
     if (mode == "hud") return make_hud_scene(args);
-    throw std::runtime_error("unknown mode " + mode + " (font, menu, hud)");
+    if (mode == "movie") return make_movie_scene(args);
+    throw std::runtime_error("unknown mode " + mode + " (font, menu, hud, movie)");
 }
 
 int run(int argc, char** argv) {
@@ -102,6 +103,10 @@ int run(int argc, char** argv) {
     if (mode == "mp") {  // headless text mode: prints to stdout, never opens a window
         SceneArgs text_args{files, assets, gamedir, extra};
         return run_mp_text(text_args);
+    }
+    if (mode == "movie") {  // --stats decodes headless (no window, no audio device)
+        for (const std::string& a : extra)
+            if (a == "--stats") return run_movie_stats(gamedir, extra);
     }
     Window window("nfui - " + mode, kWindowW, kWindowH, !shot.empty());
     ui::Renderer renderer(assets.sprites);
@@ -131,6 +136,7 @@ int run(int argc, char** argv) {
         SDL_Event e;
         while (SDL_PollEvent(&e))
             if (e.type == SDL_EVENT_QUIT || (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE)) running = false;
+        if (scene->finished()) running = false;
         Uint64 now = SDL_GetTicksNS();
         accumulated += now - last;
         last = now;

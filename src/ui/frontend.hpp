@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -9,7 +10,10 @@
 
 #include "assets/menu_file.hpp"
 #include "assets/mp_data.hpp"
+#include "assets/profile.hpp"
 #include "assets/sp_menu.hpp"
+#include "assets/tweak_data.hpp"
+#include "assets/credit_data.hpp"
 #include "assets/ui_assets.hpp"
 #include "game/input.hpp"
 #include "ui/menu.hpp"
@@ -139,8 +143,9 @@ struct PlayerOptions {
 class Frontend {
 public:
     // `menu` must outlive the Frontend (the front end's `MenuFile`, or the one of the level for Pause).
-    // `mp` / `sp` may be null when the multiplayer / single player pages are not needed; both must outlive the Frontend.
-    Frontend(const UiAssets& assets, const MenuFile& menu, const MpData* mp = nullptr, const SpMenuData* sp = nullptr);
+    // `mp` / `sp` / `tweaks` may be null when those pages are not needed; all must outlive the Frontend.
+    Frontend(const UiAssets& assets, const MenuFile& menu, const MpData* mp = nullptr,
+             const SpMenuData* sp = nullptr, const TweakData* tweaks = nullptr);
     ~Frontend();
     Frontend(const Frontend&) = delete;
     Frontend& operator=(const Frontend&) = delete;
@@ -164,11 +169,30 @@ public:
     void set_debriefing(DebriefInfo info);
     GameOptions& game_options();
     const std::string& profile_name() const;
+    // Memory-card profiles (files under the user config dir): the active codename save.
+    // set_profile applies name, options, unlock-relevant bonus and controller setup at once.
+    void set_profile(Profile profile);
+    const Profile& profile() const;
+    // Records a finished mission (score/medal) into the active profile.
+    void complete_mission(std::uint32_t level_id, int score, int medal);
+    // Snapshots options/unlocks/bonuses/cheats into the active profile file. False = unwritable.
+    bool save_profile();
     // Session cheat flags (P_TWEAKS/P_TWEAKS2, C_CH*): nonzero = armed. Scroll cheats
     // (e.g. C_CHCHHEALTH) store their level, button cheats toggle 1/0.
     bool tweak(std::uint32_t control) const;
     int tweak_value(std::uint32_t control) const;
     void set_tweak(std::uint32_t control, int value);
+    // Live tuning values (P_TWEAKS/P_TWEAKS2 scrolls): the game seeds them (boot defaults come
+    // from TweakData) and applies them to the damage globals; accept stores shown / scale.
+    const std::map<std::uint32_t, float>& tweak_vars() const;
+    // C_NIS accept requests a script play (script hash, 0 = header row): the game plays it.
+    std::uint32_t take_nis_request();
+    // Movie pages request their PSS id (take_movie_request clears it and hands the transition to
+    // the game); movie_finished runs the post-movie transition when playback ends.
+    std::uint32_t take_movie_request();
+    void movie_finished();
+    // Credits roll rows for P_CREDITS (load_credits); empty = the script's static text.
+    void set_credits(std::vector<CreditRow> rows);
 
     // The menu runtime and multiplayer model, for tools and tests.
     ui::MenuManager* manager();

@@ -22,8 +22,9 @@ constexpr std::uint32_t kFader = 0x100000ED;      // full-screen fade label of t
 // ---------------------------------------------------------------------------------------------
 // Impl
 
-Frontend::Impl::Impl(const UiAssets& a, const MenuFile& m, const MpData* d, const SpMenuData* sp)
-    : assets(a), menu(m), mp_data(d), sp_data(sp) {
+Frontend::Impl::Impl(const UiAssets& a, const MenuFile& m, const MpData* d, const SpMenuData* sp,
+                     const TweakData* tweaks)
+    : assets(a), menu(m), mp_data(d), sp_data(sp), tweak_data(tweaks) {
     if (mp_data) mp = std::make_unique<MpSetup>(*mp_data, assets.strings);
     register_front_handlers();
     register_mp_handlers();
@@ -65,8 +66,7 @@ void Frontend::Impl::register_front_handlers() {
     handlers[kPageStart] = &Impl::p_start;
     handlers[kPageMain] = &Impl::p_main;
     handlers[kPageParisEnum] = &Impl::p_paris_enum;
-    handlers[kPageEstHero] = &Impl::p_esthero;
-    handlers[kPageIntro] = &Impl::p_intro;
+    // P_ESTHERO / P_INTRO are movie pages now (register_info_handlers).
     handlers[kPageLanguage] = &Impl::p_language;
     handlers[kPageMemCardInit] = &Impl::p_language;
     handlers[0x10000002] = &Impl::c_go_nightfire;
@@ -112,17 +112,7 @@ bool Frontend::Impl::p_paris_enum(ui::Control&, const ui::Msg& m) {
     return true;
 }
 
-// P_ESTHERO: the "hero" movie, then the main menu.
-bool Frontend::Impl::p_esthero(ui::Control&, const ui::Msg& m) {
-    if (m.type == kIdle) change_page(kPageMain, 1);
-    return true;
-}
-
-// P_INTRO: the intro movies, then the title.
-bool Frontend::Impl::p_intro(ui::Control&, const ui::Msg& m) {
-    if (m.type == kIdle) change_page(kPageStart, 1);
-    return true;
-}
+// P_ESTHERO / P_INTRO are movie pages (p_movie requests their PSS, then transitions).
 
 // P_LANGUAGE / P_PS2MEMCARDINIT: the disc is the US one, the language and the memory card are settled.
 bool Frontend::Impl::p_language(ui::Control& page, const ui::Msg& m) {
@@ -157,8 +147,9 @@ bool Frontend::Impl::c_go_codenames(ui::Control&, const ui::Msg& m) {
 // ---------------------------------------------------------------------------------------------
 // Frontend
 
-Frontend::Frontend(const UiAssets& assets, const MenuFile& menu, const MpData* mp, const SpMenuData* sp)
-    : impl_(std::make_unique<Impl>(assets, menu, mp, sp)) {}
+Frontend::Frontend(const UiAssets& assets, const MenuFile& menu, const MpData* mp, const SpMenuData* sp,
+                   const TweakData* tweaks)
+    : impl_(std::make_unique<Impl>(assets, menu, mp, sp, tweaks)) {}
 
 Frontend::~Frontend() = default;
 
@@ -217,6 +208,20 @@ int Frontend::tweak_value(std::uint32_t control) const {
     return it == impl_->tweaks.end() ? 0 : it->second;
 }
 void Frontend::set_tweak(std::uint32_t control, int value) { impl_->tweaks[control] = value; }
+const std::map<std::uint32_t, float>& Frontend::tweak_vars() const { return impl_->tweak_vars; }
+std::uint32_t Frontend::take_nis_request() {
+    const std::uint32_t r = impl_->nis_request;
+    impl_->nis_request = 0;
+    return r;
+}
+std::uint32_t Frontend::take_movie_request() {
+    const std::uint32_t r = impl_->pending_movie;
+    impl_->pending_movie = 0;
+    if (r) impl_->movie_taken = true;
+    return r;
+}
+void Frontend::movie_finished() { impl_->movie_finished(); }
+void Frontend::set_credits(std::vector<CreditRow> rows) { impl_->credits = std::move(rows); }
 ui::MenuManager* Frontend::manager() { return impl_->mgr.get(); }
 MpSetup* Frontend::mp_setup() { return impl_->mp.get(); }
 

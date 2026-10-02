@@ -24,6 +24,48 @@ namespace {
 const DroneTuning& tuning(const Drone& d) { return d.sys->config().tuning; }
 bool multiplayer(const Drone& d) { return d.sys->config().multiplayer; }
 
+// PS2Sinf range reduction. The EE sub.s/add.s round toward zero (not to nearest), so every loop
+// iteration errs downward and the error accumulates linearly (~80 ulp at x=1000); a round-to-nearest
+// host loop random-walks instead and diverges past tolerance. Replicated exactly: double subtract,
+// float convert, one-ulp pull toward zero when the conversion rounded away from it.
+// Used by the aim-wobble path so differential comparisons against the original hold to 1e-5.
+float ps2_sinf_arg(float x) {
+    constexpr double two_pi = 6.2831854820251465;   // 0x40C90FDB
+    if (3.1415927f <= x) {
+        do {
+            const double d = double(x) - two_pi;
+            float r = float(d);
+            if (double(r) > d) r = std::nextafterf(r, 0.0f);
+            x = r;
+        } while (3.1415927f <= x);
+    } else {
+        while (x < -3.1415927f) {
+            const double d = double(x) + two_pi;
+            float r = float(d);
+            if (double(r) < d) r = std::nextafterf(r, 0.0f);
+            x = r;
+        }
+    }
+    if (x <= 1.5707964f) {
+        if (-1.5707964f <= x) return x;
+        return -3.1415927f - x;
+    }
+    return 3.1415927f - x;
+}
+
+// PS2Sinf polynomial: Horner in f32 with the .sdata constants @0x2f3b20, verified bit-near-exact
+// (max 2.4e-7 over 2001 samples incl. the ±1.00000012 endpoint overshoot) against the original.
+float ps2_sin(float x) {
+    // Table: {-0.00019807414, -0.1666665673, 0.0083330255, 2.601887e-6} (lanes c0..c3).
+    constexpr float c0 = -0.00019807414f, c1 = -0.1666665673f, c2 = 0.0083330255f, c3 = 2.601887e-6f;
+    const float a = ps2_sinf_arg(x);
+    const float a2 = a * a;
+    const float inner = a2 * c3 + c0;
+    const float m2 = a2 * inner + c2;
+    const float m1 = a2 * m2 + c1;
+    return a * (1.0f + a2 * m1);
+}
+
 // 60 Hz "frames" of the original -> ticks of the running rate (n * FRAME_RATE_DIV).
 std::uint32_t frames60(const Drone& d, float n) { return std::uint32_t(std::max(n * d.rate() / 60.0f, 0.0f)); }
 
@@ -121,16 +163,15 @@ bool do_bullet_accuracy(Drone& d, float rand_draw) {
         d.aim_offset = {0, 0, 0};
     } else {
         // Correlated Lissajous wobble around the aim point, rotated by RotMatrix(obj+0x1c0 euler angles)
-        // and ApplyMatrixLV into Drone+0x200. Replicated op-for-op in f32 (in game the euler is pure yaw,
-        // which coincides with a yaw rotation; the sin/cos use host libm, whose ulps differ from the VU
-        // polynomial inside the differential tolerance).
+        // and ApplyMatrixLV into Drone+0x200. Replicated op-for-op in f32: the PS2Sinf range reduction is
+        // exact, the VU polynomial and matrix FMA chains match to ~1e-7 (differential tolerance 1e-5).
         const float tt = float(d.now() + d.rand_phase);
         const float ph = tt * 0.01f;
-        const Vec3 v{0.5f * std::sin(ph), 1.5f * std::sin(ph + 1.5707964f), 1.5f * std::sin(tt * 0.02f)};
+        const Vec3 v{0.5f * ps2_sin(ph), 1.5f * ps2_sin(ph + 1.5707964f), 1.5f * ps2_sin(tt * 0.02f)};
         const float rx = d.aim_euler[0], ry = d.aim_euler[1], rz = d.aim_euler[2];
-        const float sx = std::sin(rx), cx = std::sin(rx + 1.5707964f);   // PS2Sinf3 pairs (cos via sin(+pi/2))
-        const float sy = std::sin(ry), cy = std::sin(ry + 1.5707964f);
-        const float sz = std::sin(rz), cz = std::sin(rz + 1.5707964f);
+        const float sx = ps2_sin(rx), cx = ps2_sin(rx + 1.5707964f);   // PS2Sinf3 pairs
+        const float sy = ps2_sin(ry), cy = ps2_sin(ry + 1.5707964f);
+        const float sz = ps2_sin(rz), cz = ps2_sin(rz + 1.5707964f);
         const float m0 = cy * cz;
         const float m1 = sx * sy * cz + cx * sz;
         const float m2 = cx * -sy * cz + sx * sz;

@@ -63,15 +63,25 @@ def main() -> None:
     for label, (t, pred) in SUBSYSTEMS.items():
         items = [(t, n) for n, va, s, tu in manifest[t] if pred(n, tu)]
         print(row(f"{t}: {label}", items))
-    print("\n### Methods\n")
+    print("\n### Methods (pairs by primary evidence family)\n")
+
+    def family(m: str) -> str:
+        for f in ("via-gc", "strset", "str", "bsim", "call", "data", "const", "order"):
+            if m.startswith(f):
+                return f
+        return m
+
     meth = collections.Counter()
     for (t, _n), plats in idx.items():
         for p, r in plats.items():
-            m = r["method"].split("(")[0]
-            meth[(t, p, m, r["confidence"])] += 1
-    print("| exe | platform | method | confidence | pairs |\n|---|---|---|---|---:|")
-    for (t, p, m, c), v in sorted(meth.items()):
-        print(f"| {t} | {p} | {m} | {c} | {v} |")
+            meth[(t, p, family(r["method"]), r["confidence"])] += 1
+    fams = ("str", "strset", "bsim", "call", "data", "const", "order", "via-gc")
+    print("| exe/platform | " + " | ".join(f"{f} (high/med)" for f in fams) + " |")
+    print("|---|" + "---:|" * len(fams))
+    for t in ("action", "driving"):
+        for p in ("gc", "xbox"):
+            cells = [f"{meth[(t, p, f, 'high')]}/{meth[(t, p, f, 'medium')]}" for f in fams]
+            print(f"| {t}/{p} | " + " | ".join(cells) + " |")
 
 
 if __name__ == "__main__":

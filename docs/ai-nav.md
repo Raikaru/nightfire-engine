@@ -95,7 +95,7 @@ range-checks the ray parameter); we reproduce that literally. `BoundsTest` retur
 ```
 nav: 28 levels with block 0x05, 612 path_data blocks (13328 records, 612 static refs, max |q|-1 1.2e-07), 855 portals
 nav runtime: 7 MP levels: 1546 links (27 blocked by a MoveTest limit or boundary crossing, 0 unexplained failures,
-  0 nodes outside rooms), emitters ok on 7, 82/82 routes walked to the goal, longest link 37.78, 0 failures
+0 nodes outside rooms), emitters ok on 7, 164/164 routes walked to the goal, longest link 37.78, 0 failures
 nav patrol/mission paths: 77, 77 assigned and followed (0 nodes outside rooms)
 ```
 

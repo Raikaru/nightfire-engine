@@ -174,7 +174,7 @@ struct MpSession::Impl {
 
         if (level->map()) fx_sprites.add(level->map()->chunk);
         effects = std::make_unique<WeaponEffects>(session->weapons().table(), *bank, &fx_sprites);
-        effects->set_map_lights(&bank->lights());
+        effects->set_map_lights(bank->lights());
 
         add_level_sprites(ctx.assets.sprites, Bytes(read_level_bin(ctx.files, bin)));
         for (int i = 0; i < options.humans; ++i) {
@@ -330,10 +330,10 @@ struct MpSession::Impl {
             glClear(GL_DEPTH_BUFFER_BIT);
             const ViewModel vm = session->weapons().viewmodel(i);
             if (vm.visible && vm.skin && vm.anim) {
-                const Vec3 muzzle = weapon_view->draw(cam, r.aspect(), vm, session->weapons().table().weapon(vm.weapon),
-                                                      effects->lighting_at(cam.eye, 2.0f));
-                if (vm.muzzle_flash > 0.0f && muzzle != Vec3{0, 0, 0})
-                    effects->add_light(muzzle, vm.flash_color, 5.0f, 2.0f);
+                const WeaponDef& def = session->weapons().table().weapon(vm.weapon);
+                const Vec3 muzzle =
+                    weapon_view->draw(cam, r.aspect(), vm, def, effects->lighting_at(cam.eye, 2.0f));
+                if (vm.muzzle_flash > 0.0f && muzzle != Vec3{0, 0, 0}) effects->muzzle_flash(muzzle, def);
             }
             glEnable(GL_DEPTH_TEST);
             glDisable(GL_BLEND);
@@ -358,15 +358,28 @@ struct MpSession::Impl {
         glEnable(GL_DEPTH_TEST);
     }
 
+    // Remote-player bodies: the same PlayerAnimator inputs the local player gets (stance category,
+    // crouch, per-tick body-space velocity), plus anim-script sound events served positional.
+    // Footstep SFX need the surface->sound table (Audio owns it); only Sound events play for now.
     void tick_bodies() {
         for (int j = 0; j < session->humans(); ++j) {
             if (!bodies[std::size_t(j)]) continue;
+            PlayerAnimator& body = *bodies[std::size_t(j)];
             const Player& q = *world->player(j);
             const auto* st = session->weapons().state(j);
             int category = 1;
             if (st) category = int(session->weapons().table().weapon(st->current).category);
-            bodies[std::size_t(j)]->set_category(category);
-            bodies[std::size_t(j)]->update(q.substate == SubState::Crouch, q.velocity, 2.0f);
+            body.set_category(category);
+            body.update(q.substate == SubState::Crouch, q.velocity, 2.0f);
+            // Event drain: character() is exposed const (Movement's local-player accessor); the
+            // animator object itself is ours and mutable, so the cast only recovers that.
+            CharacterInstance& character = const_cast<CharacterInstance&>(body.character());
+            for (const AnimEvent& e : character.take_events()) {
+                if (e.kind != AnimEventKind::Sound || e.arg == 0) continue;
+                audio::PlayOptions o;
+                o.position = q.pos;
+                audio->play_sfx(e.arg, o);
+            }
         }
     }
 

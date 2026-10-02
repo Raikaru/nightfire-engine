@@ -4,11 +4,14 @@
 #include <exception>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "assets/bin_archive.hpp"
+#include "assets/credit_data.hpp"
 #include "assets/menu_file.hpp"
 #include "assets/sprites.hpp"
 #include "assets/strings.hpp"
+#include "assets/tweak_data.hpp"
 #include "assets/ui_fonts.hpp"
 
 namespace nf {
@@ -93,6 +96,22 @@ std::size_t validate_ui(GameFiles& files, const std::filesystem::path& gamedir) 
     if (menus.size() != 2 || !menus.count("08000001") || !menus.count("08000002")) {
         std::printf("FAIL expected menu scripts 08000001 and 08000002 on the disc, found %zu kinds\n", menus.size());
         ++failures;
+    }
+    try {
+        TweakData tweaks = load_tweak_data(Elf32(read_file(gamedir / "ACTION.ELF")));
+        std::printf("ui tweaks: %zu captions, %zu scrolls, %zu NIS rows\n", tweaks.labels.size(),
+                    tweaks.scrolls.size(), tweaks.nis.size());
+    } catch (const std::exception& e) {
+        fail("tweak data", e);
+    }
+    try {
+        const GameFile* text = files.find("USATxt.dat");
+        if (!text) throw FormatError("FILES.BIN has no USATxt.dat");
+        StringTable strings = StringTable::parse(Bytes(files.read(*text)), false);
+        std::vector<CreditRow> credits = load_credits(Elf32(read_file(gamedir / "ACTION.ELF")), strings);
+        std::printf("ui credits: %zu rows\n", credits.size());
+    } catch (const std::exception& e) {
+        fail("credit data", e);
     }
     std::printf("ui: %zu glyphs (%zu kerning pairs) in 3 fonts, %zu icons; %zu string tables, %zu strings, %zu labels; "
                 "%zu bins (%zu with fonts); menu script: %zu pages, %zu controls; failures %zu\n",

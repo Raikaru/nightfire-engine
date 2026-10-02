@@ -48,6 +48,9 @@ add_library(nf_assets STATIC
   src/assets/menu_messages.cpp
   src/assets/menu_validate.cpp
   src/assets/sp_menu.cpp
+  src/assets/tweak_data.cpp
+  src/assets/profile.cpp
+  src/assets/credit_data.cpp
   src/assets/mission_data.cpp
   src/assets/cutscene.cpp
   src/assets/mp_data.cpp
@@ -58,7 +61,7 @@ target_include_directories(nf_assets PUBLIC src)
 target_compile_options(nf_assets PRIVATE -Wall -Wextra)
 
 add_executable(nfdump src/tools/nfdump.cpp src/tools/nfdump_sounds.cpp src/tools/nfdump_chars.cpp src/tools/nfdump_ui.cpp
-  src/tools/nfdump_ssh.cpp src/tools/nfdump_driving.cpp src/tools/nfdump_hud.cpp src/tools/nfdump_mp.cpp src/tools/nfdump_game.cpp src/tools/nfdump_weapons.cpp src/tools/nfdump_nav.cpp src/tools/nfdump_arena.cpp src/tools/nfdump_sp.cpp src/tools/nfdump_bots.cpp
+  src/tools/nfdump_ssh.cpp src/tools/nfdump_driving.cpp src/tools/nfdump_hud.cpp src/tools/nfdump_mp.cpp src/tools/nfdump_game.cpp src/tools/nfdump_weapons.cpp src/tools/nfdump_nav.cpp src/tools/nfdump_arena.cpp src/tools/nfdump_sp.cpp src/tools/nfdump_bots.cpp src/tools/nfdump_script.cpp src/tools/nfdump_diff.cpp
   src/ui/mp_setup.cpp)  # mp_setup is UI-independent (no GL), so nfdump compiles it directly instead of linking nf_ui
 target_link_libraries(nfdump PRIVATE nf_assets nf_game nf_driving_sim)
 target_compile_options(nfdump PRIVATE -Wall -Wextra)
@@ -102,6 +105,14 @@ add_executable(nfplay src/tools/nfplay.cpp src/tools/nfplay_driving.cpp)
 target_link_libraries(nfplay PRIVATE nf_audio)
 target_compile_options(nfplay PRIVATE -Wall -Wextra)
 
+# Movies: PSS (MPEG-2 program stream) playback via system FFmpeg (docs/formats.md "Movies").
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+include(MediaFFmpeg)
+file(GLOB NF_MEDIA_SOURCES CONFIGURE_DEPENDS src/media/*.cpp)
+add_library(nf_media STATIC ${NF_MEDIA_SOURCES})
+target_link_libraries(nf_media PUBLIC nf_assets FFmpeg SDL3::SDL3-static)
+target_compile_options(nf_media PRIVATE -Wall -Wextra)
+
 # 2D UI: sprite/text renderer, HUD and front-end menus (docs/ui.md), preview tool nfui.
 file(GLOB NF_UI_SOURCES CONFIGURE_DEPENDS src/ui/*.cpp)
 add_library(nf_ui STATIC ${NF_UI_SOURCES})
@@ -110,7 +121,7 @@ target_compile_options(nf_ui PRIVATE -Wall -Wextra)
 
 file(GLOB NF_UI_TOOL_SOURCES CONFIGURE_DEPENDS src/tools/nfui*.cpp)
 add_executable(nfui ${NF_UI_TOOL_SOURCES})
-target_link_libraries(nfui PRIVATE nf_ui)
+target_link_libraries(nfui PRIVATE nf_ui nf_media)
 target_compile_options(nfui PRIVATE -Wall -Wextra)
 
 # Gameplay: collision world, player movement, 30 Hz world tick (docs/gameplay.md), player executable nfgame.
@@ -148,5 +159,5 @@ target_compile_options(nfmips PRIVATE -Wall -Wextra)
 file(GLOB NF_APP_SOURCES CONFIGURE_DEPENDS src/app/*.cpp)
 add_executable(nightfire ${NF_APP_SOURCES} src/game/nfgame_weapon_hud.cpp
   src/game/nfgame_weapon_view.cpp src/game/nfgame_effects.cpp src/game/nfgame_quads.cpp)
-target_link_libraries(nightfire PRIVATE nf_game nf_render nf_audio nf_ui nf_driving)
+target_link_libraries(nightfire PRIVATE nf_game nf_render nf_audio nf_ui nf_driving nf_media)
 target_compile_options(nightfire PRIVATE -Wall -Wextra)

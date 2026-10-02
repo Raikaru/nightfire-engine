@@ -9,7 +9,7 @@ Outputs (all under $XREF = nightfire-ps2/build/xref):
     decomp/<prog>.jsonl   {"addr": int, "c": str} Ghidra C for every function
                           (GC/Xbox only; PS2 already has build/{ida,ghidra} dumps)
 
-Usage:  ghidra_export.py <prog> [--no-decomp] [--threads N]
+Usage:  ghidra_export.py <prog> [--decomp all|matched|none] [--skip-features] [--threads N]
         prog in: gc_action gc_driving xbox_action xbox_driving ps2_action ps2_driving
 """
 from __future__ import annotations
@@ -70,7 +70,9 @@ def load_manifest(target: str):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("prog", choices=sorted(PROGS))
-    ap.add_argument("--no-decomp", action="store_true")
+    ap.add_argument("--decomp", choices=("all", "matched", "none"), default="all",
+                    help="matched = only functions paired in $XREF/matches/*.tsv (run match.py first)")
+    ap.add_argument("--skip-features", action="store_true", help="reuse an existing feat/<prog>.json")
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--heap", default="3g")
     args = ap.parse_args()
@@ -112,13 +114,14 @@ def main() -> None:
     # Session 2: export (re-runnable without re-analysis).
     with pyghidra.open_program(str(binary), analyze=False, **open_args) as flat:
         program = flat.getCurrentProgram()
-        feats = export_features(program, prog)
         out = XREF / "feat" / f"{prog}.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(feats))
-        print(f"[{prog}] features: {len(feats['funcs'])} funcs -> {out}", flush=True)
-        if not args.no_decomp and not prog.startswith("ps2_"):
-            decompile_all(program, prog, args.threads)
+        if not (args.skip_features and out.exists()):
+            feats = export_features(program, prog)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(feats))
+            print(f"[{prog}] features: {len(feats['funcs'])} funcs -> {out}", flush=True)
+        if args.decomp != "none" and not prog.startswith("ps2_"):
+            decompile_all(program, prog, args.threads, matched_addrs(prog) if args.decomp == "matched" else None)
     print(f"[{prog}] total {time.time() - t0:.0f}s", flush=True)
 
 
@@ -442,20 +445,37 @@ def export_features(program, prog: str) -> dict:
     return dict(prog=prog, funcs=funcs)
 
 
-def decompile_all(program, prog: str, nthreads: int) -> None:
+def matched_addrs(prog: str) -> set[int]:
+    """Addresses of `prog` that appear on either side of any match table."""
+    import csv
+    out = set()
+    for p in (XREF / "matches").glob("*.tsv"):
+        a_prog, b_prog = p.stem.split("__")
+        col = "a_addr" if a_prog == prog else "b_addr" if b_prog == prog else None
+        if col:
+            with open(p) as f:
+                out |= {int(r[col], 16) for r in csv.DictReader(f, delimiter="\t")}
+    return out
+
+
+def decompile_all(program, prog: str, nthreads: int, only: set[int] | None = None) -> None:
     from ghidra.app.decompiler import DecompInterface, DecompileOptions
     from ghidra.util.task import ConsoleTaskMonitor
     fm = program.getFunctionManager()
-    funcs = [f for f in fm.getFunctions(True) if not f.isThunk() and not f.isExternal()]
+    funcs = [f for f in fm.getFunctions(True) if not f.isThunk() and not f.isExternal()
+             and (only is None or int(f.getEntryPoint().getOffset()) in only)]
     out = XREF / "decomp" / f"{prog}.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
     done = set()
-    if out.exists():
+    if out.exists():  # resume; drop a line truncated by an interrupted run
+        keep = []
         for line in out.read_text().splitlines():
             try:
                 done.add(json.loads(line)["addr"])
+                keep.append(line)
             except Exception:
                 pass
+        out.write_text("".join(k + "\n" for k in keep))
     todo = [f for f in funcs if int(f.getEntryPoint().getOffset()) not in done]
     print(f"[{prog}] decompiling {len(todo)} / {len(funcs)}", flush=True)
     lock = threading.Lock()

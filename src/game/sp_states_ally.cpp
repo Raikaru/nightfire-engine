@@ -49,6 +49,7 @@ int state_ally_lead(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         return 1;
     case kMsgTick: {
         // Bond fights alongside while leading: engage a seen opponent...
@@ -79,6 +80,7 @@ int state_ally_lead_in_way(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kStandAlert);
         set_idle_timeout(d, 3, 2);
         return 1;
@@ -99,6 +101,7 @@ int state_ally_lead_hide(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kCrouch);
         set_idle_timeout(d, 8, 5);
         return 1;
@@ -118,6 +121,7 @@ int state_ally_lead_wait(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         stand_idle_anim(d, false);
         return 1;
     case kMsgTick:
@@ -133,6 +137,7 @@ int state_ally_lead_mission_wait(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         stand_idle_anim(d, false);
         set_idle_timeout(d, 10, 5);
         return 1;
@@ -153,6 +158,7 @@ int state_ally_lead_combat(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         set_as_attacking(d);
         return 1;
     case kMsgTick:
@@ -200,6 +206,7 @@ int state_ally_follow(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         return 1;
     case kMsgTick: {
         const int next = enemy_look_for_opponent(d);
@@ -227,6 +234,7 @@ int state_ally_follow_wait(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         stand_idle_anim(d, false);
         return 1;
     case kMsgTick:
@@ -251,6 +259,7 @@ int state_ally_goto_goal(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         return 1;
     case kMsgTick:
         walk_goal(d, kStAllyFollowWait, kRun);
@@ -267,6 +276,7 @@ int state_surrender_anim(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         if (d.opponent.valid()) set_angle_to_obj(d, d.opponent, 0.0f, true);
         talk(d, Speech::Surrender);
         anim_call(d, 0, kSurrender, 0, kStSurrendered);
@@ -288,6 +298,7 @@ int state_surrendered(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kSurrendered);
         set_idle_timeout(d, 30, 30);
         return 1;
@@ -312,6 +323,7 @@ int state_unsurrender_anim(Drone& d, const Msg& m) {
     case kMsgNone:
         return 1;
     case kMsgEnter:
+        d.flags |= flag::kAware;
         anim_call(d, 0, kCStand, 0, kStAttack);
         return 1;
     case kMsgTick:

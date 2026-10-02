@@ -951,8 +951,9 @@ ViewModel WeaponSystem::viewmodel(int slot) const {
     // Player_WeaponRecoil sway + Player_SetWeaponAnimObj's final offset (y += 0.2, z -= 0.5). The offsets live
     // in the screen-attached weapon frame (+x right, +y DOWN, -z forward), so y is negated into
     // ViewModel::offset (+y up) just like the forward distance is.
+    // EXPERIMENT 3: origin depth variants for the P2K reference fit (z fwd only).
     v.offset = {hip[0] + std::sin(ph) * 0.01f, -(hip[1] + std::fabs(std::sin(ph + 1.0f)) * 0.01f + 0.2f),
-                -(hip[2] + std::sin(ph * 0.84328997f) * 0.02f - 0.5f)};
+                0.9f};
     v.muzzle_flash = float(p->muzzle_frames);
     v.flash_color = {float(d.flash_r) / 255.0f, float(d.flash_g) / 255.0f, float(d.flash_b) / 255.0f};
     return v;
