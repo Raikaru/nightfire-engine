@@ -13,7 +13,8 @@ namespace nf::gl {
     X(PFNGLGETPROGRAMIVPROC, glGetProgramiv) X(PFNGLGETPROGRAMINFOLOGPROC, glGetProgramInfoLog)        \
     X(PFNGLUSEPROGRAMPROC, glUseProgram) X(PFNGLGETUNIFORMLOCATIONPROC, glGetUniformLocation)          \
     X(PFNGLUNIFORMMATRIX4FVPROC, glUniformMatrix4fv) X(PFNGLUNIFORM1IPROC, glUniform1i)                \
-    X(PFNGLUNIFORM1FPROC, glUniform1f) X(PFNGLUNIFORM4FPROC, glUniform4f)                              \
+    X(PFNGLUNIFORM1FPROC, glUniform1f) X(PFNGLUNIFORM3FPROC, glUniform3f)\
+    X(PFNGLUNIFORM4FPROC, glUniform4f)                              \
     X(PFNGLGENVERTEXARRAYSPROC, glGenVertexArrays) X(PFNGLBINDVERTEXARRAYPROC, glBindVertexArray)      \
     X(PFNGLDELETEVERTEXARRAYSPROC, glDeleteVertexArrays) X(PFNGLDELETEBUFFERSPROC, glDeleteBuffers)    \
     X(PFNGLGENBUFFERSPROC, glGenBuffers) X(PFNGLBINDBUFFERPROC, glBindBuffer)                          \
@@ -21,7 +22,8 @@ namespace nf::gl {
     X(PFNGLENABLEVERTEXATTRIBARRAYPROC, glEnableVertexAttribArray)                                     \
     X(PFNGLVERTEXATTRIBPOINTERPROC, glVertexAttribPointer) X(PFNGLGENERATEMIPMAPPROC, glGenerateMipmap) \
     X(PFNGLACTIVETEXTUREPROC, glActiveTexture) X(PFNGLBLENDFUNCSEPARATEPROC, glBlendFuncSeparate)      \
-    X(PFNGLBLENDEQUATIONPROC, glBlendEquation)
+    X(PFNGLBLENDEQUATIONPROC, glBlendEquation)                                                     \
+    X(PFNGLBLENDCOLORPROC, glBlendColor)
 
 #define NF_GL_DECLARE(type, name) extern type name;
 NF_GL_FUNCS(NF_GL_DECLARE)

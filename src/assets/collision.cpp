@@ -72,6 +72,7 @@ Collision parse_collision(Bytes block) {
             }
             auto n = shorts(load<std::uint16_t>(block, to + 6));
             for (int j = 0; j < 3; ++j) tri.normal[j] = n[j] * kNormalScale;
+            tri.plane_d = load<float>(leaf_pool, load<std::uint16_t>(block, to + 6) * 2u + 6);
             tri.material = load<std::uint8_t>(block, materials + t);
         }
         c.boxes.push_back(box);

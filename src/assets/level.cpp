@@ -47,7 +47,9 @@ Level::Level(std::vector<std::uint8_t> bin) : bin_(std::move(bin)) {
     }
     if (map_ == SIZE_MAX) return;
 
-    for (const auto& s : chunks_[map_].chunk.statics) {
+    const auto& statics = chunks_[map_].chunk.statics;
+    for (std::size_t instance = 0; instance < statics.size(); ++instance) {
+        const StaticInstance& s = statics[instance];
         std::pair<std::size_t, std::size_t> target;
         if (s.hash == -1) {
             if (s.model_index >= chunks_[map_].chunk.models.size()) {
@@ -61,7 +63,7 @@ Level::Level(std::vector<std::uint8_t> bin) : bin_(std::move(bin)) {
             ++unresolved_;
             continue;
         }
-        placements_.push_back({target.first, target.second, instance_transform(s)});
+        placements_.push_back({target.first, target.second, instance, instance_transform(s)});
     }
 }
 

@@ -43,6 +43,11 @@ std::vector<Texture> decode_textures(const std::vector<Block>& blocks) {
         t.flags = load<std::uint16_t>(header->data, e);
         t.width = load<std::uint16_t>(header->data, e + 2) + 1u;
         t.height = load<std::uint16_t>(header->data, e + 4) + 1u;
+        t.frames = load<std::uint8_t>(header->data, e + 6);
+        if (t.frames == 0) throw FormatError("texture with zero frames");
+        // psiCreateMapTextures: fps in 1..59 -> 60 / fps ticks per frame, anything else every tick.
+        auto fps = load<std::uint8_t>(header->data, e + 7);
+        t.frame_ticks = fps >= 1 && fps <= 59 ? 60u / fps : 1u;
 
         Bytes pal = palettes[i]->data.subspan(4);
         std::size_t colors = pal.size() / 4;
@@ -58,14 +63,14 @@ std::vector<Texture> decode_textures(const std::vector<Block>& blocks) {
         Bytes idx = pixels[i]->data.subspan(4);
         std::size_t bits = colors == 16 ? 4 : 8;
         std::size_t stored = idx.size() * 8 / bits;  // texels present
-        // Animated textures store several frames back to back (decode frame 0). One texture on the
-        // USA disc stores fewer texels than its header claims; it is the header size halved.
-        while (stored < std::size_t(t.width) * t.height) {
+        // One texture on the USA disc stores fewer texels than its header claims; it is the header
+        // size halved.
+        while (stored < std::size_t(t.width) * t.height * t.frames) {
             if (t.width == 1 || t.height == 1) throw FormatError("texture pixel data too short");
             t.width /= 2;
             t.height /= 2;
         }
-        std::size_t n = std::size_t(t.width) * t.height;
+        std::size_t n = std::size_t(t.width) * t.height * t.frames;
         t.rgba.resize(n);
         for (std::size_t p = 0; p < n; ++p) {
             std::uint8_t v = colors == 16 ? ((idx[p / 2] >> ((p & 1) * 4)) & 0xF) : idx[p];
@@ -87,6 +92,7 @@ std::vector<Model> parse_models(const std::vector<Block>& blocks) {
         } else if (b.id == std::uint8_t(BlockId::EntityParams)) {
             Model m;
             m.hash = load<std::int32_t>(b.data, 4);
+            m.flags = load<std::uint32_t>(b.data, 8);
             for (std::size_t k = 0; k < 9; ++k) m.params[k] = load<float>(b.data, 0x0C + k * 4);
             m.name = std::string(load_cstr(b.data, 0x34));
             m.gfx = pending_gfx;

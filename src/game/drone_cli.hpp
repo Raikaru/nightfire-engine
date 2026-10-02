@@ -1,0 +1,63 @@
+#pragma once
+
+// nfgame command-line plumbing for the drone core (kept out of main.cpp): option parsing, the reference drones of
+// drone_demo.hpp, scripted hits and log lines for headless verification.
+//
+//   --drone X Y Z YAW [--goal GX GY GZ]   spawn a demo drone (repeatable; --goal applies to the preceding --drone)
+//   --drone-skin NAME|HASH                skin of the demo drones (default: the first "Mp_*" skin of the level bank)
+//   --drone-subclass N                    Drone+0xda character animation class (default: auto-detected, see --drone-probe)
+//   --drone-weapon ID  --drone-health H   weapon_data id (default 6) and health (default 10)
+//   --drone-hit N FRAME DAMAGE [PART]     hurt drone N (1-based) at that frame through its DamageTarget (PART: bone id)
+//   --drone-trace                         print drone state / position every 10 ticks and every state change
+//   --drone-probe                         print the DASC -> anim -> script mapping resolved for the skin
+//   --cam X Y Z YAW PITCH                 camera override for --shot (YAW in game convention: forward = (sin, cos))
+//   --follow-drone N                      camera behind drone N (1-based)
+
+#include <array>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "assets/character.hpp"
+#include "assets/elf.hpp"
+#include "assets/game_files.hpp"
+#include "assets/level.hpp"
+#include "game/drone_system.hpp"
+#include "game/weapons.hpp"
+
+namespace nf::drone {
+
+class DroneCli {
+public:
+    // Consumes the option at argv[i] (and its values, advancing i). Returns false if it is not a drone option.
+    bool parse(int argc, char** argv, int& i);
+    bool enabled() const { return !spawns_.empty() || probe_; }
+
+    // Creates the DroneSystem (added to `world` after the weapons), the nav network and the demo drones.
+    void setup(World& world, Level& level, CharacterBank& bank, const Elf32& elf, GameFiles& gf, WeaponSystem& weapons,
+               const std::string& bin_name);
+    // Call after every world tick (frame counter of the world): scripted hits and log lines.
+    void after_tick(World& world);
+
+    DroneSystem* system() const { return sys_; }
+    // Camera override in game convention (eye, yaw with forward = (sin, cos), pitch up positive); false = none.
+    bool camera(Vec3& eye, float& yaw, float& pitch) const;
+
+private:
+    struct Spawn { Vec3 pos; float yaw; std::optional<Vec3> goal; };
+    struct Hit { int drone; long frame; float damage; int part; };
+    std::vector<Spawn> spawns_;
+    std::vector<Hit> hits_;
+    std::optional<std::array<float, 5>> cam_;
+    std::string skin_;
+    int sub_class_ = -1, weapon_ = 6, follow_ = 0;
+    float health_ = 10.0f;
+    bool trace_ = false, probe_ = false;
+    std::unique_ptr<NavNetwork> nav_;
+    DroneSystem* sys_ = nullptr;
+    std::vector<int> ids_;
+    std::vector<int> last_state_;
+};
+
+}  // namespace nf::drone

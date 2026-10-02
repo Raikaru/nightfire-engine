@@ -55,14 +55,31 @@ struct Block {
 // file+4) right after the version word; version 0 files are a plain block stream. Stops at End.
 std::vector<Block> walk_blocks(Bytes file);
 
-// Texture: texture_header entry (12 bytes: u16 flags, u16 w-1, u16 h-1, u16 ?, u32 -1)
+// Texture: texture_header entry (12 bytes: u8 flags (bit0 = 256-colour CLUT), u8 ?, u16 w-1, u16 h-1,
+// u8 frame count, u8 frames per second, u32 -1) as consumed by psiCreateMapTextures / CacheTexture
 // + palette_data_psx (16 or 256 RGBA entries, alpha 0x80 = opaque, 256-entry CLUTs in PS2 CSM1 order)
-// + texture_data_pc (4bpp low-nibble-first or 8bpp indices, linear; animated textures append
-//   further frames, only frame 0 is decoded).
+// + texture_data_pc (4bpp low-nibble-first or 8bpp indices, linear, `frames` images back to back).
 struct Texture {
-    std::uint16_t flags;
+    std::uint16_t flags;             // header bytes 0..1
     std::uint32_t width, height;
-    std::vector<std::uint32_t> rgba;  // decoded, R in low byte
+    std::uint32_t frames;            // animation frames (1 = static)
+    std::uint32_t frame_ticks;       // 60 Hz ticks each frame is shown: 60 / fps (CacheTexture)
+    std::vector<std::uint32_t> rgba; // decoded, R in low byte; frames * width * height texels, frame 0 first
+
+    // Frame shown at `tick` (60 Hz counter, dword_2A37A0): tick / frame_ticks % frames.
+    std::uint32_t frame_at(std::uint64_t tick) const { return std::uint32_t(tick / frame_ticks % frames); }
+    const std::uint32_t* frame_pixels(std::uint32_t frame) const {
+        return rgba.data() + std::size_t(frame) * width * height;
+    }
+};
+
+// celglist+0x44 flag bits as tested by View_AddCels / View_AddObjects / View_DrawSky.
+enum ModelFlag : std::uint32_t {
+    kModelAlphaList = 0x1,     // drawn in the sorted alpha-object pass (psiSetUpColourBlend(1)), back to front
+    kModelSkyFollowsEye = 0x2, // sky: origin is the camera position instead of the placement position
+    kModelCameraRotation = 0x8,// sky: uses the camera rotation instead of the placement euler angles
+    kModelHidden = 0x10,       // not added to the world lists (sky objects, particle/emitter carriers)
+    kModelWeaponLayer = 0x2000,// drawn last, after the Z buffer is cleared
 };
 
 // Model = entity_params block paired with the PS2_GFX block that precedes it (celglist_tag), and the
@@ -71,9 +88,14 @@ struct Model {
     std::string name;
     std::int32_t hash;               // -1 = not registered in the global hashtable
     std::array<float, 9> params;     // bounding sphere (x,y,z,r) + bbox min/max (partial); see docs
+    std::uint32_t flags;             // celglist+0x44: draw flags, see ModelFlag
     Bytes gfx;                       // PS2_GFX block (may be a 0x20-byte stub with no geometry)
     Bytes collision;                 // coll_data_new block, empty if the model has none
 };
+
+// StaticInstance::flags low 16 bits: 0x8000 = world cel (built by parsemap_block_map_data_static);
+// otherwise the object class dispatched by parsemap_create_dynamic_objects.
+constexpr std::uint32_t kClassSky = 0x2A;  // View_AddSkyObj; params 0 slot, 1 flash, 2/3 timers, 4 layer
 
 // map_data_static record (0x4C bytes + n * 8 params).
 struct StaticInstance {
@@ -85,6 +107,14 @@ struct StaticInstance {
     std::array<float, 4> quat;       // x, y, z, w
     std::array<float, 3> scale;
     std::vector<std::pair<std::int32_t, std::uint32_t>> params;
+
+    std::uint32_t object_class() const { return flags & 0xFFFF; }
+    // Value of parameter `key` (params are stored in key order 0..n-1), `fallback` if absent.
+    std::uint32_t param(std::int32_t key, std::uint32_t fallback = 0) const {
+        for (const auto& [k, v] : params)
+            if (k == key) return v;
+        return fallback;
+    }
 };
 
 struct MapChunk {

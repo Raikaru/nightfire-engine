@@ -1,0 +1,8 @@
+0 release
+20 trig LT 1
+25 trig LT 0
+70 axis LY -1
+110 release
+120 trig LT 1
+125 trig LT 0
+160 release

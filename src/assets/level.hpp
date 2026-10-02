@@ -22,6 +22,7 @@ struct ChunkFile {
 struct Placement {
     std::size_t chunk;               // index into Level::chunks (owns the model + its textures)
     std::size_t model;
+    std::size_t instance;            // index into the Map chunk's statics (class, flags, params)
     std::array<float, 16> transform; // column-major, model -> world
 };
 

@@ -21,6 +21,8 @@ public:
     std::optional<Symbol> symbol(std::string_view name) const;
     // Bytes backing [vaddr, vaddr+size) in a PT_LOAD segment's file image.
     Bytes at(std::uint32_t vaddr, std::uint32_t size) const;
+    // Memory image of [vaddr, vaddr+size): file-backed bytes of every PT_LOAD segment, zero elsewhere (.bss).
+    std::vector<std::uint8_t> image_range(std::uint32_t vaddr, std::uint32_t size) const;
 
 private:
     struct Segment {

@@ -58,6 +58,20 @@ class Pine:
             out += data
         return bytes(out[addr - start : addr - start + size])
 
+    def read_ranges(self, ranges):
+        """Read several (addr, size) ranges in ONE PINE transaction, so they are as close to a
+        single instant as the emulator thread allows. Returns a list of bytes."""
+        ops = []
+        spans = []
+        for addr, size in ranges:
+            start, end = addr & ~7, addr + size
+            spans.append((len(ops), addr - start, size))
+            ops += [(READ64, a) for a in range(start, end, 8)]
+        if len(ops) > _MAX_BATCH:
+            raise PineError("read_ranges: batch too large")
+        data = self._transact(b"".join(struct.pack("<BI", op, a) for op, a in ops))
+        return [data[i * 8 + skip : i * 8 + skip + size] for i, skip, size in spans]
+
     def read32(self, addr: int) -> int:
         return struct.unpack("<I", self._transact(struct.pack("<BI", READ32, addr)))[0]
 
