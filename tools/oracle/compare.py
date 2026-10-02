@@ -45,8 +45,20 @@ def make_inputs(trace_path, out_path):
             lines.append((frame, following))
         lines.reverse()
         rate = first.get("rate", 30.0)
-        height = struct.unpack_from("<f", bytes.fromhex(first["cb"]), 0xCC)[0]
+        # A frame-rate flip straddling a tracer gap is attributed to the first missing frame: the
+        # tracer drops the record at the hitch, and the motion fits the new rate there (walk-8665
+        # runs at 30 Hz: synced max 0.47 cm vs 8.63 cm when it keeps the previous 60 Hz).
+        flip_rate = {}
+        present = sorted(by_frame)
+        for i in range(len(present) - 1):
+            a, b = present[i], present[i + 1]
+            rb = by_frame[b].get("rate", rate)
+            if b - a > 1 and rb != by_frame[a].get("rate", rate):
+                for m in range(a + 1, b):
+                    flip_rate[m] = rb
         for frame, rec in lines:
+            if frame in flip_rate:
+                rate = flip_rate[frame]
             rate = by_frame[frame].get("rate", rate) if frame in by_frame else rate   # ...but the previous rate
             pad = rec["pad"]
             src = by_frame.get(frame)

@@ -211,7 +211,10 @@ public:
     float elapsed() const { return elapsed_; }
     std::array<float, 2> team_score() const { return team_score_; }
     std::vector<ScoreRow> scoreboard() const;
-    const MatchResult& result() const { return result_; }   // valid once phase() is Ending / Over
+    // The original snapshots nothing: MP_SortOutWhoWon only writes the overlay banner and P_MPDEBRIEFING reads the
+    // live MPGame slots. This snapshot is taken at Over entry (where the original pauses the players and opens the
+    // debriefing), so rows include kills from the Ending hold; valid once phase() is Over.
+    const MatchResult& result() const { return result_; }
     ArenaHud hud(int viewer, const Vec3& eye, float yaw) const;
     PickupField& pickups() { return *pickups_; }
     const PickupField& pickups() const { return *pickups_; }
@@ -322,6 +325,7 @@ private:
 
     MatchPhase phase_ = MatchPhase::Running;
     int state_code_ = 0;            // MPGame+0x188 (0 running, 1 score limit, 2 time up, 3 hold, 4 results, 5 terminal, 6 restart)
+    int ended_by_ = 0;              // the 1/2 code that sent the match into the hold (state_code_ becomes 3)
     std::array<float, 2> team_score_{};
     float elapsed_ = 0;             // MPGame+0x190 (resets on round restart)
     float total_elapsed_ = 0;       // MPGame+0x19C

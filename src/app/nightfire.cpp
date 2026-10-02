@@ -497,12 +497,16 @@ int run(int argc, char** argv) {
         pending_level = 0;
         if ((chained & 0x0F000000) == 0x09000000) {
             static const std::pair<std::uint32_t, const char*> kDriveMissions[] = {
-                {0x09000001, "paris"}, {0x09000003, "alps"}, {0x09000005, "underwater"}, {0x09000006, "jungle1"}};
+                {0x09000001, "paris"},      // MIS01
+                {0x09000002, "alps"},       // MIS3 SnowMobile (docs/driving-missions.md)
+                {0x09000003, "alps2"},      // MIS4 Alps chase
+                {0x09000005, "underwater"},  // MIS11
+                {0x09000006, "jungle1"}};   // MIS13A (chains to 13B/13C internally)
             const char* name = nullptr;
             for (const auto& [id, n] : kDriveMissions) {
                 if (id == chained) name = n;
             }
-            if (!name) continue;  // unmapped driving row (e.g. SnowMobile): back to the frontend
+            if (!name) continue;  // unmapped driving row: back to the frontend
             DriveSessionApp drive(*ctx, window, ui, text, name, "", cfg);
             if (!drive.ready()) continue;
             while (true) {

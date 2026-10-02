@@ -129,10 +129,13 @@ void SpSystem::apply_config(Drone& d, const NpcResolved& r) {
     sx(d).cfg = r;
     sx(d).ammo = r.ammo;
     sx(d).ammo_max = r.ammo_max;
+    sx(d).clip = r.ammo;
+    sx(d).clip_max = r.ammo_max;
     // DroneWeap_FireWeapon: `Drone+0xbbc` counts the rounds left in the clip; out of ammo -> the Aim*Reload states.
     d.hooks.has_ammo = [](Drone& x) { return sx(x).ammo > 0 || sx(x).ammo_max == 0; };
     d.hooks.on_round_fired = [](Drone& x) {
         if (sx(x).ammo > 0) --sx(x).ammo;
+        if (sx(x).clip > 0) --sx(x).clip;
     };
 }
 

@@ -115,7 +115,8 @@ struct DoorObject {
     bool opening = false;    // target state (`Door_Activate` toggles)
     bool locked_shown = false;  // +112 & 0x10: the "locked" message already fired
     std::uint16_t auto_close = 0;  // +114: frames without anyone near before auto-close
-    bool swing = true;       // false = spline path (`Door_SetupSwing` vs framelist)
+    bool swing = true;       // yaw fallback: no framelist path (`Door_SetupSwing` doors)
+    bool spline = false;     // framelist eval mode (`+112 & 1` from param 4: spline vs keyframe)
     std::uint16_t path_index = 0;  // spline path when !swing
     bool has_path = false;
     bool auto_door = false;  // opens on proximity (`obj+244 & 2`, data: p0 = 2)
@@ -205,6 +206,8 @@ public:
     void set_link_byte(const std::array<float, 3>& pos, std::uint8_t value);  // event 11 (door lock)
     std::size_t door_count() const;
     bool any_door_open() const;
+    // Live panel transform for the renderer/movers (`Door_Interp` pose).
+    void door_pose(DoorObject& d, std::array<float, 16>& out) const;
     // LoadLevel/MoviePlayer requests (level id / script hash, 0 = none).
     std::uint32_t take_load_level();
     std::uint32_t take_movie();
@@ -232,6 +235,13 @@ private:
         float range = 20.0f;      // param 2 (`+64`)
         float half_sin = 0.10f;   // param 1 (`+60 = sin(p1 * 0.5 deg)` [INFERENCE])
         bool tripped = false;
+        // Searchlight sweep (`Searchlight_Update` case 0): yaw/pitch pan around the base
+        // angles with the param 4/5 degree range. Only class 222 sweeps (`sweep`).
+        bool sweep = false;
+        float phase = 0;      // `+4`: advances 1.0 per tick (init `Rand(480)` in the original)
+        float amp = 0;        // `+56`: half-range in radians
+        float base_yaw = 0;   // `+60`: range center in radians
+        float base_pitch = 0;  // `+20`: pitch center (placement pitch; original source unknown)
     };
     struct Turret {
         std::size_t placement = 0;
@@ -273,7 +283,6 @@ private:
     std::array<float, 3> placement_pos(std::size_t placement) const;
     void object_bounds(std::size_t placement, std::array<float, 3>& mn, std::array<float, 3>& mx) const;
     bool touch_test(std::size_t placement, const Toucher& t) const;
-    void door_pose(DoorObject& d, std::array<float, 16>& out) const;
     bool use_door(DoorObject& d);  // `Door_Activate` toggle/deny for one use edge
     bool use_switch(Switch& sw);   // switch toggle / lock-out set for one use edge
     void tick_switches(const std::vector<Toucher>& touchers, const std::vector<bool>& use_pressed);

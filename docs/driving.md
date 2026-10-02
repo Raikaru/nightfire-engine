@@ -27,10 +27,10 @@ One archive per mission, holding the track, the vehicles used, the tuning files 
 |---|---|---|---|
 | `paris` | `MIS01` | `paris_mis01` | `vanquish` |
 | `alps` | `MIS3` | `snow1a_mis3` | `supersnow` |
-| `alps2` | `MIS4` | `snow2a_mis4` | `vanquish` |
+| `alps2` | `MIS4` | `snow2a_mis4` | `vanquishalps` |
 | `underwater` | `MIS11` | `uw_mis11` | `vanquishsub` |
-| `jungle1` / `jungle2` / `jungle3` | `MIS13A` / `B` / `C` | `junglea_mis13a`, `jungleb_mis13b`, `junglec_mis13c` | `jungle_hench`, `jungle_hench`, `jungletank` |
-| `race` | `RACE` | `snow2a_race` | `supersnow` |
+| `jungle1` / `jungle2` / `jungle3` | `MIS13A` / `B` / `C` | `junglea_mis13a`, `jungleb_mis13b`, `junglec_mis13c` | `jungle_truck`, `ultralight`, `ultralightbig` |
+| `race` | `RACE` | `snow2a_race` | `cobra_player` |
 
 `MISC.VIV` holds the shared renderer modules (`eaglrm.o`, `bondrm.o`: relocatable ELF objects with the VU1
 microcode), HUD, localisation and the civilian vehicles.
@@ -144,8 +144,30 @@ frame as BMP. Input scripts (`src/driving/input_script.*`) hold one line per spa
 `nfdump <gamedir> validate` also reads every member of every `DRIVING/*.VIV`, loads each `.crp`, builds every
 track mesh and collision set and decodes every vehicle model (0 failures).
 
-## Not done
-
-Traffic, AI drivers, pedestrians, weapons/gadgets, damage, mission scripting, sky rendering, particles and
-audio for the driving side; submarine, snowmobile, tank and helicopter dynamics (`PVehicle` derivatives other
-than the four-wheeled car model); explosion shake of the camera.
+ ## Autopilot completion (bot playthrough)
+ 
+ `nfdrive <gamedir> <level> --auto --frames N --shot out.bmp` drives every mission to
+ `MISSION COMPLETE` with the GT_LoseControl-style autopilot (`Mission::tick_player`):
+ 
+ | nfdrive name | archive | result (60 Hz ticks) |
+ |---|---|---|
+ | paris | MIS01 | win @ 63790 |
+ | alps | MIS3 | win @ 26022 |
+ | alps2 | MIS4 | win @ 474 |
+ | underwater | MIS11 | win @ 2554 |
+ | jungle1 | MIS13A | win @ 14470 |
+ | jungle2 | MIS13B | win @ 1661 |
+ | jungle3 | MIS13C | win @ 1961 (roadless dogfight) |
+ 
+ Recovery stack that makes this possible: visibility-gated lookahead (`route_ahead`),
+ lane snap + slalom dodge, K-turn (reverse-with-lock from 109 deg, yaw-snap onto the
+ target after a 3 s wedged reversal), section-boundary hop (walk jumps over 100 m
+ teleport across instead of driving into the void), lost/progress/beached teleports,
+ cliff/grade corner-speed limits. Roadless assaults (jungle3) dogfight instead: steer at
+ the nearest live hunter while the demo gunner fires, until tick_objectives sees none left.
+ `Mission::player_debug()` exposes live autopilot
+ telemetry (pos/target/yaw/d0/walk/K-turn flags) for stall diagnosis.
+ 
+ ## Not done
+ 
+ Sky rendering, particles and explosion shake of the camera.

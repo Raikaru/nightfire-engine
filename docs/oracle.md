@@ -104,45 +104,50 @@ dodge a missed tracer frame — walk2 below):
 |----------|-------|--------|----------------|--------------|----------------------------------|
 | stand | idle | 60 | 0.000 / 0.000 | 0.000 | 0.000 |
 | turn | left stick X both ways, right stick Y | 148 | 0.000 / 0.000 (yaw 5e-6 rad) | 0.000 | 0.000 |
-| walk | left stick forward up a ramp | 128 | 3.6 / 2.9 | 0.87 | 5.6 |
+| walk | left stick forward up a ramp | 128 | 3.6 / 2.9 | 0.87 (3) | 5.6 |
 | strafe | right stick X, off a ledge, land | 100 | 1.2 / 0.8 | 0.37 | 2.0 |
 | wall | forward into a wall | 270 | 3.6 / 3.2 | 0.45 | 5.6 |
-| slide | forward, turn into the wall, slide along it | 270 | 4.7 / 4.7 | 0.45 | 6.2 |
-| jump | jump on the spot, walk, jump while walking | 168 | 3.7 / 0.2 | 0.84 (1) | 13.0 |
-| crouch | crouch, crouch-walk, stand | 180 | 9.2 / 8.1 | 2.88 (2) | 41.9 |
+| slide | forward, turn into the wall, slide along it | 270 | 4.7 / 4.7 | 0.53 | 6.2 |
+| jump | jump on the spot, walk, jump while walking | 168 | 4.8 / 0.2 | 0.84 (1) | 13.0 |
+| crouch | crouch, crouch-walk, stand | 180 | 3.8 / 3.8 | 0.14 (2) | 41.9 |
 
-(1) jump is clean: the old 10.5 cm was the single frame after a frame the tracer missed; a clean
-recording keeps every synced frame below 1 cm. Jump takeoff also matches the instruction stream
-exactly (`WldGravity * -0.4`, delay 4; verified with nfmips). (2) crouch was 7.8: the frames where the
-player walks off an edge while crouched applied the animated-foot delta in midair, which the original
-does not do — fixed by gating the delta on grounded-or-transitioning (now 0.00 on those frames,
-verified). The remaining 2.88 (4 stair-climbing frames, instant reconverge, end 0.014) is tangent-contact
-marginality: capsule dist sits within ~1 mm of the radius and the floor test normalises a near-zero
-vector, so millimetre capsule differences (from unseated velocity micro-drift) flip push/no-push and the
-ground bit between the two runs. All capsule/param/velocity/foot inputs verified identical; only the
-boundary verdicts differ — the documented chaotic-contact class, not model error. The constant-foot-height
-column is prior-wave values (that mechanism is unchanged).
+ (1) jump is clean: the old 10.5 cm was the single frame after a frame the tracer missed; a clean
+ recording keeps every synced frame below 1 cm. Jump takeoff also matches the instruction stream
+ exactly (`WldGravity * -0.4`, delay 4; verified with nfmips). (2) crouch was 7.8, then 2.88: the
+ frames where the player walks off an edge while crouched applied the animated-foot delta in
+ midair, which the original does not do — fixed by reverting the delta when a non-transitioning
+ crouch ends the frame airborne (now 0.00 on those frames, verified). The remaining 2.88 (4
+ stair-climbing frames f8754-57) was first stair-nosing contact lifting the capsule off marginal
+ support; freezing rises lets penetration depth self-correct via pushes instead (now 0.14 max,
+ no synced frame above 1 cm). (3) walk was 8.63 synced at f8666: the tracer missed frame 8665
+ where the rate flips 60→30, and make-inputs kept the previous 60 Hz for it. Attributing the flip
+ to the first missing frame (motion fits mul=2 there) brings synced to 0.87 with no frame above
+ 1 cm; free returns to the 3.6 baseline. Dist2Tri and the triangle geometry were verified
+ per-triangle against the EE under nfmips (identical to sub-ulp on identical inputs; the game
+ tests every triangle we test plus far harmless ones; see docs/gameplay.md "Animated foot
+ height"). The constant-foot-height column is prior-wave values (that mechanism is unchanged).
 
 Yaw is exact in every scenario (max 5e-6 rad over 148 frames of stick-driven turning at both frame rates),
 action floats match to 1.2e-7 and the flag bytes match except around frames the tracer missed.
 
 ### Residual differences
 
-- **Foot height (animation).** `collbody+0xCC` is written by the animation system each frame; nfgame has no
-  animation state machine, so without the recorded value walking differs by up to ~6 cm (the walk cycle bobs
-  the feet +-1.3 cm and the y error integrates over the ramp) and crouching by up to 0.4 m during the
-  transition (the crouch pose is 0.42 shorter). With the recorded value the per-frame error is below 1 cm
-  (walk 0.87 cm, strafe 0.37 cm). Measured rules: the capsule and `Player_FeetOnPoint` use the value of the
-  current frame; `pos.y` moves by every change of it (the animation keeps the feet planted).
-- **Resting contact noise.** A capsule resting exactly on the floor is tangent to within float rounding
-  (`dist == 0.55 +- 1 ulp`); the game's ground bit flickers on this every ~4 frames when crouched, ours on
-  slightly different frames, and the gravity step that follows is 2.7 mm. It is invisible standing, but
-  makes the free-run column of `crouch` unpredictable. Deeper cause found by nfmips frame diff (see
-  docs/gameplay.md "Assumptions and gaps"): where two placements' floors overlap, our broadphase (no
-  cel-chain culling) tests a triangle the game never sees, and its push lifts us centimetres above the
-  game's rest height. Jump takeoff itself matches exactly (`WldGravity * -0.4`, delay 4, verified against
-  the instruction stream), so the jump column is clean once re-recorded without missed tracer frames.
-- **Chaotic contact.** In the free runs the error grows where the capsule slides over the lip near the top of
-  the walk ramp (sub-millimetre per-frame differences amplify to 2-3 cm); the synced runs show the per-frame
-  error there is < 1 cm.
+ - **Foot height (animation).** `collbody+0xCC` is written by the animation system each frame; nfgame has no
+   animation state machine, so without the recorded value walking differs by up to ~6 cm (the walk cycle bobs
+   the feet +-1.3 cm and the y error integrates over the ramp) and crouching by up to 0.4 m during the
+   transition (the crouch pose is 0.42 shorter). With the recorded value every synced scenario is below
+   1 cm per frame. Measured rules: the capsule and `Player_FeetOnPoint` use the value of the current
+   frame; `pos` follows drops vertically, while rises stay frozen — the climb comes from pushes against
+   the deep fresh-foot capsule (lifting off marginal contact would break it and fall). Fresh transitions
+   (crouch timer high) and non-crouch transitions still lift vertically; a non-transitioning crouch
+   that ends the frame airborne reverts the shift.
+ - **Resting contact noise.** A capsule resting exactly on the floor is tangent to within float rounding
+   (`dist == 0.55 +- 1 ulp`); the game's ground bit flickers on this every ~4 frames when crouched, ours on
+   slightly different frames, and the gravity step that follows is 2.7 mm. Per-triangle nfmips comparison
+   (ASH_vecutil_Dist2Tri hooked live inside a seated `Player_Collision`) shows the game tests every triangle
+   we test on the stairs plus a few far ones our box walk misses (all >2.7 away, no pushes) — inclusion is not
+   the issue there; Dist2Tri matches to sub-ulp on identical inputs. Jump takeoff itself matches exactly
+   (`WldGravity * -0.4`, delay 4, verified against the instruction stream).
+ - **Chaotic contact.** In the free runs the error grows where the capsule meets a stair nosing or ramp lip
+   head-on (first-contact frames); the synced runs isolate the per-frame error, now < 1 cm everywhere.
 - Frame timing: the oracle's frame rate flips between 60 and 30; nfgame replays the recorded rate.

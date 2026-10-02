@@ -384,7 +384,9 @@ struct MpSession::Impl {
     }
 
     DebriefInfo debrief_info() const {
-        const MatchResult& res = session->arena().result();
+        const ArenaSystem& arena = session->arena();
+        const MatchResult& res = arena.result();
+        const ArenaSettings& settings = arena.settings();
         DebriefInfo info;
         for (const ScoreRow& row : res.ranking) {
             DebriefRow d;
@@ -394,6 +396,8 @@ struct MpSession::Impl {
             d.deaths = row.deaths;
             d.points = row.points;
             d.is_bot = row.bot;
+            if (row.slot >= 0 && std::size_t(row.slot) < settings.slots.size())
+                d.character = settings.slots[std::size_t(row.slot)].character;
             info.rows.push_back(d);
         }
         info.banner = res.banner;
@@ -582,6 +586,9 @@ MpResult MpSession::run_headless() {
         for (int i = 0; i < s.session->humans(); ++i) pads[std::size_t(i)] = at(i, f);
         s.session->tick(pads);
         s.tick_bodies();
+        // Like the interactive loop: stop ticking once the match is over (post-Over
+        // ticks would keep the bots fighting after the debrief snapshot).
+        if (s.session->arena().over()) break;
     }
     s.report();
     if (s.bot_match) std::printf("bots:\n%s", s.bot_match->summary().c_str());

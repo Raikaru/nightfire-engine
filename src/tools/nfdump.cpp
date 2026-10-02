@@ -215,7 +215,7 @@ int cmd_validate(GameFiles& gf) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::fprintf(stderr, "usage: %s <gamedir> files|maps|validate|collision|chars|sounds|sp|script|nav|ssh|arena|weapons|diff-acc|diff-refind|coder-spawn\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <gamedir> files|maps|validate|collision|chars|sounds|sp|script|nav|ssh|arena|weapons|diff-acc|diff-refind|diff-combat|coder-spawn\n", argv[0]);
         return 2;
     }
     try {
@@ -277,6 +277,13 @@ int main(int argc, char** argv) {
             }
             return cmd_coder_spawn(gf, argv[1], argv[3], std::uint32_t(std::strtoul(argv[4], nullptr, 16)),
                                    argc > 5 ? std::atol(argv[5]) : 400);
+        }
+        if (cmd == "diff-combat") {
+            if (argc < 4) {
+                std::fprintf(stderr, "usage: %s <gamedir> diff-combat <csv> [level.bin]\n", argv[0]);
+                return 2;
+            }
+            return cmd_diff_combat(gf, argv[1], argv[3], argc > 4 ? argv[4] : "07000001.bin");
         }
         std::fprintf(stderr, "unknown command %s\n", cmd.c_str());
         return 2;

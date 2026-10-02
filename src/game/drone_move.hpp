@@ -10,9 +10,22 @@
 // The core applies the anim's root motion along Drone::yaw after the state ran (NDrone2_Move) and resolves the body
 // collision (NDrone2_Collision).
 
+#include <functional>
+
 #include "game/drone.hpp"
 
 namespace nf::drone {
+
+// Scriptable points of the combat decision path (diff-combat checker): every hook empty = the real
+// implementation runs. No allocation while empty; the checker fills them with scripted verdicts.
+struct CombatStubs {
+    std::function<int(float)> move_verdict;       // NDrone2_MoveToObject result by radius (else the real call runs)
+    std::function<bool()> cover;                  // NDrone2_CoverAvailable
+    std::function<bool(int)> anim_ok;             // DroneAnim_CanDoAnimState(dasc)
+    std::function<std::uint32_t(int)> rand_draw;  // Rand_Rand(arg), in draw order
+    std::function<void(int)> call_anim;           // DroneAnim_CallAnim log (channel-0 stay anims)
+    std::function<void(float)> set_move_anim;     // DroneAnim_SetCombatMoveAnim log
+};
 
 // ---- route movement ---------------------------------------------------------------------------------------------------
 // NDrone2_MoveToGoalPosition(dcv, CelPos*, radius, mask): (re)build the route to `goal` when invalid, then follow it
@@ -62,6 +75,9 @@ bool can_aim_crouch(Drone& d);          // NDrone2_CanAimCrouch: behaviour 0x11,
 // NDrone2_EvasiveMove: when the opponent is aiming at the drone picks strafe (0x75/0x76), dodge (0x77/0x78), roll
 // (0x79/0x7a) or step (0x73/0x74). Returns the chosen state (0 = none); non-bot drones enter it themselves.
 int evasive_move(Drone& d);
+// NDrone2_ChooseCombatMove: full combat-move selector (roll/strafe/dodge/step/0x6f/0x67 legs, behaviour- and
+// anim-gated, Rand-picked). Pure selector: returns the state (0 = none); the caller enters it.
+int choose_combat_move(Drone& d, const CombatStubs& st = {});
 // NDrone2_AnimForDist(dcv, dist): run / walk / aim anim for the remaining distance; sets Drone::fire_requested
 // while aiming.
 void anim_for_dist(Drone& d, float dist);

@@ -36,6 +36,8 @@
 //
 // This header only parses and structurally checks the data; playback is `game/script_player.hpp`.
 
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -145,6 +147,24 @@ struct ScriptCommand {
 // FormatError when the bytecode is structurally invalid (unknown opcode, payload overrun).
 std::vector<ScriptCommand> decode_stream(CutsceneScript script);
 
+// Key-track evaluation math, ported exactly from `GetSplineWeights`, `Spline_Eval3D`,
+// `Quat_Slerp_Acc` and the blend arms of `Script_GetInterp` (48-byte KEYED_POSROT keys:
+// pos +0, quat +16, aux floats +32/+36, time +44). The float associations below mirror the
+// originals op-for-op; stream times are truncated to whole frames like the originals.
+struct SplineSegment {
+    int i0 = 0, i1 = 0, i2 = 0, i3 = 0;  // neighbour key indices (clamped)
+    float f = 0;  // local time in [0, 1]
+};
+// Segment search over key times in [begin, end] (inclusive) with the original's +0.001 bias.
+// Holds the first/last key outside the range, like the original's degenerate arms.
+SplineSegment spline_segment(const std::vector<float>& times, float t, std::size_t begin, std::size_t end);
+// Catmull-Rom weights with `GetSplineWeights`' exact association.
+std::array<float, 4> spline_weights(float f);
+// `Spline_Eval3D` with the original's exact association (one lane set shown; all three share it).
+std::array<float, 3> spline_eval3d(const std::array<float, 3>& p0, const std::array<float, 3>& p1,
+                                   const std::array<float, 3>& p2, const std::array<float, 3>& p3, float f);
+// `Quat_Slerp_Acc`: short path, linear blend when (1 - dot) <= 0.01.
+std::array<float, 4> slerp_acc(const std::array<float, 4>& qa, const std::array<float, 4>& qb, float f);
 // Structural issues in one entry (empty = clean). `label_ok` checks Txt labels when provided.
 std::vector<std::string> check_cutscene_bin(Bytes data,
                                              const std::function<bool(std::uint32_t)>* label_ok = nullptr);

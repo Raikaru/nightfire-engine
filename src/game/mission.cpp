@@ -202,8 +202,13 @@ void MissionSystem::tick(World& world, FrameTiming timing) {
     }
     if (std::uint32_t movie = objects_->take_movie()) play_script(movie);
     if (std::uint32_t dest = objects_->take_load_level()) {
-        pending_level_ = dest;
-        music(3, 1);  // kLevelExit (`Trigger_Activate`)
+        if (state_ == State::Failed) {
+            // Fail bytes 26FCF0..3: the original takes no exit while failing.
+        } else {
+            pending_level_ = dest;
+            music(3, 1);  // kLevelExit (`Trigger_Activate`)
+            ram_save();  // `Player_RamSave`: snapshot slot 0 for the next level
+        }
     }
     const float frames = timing.mul();  // 60 Hz frames this tick (2.0 at 30 Hz)
     for (auto& p : players_) {

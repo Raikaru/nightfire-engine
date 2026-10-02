@@ -82,8 +82,16 @@ float CutscenePlayer::key_time(std::size_t i) const {
     return f;
 }
 
+float CutscenePlayer::key_aux(std::size_t i) const {
+    std::uint32_t v = load<std::uint32_t>(bin_->keys, i * 48 + 32);
+    float f = 0;
+    std::memcpy(&f, &v, 4);
+    return f;
+}
+
 void CutscenePlayer::interpolate(Stream& s) {
-    // `Script_Interp` case 1 (entity) / camera: sample the key track at the stream time.
+    // `Script_GetInterp`: sample the key track at the stream time (spline or linear blend,
+    // slerped rotation, +32 fov). Segment search, weights and blends mirror the originals.
     const std::size_t n = key_count();
     if (n == 0) return;
     std::size_t begin = 0, end = n - 1;
@@ -101,53 +109,31 @@ void CutscenePlayer::interpolate(Stream& s) {
         }
         return;
     }
-    const float t = std::clamp(s.time, key_time(begin), key_time(end));
-    std::size_t i = begin;
-    while (i + 1 < end && key_time(i + 1) < t) ++i;
-    const float t0 = key_time(i), t1 = key_time(i + 1);
-    float f = (t1 > t0) ? (t - t0) / (t1 - t0) : 0;
-    f = std::clamp(f, 0.0f, 1.0f);
-    const auto pa = key_pos(i), pb = key_pos(i + 1);
-    auto qa = key_quat(i), qb = key_quat(i + 1);
-    // Slerp with the short path (`Quat_Slerp_Acc`).
-    float dot = qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3];
-    if (dot < 0) {
-        dot = -dot;
-        qb = {-qb[0], -qb[1], -qb[2], -qb[3]};
-    }
-    float a = 1 - f, b = f;
-    if (dot < 0.9995f) {
-        const float th = std::acos(std::clamp(dot, -1.0f, 1.0f));
-        const float s2 = std::sin(th);
-        if (s2 > 1e-6f) {
-            a = std::sin((1 - f) * th) / s2;
-            b = std::sin(f * th) / s2;
-        }
-    }
+    std::vector<float> times;
+    times.reserve(n);
+    for (std::size_t k = 0; k < n; ++k) times.push_back(key_time(k));
+    const SplineSegment seg = spline_segment(times, s.time, begin, end);
+    const auto pa = key_pos(std::size_t(seg.i1)), pb = key_pos(std::size_t(seg.i2));
+    const auto qa = key_quat(std::size_t(seg.i1)), qb = key_quat(std::size_t(seg.i2));
+    const auto q = slerp_acc(qa, qb, seg.f);
     std::array<float, 3> p;
-    std::array<float, 4> q;
-    if (s.spline && i > begin && i + 2 <= end) {
-        // Catmull-Rom through the neighbours ([INFERENCE]: `Script_CalculateSpline` not reversed).
-        const auto p0 = key_pos(i - 1), p3 = key_pos(i + 2);
-        for (int k = 0; k < 3; ++k)
-            p[std::size_t(k)] = 0.5f * ((2 * pa[std::size_t(k)]) + (-p0[std::size_t(k)] + pb[std::size_t(k)]) * f +
-                                        (2 * p0[std::size_t(k)] - 5 * pa[std::size_t(k)] + 4 * pb[std::size_t(k)] -
-                                         p3[std::size_t(k)]) * f * f +
-                                        (-p0[std::size_t(k)] + 3 * pa[std::size_t(k)] - 3 * pb[std::size_t(k)] +
-                                         p3[std::size_t(k)]) * f * f * f);
+    float fov = 60.0f;
+    if (s.spline) {
+        const auto w = spline_weights(seg.f);
+        const auto p0 = key_pos(std::size_t(seg.i0)), p3 = key_pos(std::size_t(seg.i3));
+        p = spline_eval3d(p0, pa, pb, p3, seg.f);
+        fov = key_aux(std::size_t(seg.i0)) * w[0] + key_aux(std::size_t(seg.i1)) * w[1] +
+              key_aux(std::size_t(seg.i2)) * w[2] + key_aux(std::size_t(seg.i3)) * w[3];
     } else {
-        for (int k = 0; k < 3; ++k) p[std::size_t(k)] = pa[std::size_t(k)] + (pb[std::size_t(k)] - pa[std::size_t(k)]) * f;
+        const float w0 = 1.0f - seg.f, w1 = seg.f;
+        for (int k = 0; k < 3; ++k) p[std::size_t(k)] = pa[std::size_t(k)] * w0 + pb[std::size_t(k)] * w1;
+        fov = key_aux(std::size_t(seg.i1)) * w0 + key_aux(std::size_t(seg.i2)) * w1;
     }
-    for (int k = 0; k < 4; ++k) q[std::size_t(k)] = qa[std::size_t(k)] * a + qb[std::size_t(k)] * b;
     if (s.has_camera) {
         s.eye = p;
-        // Forward = quat applied to +Z (the placement convention: forward = (sin yaw, 0, cos yaw)).
         s.forward = {2 * (q[0] * q[2] + q[3] * q[1]), 2 * (q[1] * q[2] - q[3] * q[0]),
                      1 - 2 * (q[0] * q[0] + q[1] * q[1])};
-        const std::uint32_t raw = load<std::uint32_t>(bin_->keys, i * 48 + 32);
-        float fov = 60;
-        std::memcpy(&fov, &raw, 4);
-        if (fov > 10 && fov < 150) s.fov = fov;  // [INFERENCE]: +32 reads as the horizontal fov
+        s.fov = fov;  // +32 blended fov (`SCRIPTINFO` +148 scale is 1.0)
     }
 }
 

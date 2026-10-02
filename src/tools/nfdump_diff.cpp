@@ -26,6 +26,7 @@
 #include "game/mission.hpp"
 #include "game/sp_common.hpp"
 #include "game/sp_idle.hpp"
+#include "game/sp_states.hpp"
 #include "game/weapons.hpp"
 #include "game/world.hpp"
 
@@ -345,4 +346,148 @@ int cmd_coder_spawn(nf::GameFiles& gf, const std::string& gamedir, const std::st
     std::printf("coder-spawn: %08x on %s: %ld scripted spawns (%zu -> %zu SP drones)\n", script_hash,
                 level_bin.c_str(), spawned, before, after);
     return spawned > 0 ? 0 : 1;
+}
+
+// ---- DroneFunc_CombatState ------------------------------------------------------------------------------
+// CSV: case,opp,dist,engage,idle,flags,sight,lost,bnd,ammo,coin,animok,cover,stamp,level,anim,p88,d8,move,
+//      lastseen,ret,fire3b,calls,rand. Drives sp::combat_tick with scripted MoveToObject / CoverAvailable /
+// CanDoAnimState / Rand_Rand / CallAnim / SetCombatMoveAnim and compares the return state, +0x3b firing
+// flag, and the exact hook-call sequences. d8 (NavPath branch elsewhere) and anim (+0x568, only read via
+// the CanDoAnimState stub; byte[1] proven irrelevant by the animblk row) have no counterpart by design.
+// set_move_anim passes d.mv.route_distance (preset to p88): the EE *(params+0x88) source has no live
+// allocator in the pseudocode, so only the pass-through is verified here.
+int cmd_diff_combat(nf::GameFiles& gf, const std::string& gamedir, const std::string& csv_path,
+                    const std::string& level_bin) {
+    std::ifstream in(csv_path);
+    if (!in) throw std::runtime_error("cannot open " + csv_path);
+    auto h = make_harness(gf, gamedir, level_bin, false);
+    nf::drone::DroneConfig cfg;
+    cfg.elf = nullptr;   // stay anims are stubbed; no clips are touched
+    nf::drone::DroneSystem sys(*h->world, *nf::open_character_bank(gf, level_bin), cfg);
+    // Frame 10000 like the EE harness (GameState+52): drives the +0x11c cooldown and last-seen grace.
+    {
+        nf::PadInputs pads{};
+        for (int i = 0; i < 9900; ++i) h->world->tick(pads);
+    }
+
+    long rows = 0, ret_bad = 0, fire_bad = 0, calls_bad = 0, rand_bad = 0;
+    std::string raw;
+    while (std::getline(in, raw)) {
+        if (raw.empty() || raw[0] == '#') continue;
+        if (raw.rfind("case,", 0) == 0) continue;
+        const std::vector<std::string> c = split(raw, ',');
+        if (c.size() < 24) throw std::runtime_error("bad diff-combat row: " + raw);
+        // calls=... may embed no comma (hook args never contain one); rand=... is last.
+        const std::string name = c[0];
+        const int opp = std::atoi(c[1].c_str());
+        const float dist = std::strtof(c[2].c_str(), nullptr);
+        const float engage = std::strtof(c[3].c_str(), nullptr);
+        const int idle = int(std::strtoul(c[4].c_str(), nullptr, 0));
+        const std::uint32_t flags = std::uint32_t(std::strtoul(c[5].c_str(), nullptr, 0));
+        const std::uint32_t sight = std::uint32_t(std::strtoul(c[6].c_str(), nullptr, 0));
+        const int lost = std::atoi(c[7].c_str());
+        const std::uint32_t bnd = std::uint32_t(std::strtoul(c[8].c_str(), nullptr, 0));
+        const int ammo = std::atoi(c[9].c_str());
+        const int coin = std::atoi(c[10].c_str());
+        const int animok = std::atoi(c[11].c_str());
+        const int cover = std::atoi(c[12].c_str());
+        const std::uint32_t stamp = std::uint32_t(std::strtoul(c[13].c_str(), nullptr, 0));
+        const std::uint32_t level = std::uint32_t(std::strtoul(c[14].c_str(), nullptr, 0));
+        const std::uint32_t anim = std::uint32_t(std::strtoul(c[15].c_str(), nullptr, 0));
+        const float p88 = std::strtof(c[16].c_str(), nullptr);
+        const int move = std::atoi(c[18].c_str());
+        const std::uint32_t lastseen = std::uint32_t(std::strtoul(c[19].c_str(), nullptr, 0));
+        const int want_ret = int(std::strtoul(split(c[20], '=').at(1).c_str(), nullptr, 0));
+        const int want_fire = std::atoi(split(c[21], '=').at(1).c_str());
+        const std::string want_calls = split(c[22], '=').at(1);
+        std::string want_rand = c.size() > 23 ? split(c[23], '=').at(1) : "-";
+        ++rows;
+
+        nf::drone::Drone d;
+        d.sys = &sys;
+        d.smi.cur = idle;
+        d.opponent = opp != 0 ? nf::drone::TargetRef::player(0) : nf::drone::TargetRef{};
+        d.opp_dist = dist;
+        d.engage_dist = engage;
+        d.flags = flags;
+        d.sight_flags = sight;
+        d.lost_frames = std::uint32_t(lost);
+        d.mv.boundary_flags = bnd;
+        d.mv.route_distance = p88;
+        d.last_seen_time = lastseen;
+        d.fire_requested = false;
+        d.anim.cur_type = int(anim);   // +0x568 u32 for the 0x68 mask gate (flags stay 0)
+        auto ext = std::make_unique<nf::sp::SpExt>();
+        ext->ammo = std::uint16_t(ammo);   // +0xbbc: the harness now pokes it every row (0x68 ammo gate)
+        ext->ammo_max = std::uint16_t(ammo);
+        ext->clip = std::uint16_t(ammo);   // +0xbcc/+0xbce halves both carry the ammo column
+        ext->clip_max = std::uint16_t(ammo);
+        ext->last_combat_move = stamp;
+        d.ext = std::move(ext);
+        sys.config().level_id = level;
+
+        std::string calls, rands;
+        auto log_call = [&](const std::string& s) { calls += (calls.empty() ? "" : " ") + s; };
+        auto log_rand = [&](unsigned arg, unsigned v) {
+            char b[32];
+            std::snprintf(b, sizeof b, "rand(%u)->%u", arg, v);
+            rands += (rands.empty() ? "" : " ") + std::string(b);
+        };
+        char fb[32];
+        nf::drone::CombatStubs st;
+        st.move_verdict = [&](float rad) {
+            std::snprintf(fb, sizeof fb, "moveto(%g)", double(rad));
+            log_call(fb);
+            return move;
+        };
+        st.cover = [&] {
+            log_call("cover(1)");
+            return cover != 0;
+        };
+        st.anim_ok = [&](int dasc) {
+            std::snprintf(fb, sizeof fb, "animok(0x%x)", dasc);
+            log_call(fb);
+            return animok != 0;
+        };
+        st.rand_draw = [&](int n) {
+            const unsigned v = std::uint32_t(coin);
+            log_rand(std::uint32_t(n), v);
+            return v;
+        };
+        st.call_anim = [&](int) { log_call("callanim(0)"); };
+        st.set_move_anim = [&](float v) {
+            std::snprintf(fb, sizeof fb, "setmoveanim(%g)", double(v));
+            log_call(fb);
+        };
+        const int got_ret = nf::sp::combat_tick(d, st);
+        const int got_fire = d.fire_requested ? 1 : 0;
+        if (calls.empty()) calls = "-";
+        if (rands.empty()) rands = "-";
+        if (got_ret != want_ret) {
+            if (ret_bad < 12)
+                std::printf("diff-combat RET %s: want 0x%x got 0x%x (calls=%s)\n", name.c_str(), want_ret,
+                            got_ret, calls.c_str());
+            ++ret_bad;
+        }
+        if (got_fire != want_fire) {
+            if (fire_bad < 6)
+                std::printf("diff-combat FIRE %s: want %d got %d\n", name.c_str(), want_fire, got_fire);
+            ++fire_bad;
+        }
+        if (calls != want_calls) {
+            if (calls_bad < 12)
+                std::printf("diff-combat CALLS %s:\n  want %s\n  got  %s\n", name.c_str(), want_calls.c_str(),
+                            calls.c_str());
+            ++calls_bad;
+        }
+        if (rands != want_rand) {
+            if (rand_bad < 12)
+                std::printf("diff-combat RAND %s:\n  want %s\n  got  %s\n", name.c_str(), want_rand.c_str(),
+                            rands.c_str());
+            ++rand_bad;
+        }
+    }
+    std::printf("diff-combat: %ld rows, ret %ld, fire %ld, calls %ld, rand %ld\n", rows, ret_bad, fire_bad,
+                calls_bad, rand_bad);
+    return (ret_bad == 0 && fire_bad == 0 && calls_bad == 0 && rand_bad == 0) ? 0 : 1;
 }

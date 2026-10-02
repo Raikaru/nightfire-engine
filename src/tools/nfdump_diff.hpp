@@ -15,9 +15,10 @@
 namespace nf {
 class GameFiles;
 }  // namespace nf
-
 int cmd_diff_acc(nf::GameFiles& gf, const std::string& gamedir, const std::string& csv_path,
                  const std::string& level_bin);
 int cmd_diff_refind(const std::string& csv_path);
 int cmd_coder_spawn(nf::GameFiles& gf, const std::string& gamedir, const std::string& level_bin,
                     std::uint32_t script_hash, long frames);
+int cmd_diff_combat(nf::GameFiles& gf, const std::string& gamedir, const std::string& csv_path,
+                    const std::string& level_bin);

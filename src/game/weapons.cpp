@@ -948,12 +948,13 @@ ViewModel WeaponSystem::viewmodel(int slot) const {
     const bool mp = tuning_.mode == GameMode::Multiplayer;
     const auto& hip = mp ? d.gun_offset_aim : d.gun_offset;
     const float ph = p->recoil_phase;
-    // Player_WeaponRecoil sway + Player_SetWeaponAnimObj's final offset (y += 0.2, z -= 0.5). The offsets live
-    // in the screen-attached weapon frame (+x right, +y DOWN, -z forward), so y is negated into
-    // ViewModel::offset (+y up) just like the forward distance is.
-    // EXPERIMENT 3: origin depth variants for the P2K reference fit (z fwd only).
-    v.offset = {hip[0] + std::sin(ph) * 0.01f, -(hip[1] + std::fabs(std::sin(ph + 1.0f)) * 0.01f + 0.2f),
-                0.9f};
+    // Player_WeaponRecoil sway plus the gun offsets, in camera space (+x right, +y UP, -z forward).
+    // NOTE: this is the RENDERED position, not the object position: Player_SetWeaponAnimObj stores obj
+    // pos WITH +0.2/-0.5 (matches live w+0x30), but Player_PositionGun nets them back out via M*(0,-0.2,+0.5)
+    // for the world position (matches live w+0xC0), so they must NOT appear here. ViewModel uses +y up,
+    // +z forward, hence only z is negated.
+    v.offset = {hip[0] + std::sin(ph) * 0.01f, hip[1] + std::fabs(std::sin(ph + 1.0f)) * 0.01f,
+                -(hip[2] + std::sin(ph * 0.84328997f) * 0.02f)};
     v.muzzle_flash = float(p->muzzle_frames);
     v.flash_color = {float(d.flash_r) / 255.0f, float(d.flash_g) / 255.0f, float(d.flash_b) / 255.0f};
     return v;

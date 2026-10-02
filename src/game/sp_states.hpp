@@ -1,5 +1,6 @@
 #pragma once
 
+#include "game/drone_move.hpp"
 // Registration of the single-player state handlers (NDrone2_StateFuncs @0x29b300, ids 0..194).
 // Each content area lives in its own translation unit and exposes one `register_*_states()`; `register_sp_states()`
 // (sp_states.cpp) calls them all once (idempotent). Areas / owners:
@@ -13,6 +14,10 @@
 //   special    sp_states_special.cpp  Ninja, Astronaut, Abseil, stun/taser/smoked, Tester/DeleteMe/FailMission..., doors
 
 namespace nf::sp {
+
+// DroneFunc_CombatState 0x148338 (sp_states_combat.cpp): shared per-tick selector; `st` scripts the
+// decision points for the diff-combat checker (empty = real implementations).
+int combat_tick(nf::drone::Drone& d, const nf::drone::CombatStubs& st = {});
 
 void register_sp_states();
 

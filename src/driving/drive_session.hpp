@@ -34,6 +34,10 @@ public:
 
     // Puts the vehicle at `position` (x, z used; height from the track/depth datum) facing `yaw`.
     void place_at_start(const Vec3& position, float yaw);
+    // Recovery drop (cars only): places 2 m above the walk node WITHOUT grounding, so the
+    // car falls in and settles on its wheels. A grounded placement can balance on marginal
+    // support and hover; falling in punches through. Starts use place_at_start instead.
+    void place_dropped(const Vec3& position, float yaw);
 
     // One simulation tick with this controller sample.
     void tick(const PadState& pad);

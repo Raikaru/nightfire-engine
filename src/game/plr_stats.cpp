@@ -165,26 +165,15 @@ PlrStats::Score PlrStats::compute(const PlrScoreTables& tables, std::uint32_t le
             continue;
         }
         if (i == 7) {
-            // Time category: under par time scales by elapsed quarters, over par by denom*count.
+            // Time category: par points scaled by par time over elapsed quarters, ceiled.
+            // Both original branches (under/over par) reduce to this; q=0 cannot divide.
             const std::uint32_t target = cu(7, 2), par = cu(7, 0);
+            const std::uint32_t denom = cu(7, 1);
             const std::uint32_t q = target / 100u;
-            if (par < q) {
-                const float denom = itof_exact(std::int32_t(cu(7, 1)));
-                float r = denom != 0.0f ? itof_exact(std::int32_t(q)) / denom : 0.0f;
-                if (r == 0.0f) {
-                    // Zero ratio: weight path below still runs on stale +16 (zero).
-                } else {
-                    float scaled = r * itof_exact(std::int32_t(par));
-                    std::int32_t t = std::int32_t(scaled);
-                    if (std::fabs(scaled - float(t)) >= 1e-5f) ++t;
-                    set_buf_f(b, o + 4, float(t));
-                }
-            } else {
-                const float v = itof_exact(std::int32_t(cu(7, 0)));
-                float r = v != 0.0f ? itof_exact(std::int32_t(cu(7, 1))) * v : 1.0f;
-                if (r < 0.0f) r = 0.0f;
-                set_buf_f(b, o + 4, r);
-            }
+            const float v = float(std::uint64_t(denom) * par) / float(q == 0 ? 1u : q);
+            std::int32_t t = std::int32_t(v);
+            if (std::fabs(v - float(t)) >= 1e-5f) ++t;
+            set_buf_f(b, o + 4, float(t));
         } else if (i >= 8) {
             // Static par category: full marks (denom, weight 1) when the target reaches
             // the par, else zero.
@@ -230,18 +219,22 @@ PlrStats::Score PlrStats::compute(const PlrScoreTables& tables, std::uint32_t le
 
     const std::uint32_t base = accum;
     const std::uint32_t bonus = std::uint32_t((std::uint64_t)base * mult);
-    std::uint32_t total = base + bonus;
+    const std::uint32_t total = base + bonus;
     bool done_better = total != 0;
     if (total < best_) done_better = false;
     if (total > best_) best_ = total;
-    if (!succeeded) {
-        total = 0;
-        done_better = false;
-    }
     out.categories = base;
     out.mult = mult;
     out.total = total;
     out.done_better = done_better;
+    if (!succeeded) {
+        // Mission_Status() != 6: the original zeroes row+36/40/44/52 after the
+        // best update; per-category words and the best survive for the debrief.
+        out.mult = 0;
+        out.categories = 0;
+        out.total = 0;
+        out.done_better = false;
+    }
     return out;
 }
 

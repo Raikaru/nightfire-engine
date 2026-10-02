@@ -72,6 +72,8 @@ struct SpExt : drone::DroneExt {
     std::uint16_t return_state = 0;        // Drone+0x5a0: state to return to (EnemyAlerts/AlertToPosition/Obstructed/RunToAlarm...)
     std::uint16_t return_state2 = 0;       // Drone+0x5a6: second return state (ActionAnim/StandFiddle/ReachedDestNode)
     std::uint16_t ammo = 0, ammo_max = 0;   // Drone+0xbbc / +0xbbe: clip (reload states refill); 10000 = effectively unlimited
+    std::uint16_t clip = 0, clip_max = 0;   // Drone+0xbcc / +0xbce: grenade halves (DroneWeap_CanThrowGrenade needs
+                                            // both nonzero); maintained alongside ammo (same values in game)
     bool heard_noise = false;              // Drone+0x33: heard something (EnemyAlerts keeps the return state while set)
     bool alert_turned = false;             // Drone+0x34: already turned towards the alert position
     std::uint8_t noise_level = 0;          // Drone+0x43: HeardNoise escalation 2 aware / 3 suspect / 4 alert

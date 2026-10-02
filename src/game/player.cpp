@@ -281,30 +281,18 @@ void Player::update(const ActionInput& input, const PlayerSettings& settings, co
     if ((sub < 8 || sub > 12) && sub != 16) aim(input, timing);
     pitch = std::clamp(pitch, -1.0f, 1.0f);   // Player_ViewClamping
 
-    // The animation keeps the feet planted: obj+0x30 follows every change of collbody+0xCC. The
-    // follow runs along the last supporting surface (the nearest floor-facing hit of the previous
-    // tick's cylinder pass; world Y when there was none), so first contact with a stair nosing
-    // deflects along its tread while flat ground behaves exactly like a vertical follow. Applied
-    // here so the capsule below is built from the shifted position; resolve_collisions reverts it
-    // for a non-transitioning crouch that ends the frame airborne and non-jumping. applied_height_
-    // tracks regardless.
+    // The animation keeps the feet planted: obj+0x30 follows drops in collbody+0xCC vertically
+    // (stand-to-crouch transitions, settle, descents); rises stay frozen and the climb comes from
+    // pushes against the deep fresh-foot capsule, which self-corrects to the recorded height.
+    // resolve_collisions reverts the shift for a non-transitioning crouch that ends the frame
+    // airborne and non-jumping. applied_height_ tracks regardless.
     last_height_delta_ = stand_height - applied_height_;
-    // Vertical while a crouch transition runs (the Stand2Crouch/Crouch2Stand root drops straight
-    // down); along the support afterwards, where first nosing contact deflects along its tread.
-    Vec3 follow = {0.0f, 1.0f, 0.0f};
-    if (crouch_timer_ == 0) {
-        for (const CollisionHit& h : last_cylinder_.hits) {
-            if (h.normal[1] > 0.5f) {
-                follow = h.normal;
-                break;
-            }
-        }
-    }
-    last_height_vec_ = follow * last_height_delta_;
+    const bool vertical = last_height_delta_ < 0.0f || crouch_timer_ > 20 ||
+                          substate != SubState::Crouch;
+    last_height_vec_ = {0.0f, 0.0f, 0.0f};
+    if (last_height_delta_ != 0.0f && vertical) last_height_vec_ = {0.0f, last_height_delta_, 0.0f};
     pos += last_height_vec_;
-    if (std::getenv("NF_DH_PROBE")) std::fprintf(stderr, "DH d=%.6f dir=(%.4f,%.4f,%.4f) sub=%d pos=(%.4f,%.4f,%.4f)\n", last_height_delta_, follow[0], follow[1], follow[2], int(substate), pos[0], pos[1], pos[2]);
     applied_height_ = stand_height;
-
     const auto axes = orientation();
     pos = madd(madd(madd(pos, axes[0], velocity[0]), axes[1], velocity[1]), axes[2], velocity[2]);
     prev_velocity_ = velocity;
@@ -337,29 +325,34 @@ void Player::collision_setup(FrameTiming timing) {
         pos = madd(pos, fall_velocity, timing.rec());
     }
 
-    const float h = stand_height;
-    capsule_radius = 0.55f;
-    if (substate == SubState::Dead || substate == SubState::DeadInWater) capsule_radius = std::min(h, 0.55f);
-    capsule_pick_ = 0;
-    capsule_ignore_ = SIZE_MAX;
-    if (substate == SubState::Crouch) {
-        capsule_a = {pos[0], pos[1] + (0.1f - (h - 0.55f)), pos[2]};
-        capsule_b = {pos[0], pos[1] + (0.45f - h), pos[2]};
-    } else if (substate == SubState::Climb || substate == SubState::Creep) {
-        capsule_radius = 0.275f;
-        capsule_a = {pos[0], pos[1] + 0.55f, pos[2]};
-        capsule_b = {pos[0], pos[1] + (0.275f - h), pos[2]};
-    } else if (substate == SubState::Wire || substate == SubState::Zipline) {
-        capsule_a = {pos[0], pos[1] + 0.275f, pos[2]};
-        capsule_b = {pos[0], pos[1] + (2.1f - h), pos[2]};
-        if (rope_.wire) capsule_ignore_ = rope_.wire->placement;
-        if (substate == SubState::Zipline) capsule_pick_ = 0x1C0;
-    } else {
-        const Vec3 up = orientation()[1];   // Mat_GetUp: the capsule follows a tilted (zero-G) body
-        capsule_a = pos + up * 0.275f;
-        capsule_b = pos + up * (0.55f - h);
-    }
-}
+    build_capsule(pos, stand_height, capsule_a, capsule_b, capsule_radius, capsule_pick_, capsule_ignore_);
+ }
+ 
+ // Capsule ends for a body at `base` with foot height `h` (Player_Collision's HITTEST+0x20/+0x30).
+ void Player::build_capsule(const Vec3& base, float h, Vec3& a, Vec3& b, float& radius,
+                            unsigned& pick, std::size_t& ignore) const {
+     radius = 0.55f;
+     if (substate == SubState::Dead || substate == SubState::DeadInWater) radius = std::min(h, 0.55f);
+     pick = 0;
+     ignore = SIZE_MAX;
+     if (substate == SubState::Crouch) {
+         a = {base[0], base[1] + (0.1f - (h - 0.55f)), base[2]};
+         b = {base[0], base[1] + (0.45f - h), base[2]};
+     } else if (substate == SubState::Climb || substate == SubState::Creep) {
+         radius = 0.275f;
+         a = {base[0], base[1] + 0.55f, base[2]};
+         b = {base[0], base[1] + (0.275f - h), base[2]};
+     } else if (substate == SubState::Wire || substate == SubState::Zipline) {
+         a = {base[0], base[1] + 0.275f, base[2]};
+         b = {base[0], base[1] + (2.1f - h), base[2]};
+         if (rope_.wire) ignore = rope_.wire->placement;
+         if (substate == SubState::Zipline) pick = 0x1C0;
+     } else {
+         const Vec3 up = orientation()[1];   // Mat_GetUp: the capsule follows a tilted (zero-G) body
+         a = base + up * 0.275f;
+         b = base + up * (0.55f - h);
+     }
+ }
 
 void Player::resolve_collisions(const CollisionWorld& world) {
     if (enabled_ == 0) return;   // Player_CollisionHandler: BL+0x94A == 0

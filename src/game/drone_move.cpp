@@ -273,6 +273,125 @@ int evasive_move(Drone& d) {
     if (d.dtype != kDtypeBot && state != 0) d.set_state(state);
     return state;
 }
+int choose_combat_move(Drone& d, const CombatStubs& st) {
+    // NDrone2_ChooseCombatMove: behaviour- and anim-gated pick list (1 dodge / 2 strafe / 3 roll / 4 step /
+    // 5 crouch-advance / 6 fallback), Rand-picked, then the leg for the pick. Pure selector: returns the
+    // state (0 = none); the caller enters it. Draw order is load-bearing (diff-combat rand column).
+    const bool stationary = (d.flags & flag::kStationary) != 0;
+    auto rand_draw = [&](std::uint32_t n) -> std::uint32_t {
+        if (st.rand_draw) return st.rand_draw(n);
+        return n == 0 ? 0 : d.sys->rand() % n;
+    };
+    auto anim_ok = [&](int dasc) { return st.anim_ok ? st.anim_ok(dasc) : anim_can_do(d, dasc); };
+    if (stationary || d.has_beh(beh::kNeverMovesInCombat)) return 0;
+    const bool bunched = d.mv.bunched;   // +0x17: a moving drone is in the way
+    const bool aiming = opponent_is_aiming_at_me(d);
+    const std::uint32_t pick15 = rand_draw(15);
+    if (pick15 >= 7 && !aiming && !bunched) return 0;
+    // Gated pick list (auStack_80).
+    int codes[6] = {0, 0, 0, 0, 0, 0};
+    int n = 0;
+    if (aiming) {
+        if (d.has_beh(beh::kStrafeDodge) && !stationary && anim_ok(0x29)) codes[n++] = 1;
+    }
+    if (d.has_beh(beh::kStrafe) && !stationary && anim_ok(0xc)) codes[n++] = 2;
+    if (aiming) {
+        if (d.has_beh(beh::kRoll) && anim_ok(0x53)) codes[n++] = 3;
+    }
+    if (d.has_beh(beh::kStep) && anim_ok(0x5a)) codes[n++] = 4;
+    if (!aiming) {
+        if (d.has_beh(beh::kAimCrouch) && anim_ok(5) && d.opp_dist >= 6.0f && rand_draw(2) == 0) codes[n++] = 5;
+        codes[n++] = 6;
+    }
+    if (n == 0) return 0;   // Rand_Rand(0) is undefined; no pick list was built (all-gated aiming)
+    // Legs: each picks a state or falls into the next (dodge -> strafe -> roll -> step -> 0x6f -> 0x67).
+    const auto dodge_pick = [&] {
+        if (rand_draw(2) == 0) {
+            if (can_strafe_dodge_right(d)) return 0x78;
+            if (can_strafe_dodge_left(d)) return 0x77;
+            return 0;
+        }
+        if (can_strafe_dodge_left(d)) return 0x77;
+        return 0;
+    };
+    const auto strafe_pick = [&] {
+        if (rand_draw(2) == 0) {
+            if (can_strafe_right(d)) return 0x76;
+            if (can_strafe_left(d)) return 0x75;
+            return 0;
+        }
+        if (can_strafe_left(d)) return 0x75;
+        return 0;
+    };
+    const auto roll_pick = [&] {
+        if (rand_draw(2) == 0) {
+            if (can_roll_right(d)) return 0x7a;
+            if (can_roll_left(d)) return 0x79;
+            return 0;
+        }
+        if (can_roll_left(d)) return 0x79;
+        return 0;
+    };
+    const auto step_pick = [&] {
+        if (!d.has_beh(beh::kStep) || !anim_ok(0x5a)) return 0;
+        if (rand_draw(2) == 0) {
+            if (can_step_right(d)) return 0x74;
+            if (can_step_left(d)) return 0x73;
+            return 0;
+        }
+        if (can_step_left(d)) return 0x73;
+        if (can_step_right(d)) return 0x74;
+        return 0;
+    };
+    // Leg dispatch with fallthrough (dodge -> strafe -> roll -> step -> 0x6f -> 0x67), then the tail
+    // adjustments (0x67 refused in 0x68, 0x6f refused in 0x70; picked == current returns 0).
+    int picked = 0;
+    switch (codes[rand_draw(std::uint32_t(n))] - 1) {
+    case 0:   // dodge (needs aiming)
+        if (aiming && d.has_beh(beh::kStrafeDodge)) {
+            picked = dodge_pick();
+            if (picked != 0) goto tail;
+        } else if (!aiming) {
+            break;   // post-switch step leg
+        }
+        [[fallthrough]];
+    case 1:   // strafe (needs aiming)
+        if (aiming && d.has_beh(beh::kStrafe)) {
+            picked = strafe_pick();
+            if (picked != 0) goto tail;
+        } else if (!aiming) {
+            break;   // post-switch step leg
+        }
+        [[fallthrough]];
+    case 2:   // roll (needs aiming)
+        if (aiming && d.has_beh(beh::kRoll)) {
+            picked = roll_pick();
+            if (picked != 0) goto tail;
+        }
+        break;   // post-switch step leg
+    case 3:  // (code 4) post-switch step leg directly
+        break;
+    case 4:  // (code 5) 0x11 re-gate directly
+        goto regate;
+    case 5:  // (code 6) Rand(4) leg directly
+        goto rand4;
+    default: // uninitialized slot (pick beyond the list)
+        return 0;
+    }
+    picked = step_pick();
+    if (picked != 0) goto tail;
+regate:
+    if (d.has_beh(beh::kAimCrouch) && anim_ok(5) && d.opp_dist >= 6.0f && rand_draw(2) == 0) {
+        picked = 0x6f;
+        goto tail;
+    }
+rand4:
+    picked = rand_draw(4) != 0 ? 0x67 : 0;
+tail:
+    if (picked == 0x67 && d.smi.cur == 0x68) picked = 0;
+    if (picked == 0x6f && d.smi.cur == 0x70) picked = 0;
+    return picked != d.smi.cur ? picked : 0;
+}
 
 void anim_for_dist(Drone& d, float dist) {
     // NDrone2_AnimForDist 0x1512e0
