@@ -71,6 +71,11 @@ struct WeaponDef {
     std::array<float, 3> gun_offset_aim{};  // +236 aiming offset (SP) / MP hip offset
 
     bool has(std::uint32_t flag1) const { return (flags1 & flag1) != 0; }
+    // Explosion effect script (`Explode_Create` script hash): big-blast rows (F3 0x100000/0x200000,
+    // wf3::kBigBlast/kBigBlast2 below) use 0x060007C4, everything else uses 0x06000052 (spec 4.3).
+    std::uint32_t blast_script() const {
+        return (flags3 & 0x300000u) ? 0x060007C4u : 0x06000052u;
+    }
 };
 
 // F1 (WeaponDef::flags1) bits, docs/spec-weapons.md 4.1.
@@ -93,7 +98,8 @@ constexpr std::uint32_t kGuided = 0x4, kGravity = 0x8, kTracer = 0x10, kEjectCas
 // F3 (flags3) bits, 4.3.
 namespace wf3 {
 constexpr std::uint32_t kPlayerEffect = 0x2, kExplodes = 0x4, kRicochet = 0x10, kGrapple = 0x40, kBounce = 0x80,
-                        kSticky = 0x100, kTimedFuse = 0x200, kFlashStun = 0x2000, kTripbomb = 0x80000;
+                        kSticky = 0x100, kTimedFuse = 0x200, kFlashStun = 0x2000, kTripbomb = 0x80000,
+                        kBigBlast = 0x100000, kBigBlast2 = 0x200000;  // explode with script 0x060007C4
 // kTimedFuse: the BU+252 timer counts down (grenades, mines, satchels). kFlashStun: when the fuse expires,
 // Bullet_DoTrails runs the stun block (sound 22 + per-victim flash-bang / bot stun), not an explosion.
 }

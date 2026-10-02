@@ -1988,7 +1988,7 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
     {  // F: NDrone2_FindOpponent over poked perception cache (seeded globals, synth structs).
         // MPGame slots: 0 = human obj (synth, poked pos/team/status), 4 = self obj (synth, skipped),
         // 5 = spare bot obj (synth, for bot-candidate + pile-on rows, with synth BOT_vars).
-        std::printf("F,row,ret,opp,distr,alerted,trait,hist,calls\n");
+        std::printf("F,row,ret,opp,distr,alerted,trait,hist,calls,seen,lost\n");
         int setopp_log[8];
         int setopp_n = 0;
         m.hook("NDrone2_SetOpponent__FP9Drone_tagP7obj_tag", [&](nf::ee::Cpu& c) {
@@ -2004,26 +2004,10 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
             if (setopp_n < 8) setopp_log[setopp_n++] = slot;
             return false;
         });
-        // TEMPORARY cone-math observe hooks (diagnosing F rows; remove before landing).
-        m.hook(0x1e4528u, [&](nf::ee::Cpu& c) {
-            float x, z;
-            u32 xb = c.f[12], zb = c.f[13];
-            std::memcpy(&x, &xb, 4);
-            std::memcpy(&z, &zb, 4);
-            std::fprintf(stderr, "F1(x=%.4g,z=%.4g)", (double)x, (double)z);
-            return false;
-        });
-        m.hook(0x1e2b78u, [&](nf::ee::Cpu& c) {
-            float a, b;
-            u32 ab = c.f[12], bb = c.f[13];
-            std::memcpy(&a, &ab, 4);
-            std::memcpy(&b, &bb, 4);
-            std::fprintf(stderr, " F2(a=%.4g,b=%.4g)\n", (double)a, (double)b);
-            return false;
-        });
+        // (no mid-function observe hooks; SetOpponent observe above is the only hook)
         const u32 selfobj = m.alloc(0x300), humanobj = m.alloc(0x300), bot5obj = m.alloc(0x300);
-        const u32 selfcell = m.alloc(0x300);   // self obj+224 struct (alive-test gate: +1272/+172)
-        const u32 bot5cell = m.alloc(0x300);   // bot5's obj+224 struct (+368 opp, +1272 flags, +172 health)
+        const u32 selfcell = m.alloc(0x600);   // self obj+224 struct (alive-test gate: +1272/+172)
+        const u32 bot5cell = m.alloc(0x600);   // bot5's obj+224 struct (+368 opp, +1272 flags, +172 health)
         const u32 bot5vars = m.alloc(0x800);
         std::fprintf(stderr, "FBLobs self=%x hum=%x b5=%x scell=%x b5cell=%x b5vars=%x\n", selfobj,
                      humanobj, bot5obj, selfcell, bot5cell, bot5vars);
@@ -2080,6 +2064,11 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
             int htype;        // human obj+0xff (3 human, 1 removed, 17/18 eliminated)
             int b5fe;         // bot5 obj+0xfe (1 = skip damage/targeting window)
             u32 b5cflags;     // bot5 cell +1272 state flags (needs 0x100, not 0x600)
+            float visang;     // drone+228 sight half-angle rad (0 = game default pi/2)
+            float visrange;   // drone+232 sight range m (0 = game default 24)
+            int f186;         // BOT_vars+1886 u16 (cached-facing index for bot candidates)
+            int kaw;          // extra Drone+0x4f8 kAware bit16 (history runs without aware-bit)
+            int b4opp;        // selfcell+368 b4 gate: 0 auto-mirror curropp, 1 human obj, 2 self obj, -1 none
         };
         const FRow rows[] = {
             // name, pers,aware,alerted,trait,curropp,oppdist,lost,aggr, teams,mteam,hteam,hstatus,
@@ -2107,10 +2096,10 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
             {"concealed-novis", 0,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,3, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u},
             {"trait-far", 0,0,0,0,-1,1e9f,0,2, 0,2,2,0, 0,0,20,0, 0,0,0,0, 400,0,6, 1, 100,0,6, 0,0,10,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u},
             {"notrait", 0,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,20,0, 0,0,0,0, 400,0,6, 1, 100,0,6, 0,0,10,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u},
-            {"pile-berserk", 5,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,20,0, 0,0,0,0, 400,0,6, 1, 100,0,6, 0,0,10,0, 0,1, 0, 0,{0,0,0,0}, 3,0,0x100u},
-            {"nopile", 5,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,20,0, 0,0,0,0, 400,0,6, 1, 100,0,6, 0,0,10,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u},
-            {"pile-human", 5,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 1, 400,0,6, 0,0,20,0, 1,0, 0, 0,{0,0,0,0}, 3,0,0x100u},
-            {"nopile-human", 5,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 1, 400,0,6, 0,0,20,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u},
+            {"pile-berserk", 5,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,20,0, 0,0,0,0, 400,0,6, 1, 100,0,6, 0,0,10,0, 0,1, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,1},
+            {"nopile", 5,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,20,0, 0,0,0,0, 400,0,6, 1, 100,0,6, 0,0,10,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,1},
+            {"pile-human", 5,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 1, 400,0,6, 0,0,20,0, 1,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,1},
+            {"nopile-human", 5,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 1, 400,0,6, 0,0,20,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,1},
             {"b5-fe", 0,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,20,0, 0,0,0,0, 400,0,6, 1, 100,0,6, 0,0,10,0, 0,0, 0, 0,{0,0,0,0}, 3,1,0x100u},
             {"b5-noactive", 0,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,20,0, 0,0,0,0, 400,0,6, 1, 100,0,6, 0,0,10,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x0},
             {"b5-ahead", 0,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,0,0, 0,0,0,0, 1e9f,0,0, 1, 100,0,6, 0,0,10,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u},
@@ -2118,17 +2107,44 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
             {"hist-stick", 0,1,0,-1,0,10,0,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 4,{0,0,0,0}, 3,0,0x100u},
             {"hist-switch", 0,1,0,-1,0,10,0,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 1, 0,0,0, 0,0,0,0, 0,0, 0, 4,{5,5,5,5}, 3,0,0x100u},
             {"hist-allzero", 0,1,0,-1,0,10,0,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u},
+            {"lost13", 0,0,0,-1,0,10,13,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"lost14", 0,0,0,-1,0,10,14,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"lost15", 0,0,0,-1,0,10,15,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"lost16", 0,0,0,-1,0,10,16,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"lost20", 0,0,0,-1,0,10,20,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"lost24", 0,0,0,-1,0,10,24,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"lost30", 0,0,0,-1,0,10,30,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"kaw-behind", 0,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,-10,0, 0,0,0,0, 100,180,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,1},
+            {"kaw-ahead", 0,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,1},
+            {"flag1-behind", 0,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,-10,0, 0,0,0,0, 100,180,7, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,1},
+            {"lost839", 0,0,0,-1,0,10,839,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"lost840", 0,0,0,-1,0,10,840,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"lost841", 0,0,0,-1,0,10,841,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"keep-aware", 0,1,0,-1,0,10,0,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"aware-behind", 0,1,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,-10,0, 0,0,0,0, 100,180,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"aware-alerted", 0,1,1,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"b5cach-acc", 0,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,0,0, 0,0,0,0, 1e9f,0,0, 1, 100,0,6, 0,0,10,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,1},
+            {"b5cach-rej", 0,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,0,0, 0,0,0,0, 1e9f,0,0, 1, 100,0,6, 0,0,10,0, 0,0, 180, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,1},
+            {"b5fe-kaw", 0,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,0,0, 0,0,0,0, 1e9f,0,0, 1, 100,0,6, 0,0,10,0, 0,0, 0, 0,{0,0,0,0}, 3,1,0x100u, 0,0,0,1},
+            {"pile-b4", 5,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 1, 400,0,6, 0,0,20,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,1,1},
+            {"narrow-flag1", 0,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,-10,0, 0,0,0,0, 100,8,7, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0.1f,0,0,1},
+            {"narrow-plain", 0,0,0,-1,-1,1e9f,0,2, 0,2,2,0, 0,0,-10,0, 0,0,0,0, 100,8,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0.1f,0,0,1},
+            {"ag4-1199", 0,0,0,-1,0,10,1199,4, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"ag4-1200", 0,0,0,-1,0,10,1200,4, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"ag4-1201", 0,0,0,-1,0,10,1201,4, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"ag0-359", 0,0,0,-1,0,10,359,0, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"ag0-360", 0,0,0,-1,0,10,360,0, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
+            {"ag0-361", 0,0,0,-1,0,10,361,0, 0,2,2,0, 0,0,10,0, 0,0,0,0, 100,0,6, 0, 0,0,0, 0,0,0,0, 0,0, 0, 0,{0,0,0,0}, 3,0,0x100u, 0,0,0,0},
         };
         for (const FRow& r : rows) {
-            if (std::strcmp(r.name, "aware-far") != 0) continue;   // TEMP DIAG: isolate single row
             zero(dc, 0x100);
             zero(drone, 0x1000);
             zero(botvars, 0x800);
             zero(selfobj, 0x300);
-            zero(selfcell, 0x300);
+            zero(selfcell, 0x600);
             zero(humanobj, 0x300);
             zero(bot5obj, 0x300);
-            zero(bot5cell, 0x300);
+            zero(bot5cell, 0x600);
             zero(bot5vars, 0x800);
             setopp_n = 0;
             // Synth structs. Drone+12 = own obj (entry alive-test gate); obj+224 = guard struct.
@@ -2137,6 +2153,16 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
             m.mem.write<u32>(drone + 12, selfobj);
             m.mem.write<u32>(selfobj + 224, selfcell);
             m.mem.write<u32>(selfcell + 1272, 0x100u);
+            u32 b4o = 0u; // pile-on b4 gate (MPGame[4].obj+224+368): auto-mirror curropp unless overridden
+            if (r.b4opp == 1) b4o = humanobj;
+            else if (r.b4opp == 2) b4o = selfobj;
+            else if (r.b4opp == 0 && r.curropp == 0) b4o = humanobj;
+            if (b4o) m.mem.write<u32>(selfcell + 368, b4o);
+            float glim = 300.0f; // goal[0] distraction limit so increaseDistraction writes are visible
+            u32 glimw = 0;
+            std::memcpy(&glimw, &glim, 4);
+            m.mem.write<u32>(botvars + 32, glimw);
+            m.mem.write<u32>(drone + 268, 235u); // GotoGoal state: distraction path gate
             u32 shw = 0;
             float sh100 = 100.0f;
             std::memcpy(&shw, &sh100, 4);
@@ -2146,7 +2172,7 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
             m.mem.write<u8>(drone + 180, 1u);
             m.mem.write<u8>(drone + 182, 1u);
             u32 sr = 0, cn = 0;
-            float rr = 24.0f, cc = 1.5707964f;
+            float rr = r.visrange != 0 ? r.visrange : 24.0f, cc = r.visang != 0 ? r.visang : 1.5707964f;
             std::memcpy(&sr, &rr, 4);
             std::memcpy(&cn, &cc, 4);
             m.mem.write<u32>(drone + 0xe8, sr);
@@ -2156,12 +2182,14 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
             float h100 = 100.0f;
             std::memcpy(&hw, &h100, 4);
             m.mem.write<u32>(drone + 172, hw);
+            m.mem.write<u16>(botvars + 1886, u16(r.f186));
             m.mem.write<u32>(drone + 368, 0u);
             u32 odw = 0;
             std::memcpy(&odw, &r.oppdist, 4);
             m.mem.write<u32>(drone + 416, odw);
             m.mem.write<u32>(drone + 628, u32(r.lost));
             if (r.aware) m.mem.write<u32>(drone + 1272, 0x10100u);
+            if (r.kaw) m.mem.write<u32>(drone + 1272, 0x10100u); // gate+kAware, no aware-bit
             m.mem.write<u8>(selfobj + 255, 2u);
             wvec(selfobj + 0x30, r.mx, r.my, r.mz);
             u32 myw = 0;
@@ -2194,7 +2222,7 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
                 m.mem.write<u32>(bot5cell + 172, hw);
                 m.mem.write<u32>(bot5cell + 3356, bot5vars);
                 wother(botvars, 5, 0, r.b5sq, r.b5face, r.b5flags);
-                wother(bot5vars, 5, 0, r.b5sq, r.b5mface, 6u);
+                wother(bot5vars, r.f186, 0, r.b5sq, r.b5mface, 6u);
                 m.mem.write<u8>(bot5vars + 1904, u8(r.b5targ));
             }
             // History preload (objs; head 0).
@@ -2210,15 +2238,13 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
             // MPGame/MPSettings pokes.
             m.mem.write<u32>(0x2A4980u + 0 * 0x30u + 0x1Cu, humanobj);
             m.mem.write<u32>(0x2A4980u + 4 * 0x30u + 0x1Cu, selfobj);
+            m.mem.write<u32>(0x2A4980u + 5 * 0x30u + 0x1Cu, r.bot5 ? bot5obj : 0u);
             for (int s : {1, 2, 3, 6, 7}) m.mem.write<u32>(0x2A4980u + u32(s) * 0x30u + 0x1Cu, 0u);
             if (r.curropp >= 0) {
                 u32 oo = r.curropp == 0 ? humanobj : selfobj;
                 m.mem.write<u32>(drone + 368, oo);
             }
-            u32 pre368 = 0;
-            m.mem.read_block(drone + 368, &pre368, 4);
-            std::fprintf(stderr, "F %s: pre=%x cur=%d aw=%d hf=%u hsq=%.0f per=%d\n", r.name, pre368,
-                         r.curropp, r.aware, r.hflags, (double)r.hsq, r.pers);
+            (void)0; // (per-row pre-state diag removed; CSV below is the record)
             int ret = -999;
             std::string trap;
             try {
@@ -2226,9 +2252,11 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
                 a.i(drone);
                 ret = int(m.call_keep(m.addr("NDrone2_FindOpponent__FP9Drone_tag"), a, 10'000'000).v0);
             } catch (const std::exception& e) { trap = e.what(); }
-            u32 oppafter = 0, distr = 0;
+            u32 oppafter = 0, distr = 0, seen = 0, lost = 0;
             m.mem.read_block(drone + 368, &oppafter, 4);
             m.mem.read_block(botvars + 1832, &distr, 4);
+            m.mem.read_block(drone + 624, &seen, 4);
+            m.mem.read_block(drone + 628, &lost, 4);
             u8 al = m.mem.read<u8>(botvars + 1903), tr = m.mem.read<u8>(botvars + 1893);
             std::string hist = "";
             for (int k = 0; k < 16; ++k) {
@@ -2248,9 +2276,9 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
             if (calls.empty()) calls = "-";
             const int oppslot =
                 oppafter == 0 ? -1 : (oppafter == humanobj ? 0 : (oppafter == selfobj ? 4 : (oppafter == bot5obj ? 5 : 8)));
-            std::printf("F,%s,%d,%d,%.9g,%u,%u,%s,%s%s\n", r.name, ret, oppslot, (double)as_float(distr),
-                        unsigned(al), unsigned(tr), hist.c_str(), calls.c_str(),
-                        trap.empty() ? "" : (" TRAP " + trap).c_str());
+            std::printf("F,%s,%d,%d,%.9g,%u,%u,%s,%s,%u,%u%s\n", r.name, ret, oppslot,
+                        (double)as_float(distr), unsigned(al), unsigned(tr), hist.c_str(), calls.c_str(),
+                        seen, lost, trap.empty() ? "" : (" TRAP " + trap).c_str());
         }
     }
     return 0;

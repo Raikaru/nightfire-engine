@@ -448,6 +448,10 @@ int run(int argc, char** argv) {
     if (level.map()) fx_sprites.add(level.map()->chunk);
     WeaponEffects effects(weapons.table(), *weapon_bank, &fx_sprites);
     effects.set_map_lights(weapon_bank->lights());
+    effects.set_level(&level);
+    effects.set_multiplayer(multiplayer);
+    for (const auto& [hash, cb] : level_scripts)
+        if (hash == 0x06000052 || hash == 0x060007C4) effects.set_explosion_script(hash, cb);
     for (int i = 1; i < player_count; ++i) world.spawn_player(i, spawns[std::min<std::size_t>(std::size_t(i) * 3, spawns.size() - 1)]);
     // Cross/use on doors and switches (Scripting): every player probes SpObjects; without a mission
     // (arenas, --no-mission) the handler stays empty and only creep walls consume the press.
@@ -553,8 +557,8 @@ int run(int argc, char** argv) {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         if (mission_ptr) renderer.set_hidden_placements(mission_ptr->hides());
         renderer.draw(wc, aspect, show_collision);
+        std::vector<LevelRenderer::ObjectDraw> objs = effects.take_blast_draws();
         if (mission_ptr) {
-            std::vector<LevelRenderer::ObjectDraw> objs;
             for (const auto& d : mission_ptr->draws()) {
                 const Placement& pl = level.placements()[d.placement];
                 LevelRenderer::ObjectDraw o;
@@ -563,8 +567,8 @@ int run(int argc, char** argv) {
                 for (int k = 0; k < 16; ++k) o.transform[k] = d.transform[std::size_t(k)];
                 objs.push_back(o);
             }
-            renderer.draw_objects(wc, aspect, objs);
         }
+        if (!objs.empty()) renderer.draw_objects(wc, aspect, objs);
         if (drone_renderer) drone_renderer->draw(wc, aspect, *drone_cli.system());
         effects.draw(wc, aspect, chars, weapons.projectiles());
         // Weapon layer (Player_SetWeaponAnimObj / Player_MuzzleFlash): drawn last, after the Z buffer

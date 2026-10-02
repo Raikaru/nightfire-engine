@@ -218,17 +218,20 @@ Movement-2's); named match-start states are also copied under
 
 ### Match setup (scripted, `mp_scenario.py`)
 
-From slot 1 (main menu, NightFire highlighted): down -> Multiplayer, cross,
-cross x2 (join Agent 1 + confirm), scenario wheel (up x15 clamps top, down xN),
-map wheel (same), character (default Bond), handicap (0), down -> AI Bots,
-per bot: cross (Setup), cross (character default), cross (config: Playing:Yes
-is the default once the page is confirmed), triangle, up -> Continue, cross,
-confirm, cross (Start). Settle 10 s after each page entry, 8 s between moves
-(the wheel eats input during its iris transition). Poke `0x30D2A7=1` on the
-scenario page. Wait for `MPSettings+0x180 == 1 && glb_players[0] != 0`, then
-save the match-start slot. Defaults: Snow Guard / Black Ops / Yakuza, all
-Phoenix, Arena FFA. Bot 1 won the first two Skyrail matches 10-4-2-0 from the
-same slot-10 state (deterministic).
+From slot 1 (main menu, NightFire highlighted): down -> Multiplayer, then FOUR
+2 s holds: enter MP, join Agent 1, confirm codename, confirm ready (400 ms taps
+are eaten by the join page; the missing 4th hold was the systematic setup
+failure). Scenario wheel fresh default is Quick Game (it remembers position
+within a visit and wraps; never assume Arena). Cycle-until-match with sentinel
+writes: select, read back `MPSettings+0x1a4` (scenario) / `+0x1a8` (map),
+triangle-back + down on mismatch (bounded, loud on failure). Character
+(default Bond), handicap (0), down -> AI Bots, per bot 3x cross (config defaults
+to Playing:Yes), triangle, up -> Continue, cross to confirm. At confirm, poke
+the bot roster into `mpbots` (`@0x2DEEAA+i*0x12`: stats / `+0x0E` enabled /
+`+0x0F` team / `+0x10` char / `+0x11` custom) and `0x30D2A7=1`
+(`menu_unlock_everything`). cross (Start). Wait for `MPSettings+0x180 == 1 &&
+glb_players[0] != 0`, save the match-start slot. Standard split: MI6 human
+(Bond) + Dominique vs Phoenix Snow Guard + Yakuza.
 
 ### Recordings
 
@@ -237,6 +240,8 @@ same slot-10 state (deterministic).
 | Skyrail Arena 3 bots (full match) | slot 10, idle human, Snow Guard/Black Ops/Yakuza | 17126 frames, elapsed 10.1..380.8 s (6.2 min), state 0->5 | `mp-skyrail-arena3bot-full.jsonl` (150 MB, ~77% keep at 60 Hz logic); Black Ops wins 10-4-2-0; 32 pickup takes; respawn delay 300 frames = 5.0 s verified (slot0 death 38388, respawn 38688) |
 | Missile Silo Arena 3 bots (partial) | slot 11 (leftover nav state), idle human | 7926 frames, elapsed 257.6..424.1 s | `mp-missilesilo-arena3bot.jsonl`; bot kills 7/7/5; 26 takes |
 | Skyrail Team Arena 3 bots (MI6 human+Dominique vs Phoenix Snow Guard+Yakuza) | slot 12, idle human | 10769 frames, elapsed 24.0..225.0 s | `mp-skyrail-teamarena.jsonl`; team scores 2/1 (enemy-kill team credit works); human untouched |
+| Skyrail CTF 3 bots (same split) | slot 13, idle human | 8072 frames, elapsed 12.8..179.8 s | `mp-skyrail-ctf.jsonl`; kills don't score (objective flag set); flags+bases all spawned (objx); no capture in window |
+| Skyrail Demolition 3 bots (same split) | slot 14, idle human | 8106 frames, elapsed 22.0..189.1 s | `mp-skyrail-demolition.jsonl`; 1 demo site live; states 0xF9 idle / 0xF2 death-anim observed |
 
 ### Residuals / limits
 

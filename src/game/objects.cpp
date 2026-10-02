@@ -247,6 +247,7 @@ void SpObjects::build() {
             v.kind = cls;
             v.damage = mine_param_float(std::int32_t(uparam(s, 0)));
             v.radius = mine_param_float(std::int32_t(uparam(s, 1)));
+            v.script = uparam(s, 5);
             volumes_.push_back(v);
             break;
         }
@@ -1228,7 +1229,7 @@ void SpObjects::tick_damage(const std::vector<Toucher>& touchers, const WeaponEv
                     WeaponDef def = weapons->table().weapon(55);
                     def.blast_radius = v.radius;
                     def.damage = v.damage;
-                    weapons->explode_at(pp, def, -1);
+                    weapons->explode_at(pp, def, -1, 1.0f, v.script);
                 } else if (hurt) {
                     hurt(t.slot, v.damage, DamageType::Bullet, pp);
                 }

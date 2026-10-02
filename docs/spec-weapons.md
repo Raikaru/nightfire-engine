@@ -888,6 +888,15 @@ So `def[+36]` = base spread in 0.0014-rad units (100 ⇒ ±0.14 rad ≈ 8°), `d
 ### 7.7 Explosions
 * `Explode_Create(bulletObj, pos, normal, scriptHash, radiusA, radiusB, damage, r,g,b, source, kind)`: **radius = `def[+8]`** (both radius args), **damage = `def[+12]`**. If radius ≥ 0.5: `Camera_Shake(pos, …)`. Creates an explosion object (type **15**, flags `0x30`, size `radius*0.0666667`), data `+32 cel`, `+36 source`, `+40 damage`, `+44 radius`, `+48 lifetime` (script duration `u16 @ script+2736`, else 15), `+52` SCRIPTINFO loaded from `scriptHash` (`Script_Load`, scale `script+148 = radius`, oriented by −(vector to nearest player)…), `+56 kind`, `+58 propagated`.
   `Explode_Update` (0x17C350) runs the script; when it stops the object is freed. While alive (age < `lifetime>>2`, and not MP) every `(Rand(5)+10)`th tick (`dword_2A379C % n`) it spawns debris by `kind`: 5,6 → `MetalHash_132`; 8,10,11 → stone (`StoneHash_133`, only in level `0x07000008` with `byte_26FCE3`); 7,9 none (`Debris_CreateEx(pos, …, count 3, …, 4)`).
+* Viewer (`WeaponEffects` explosion playback): script-driven blasts run the bin's streams through
+`CutscenePlayer` with an effects host. Active `EntityStart` windows (rest pose + blast base,
+yaw-aligned, scaled by `radius / 8`) draw their models via `draw_objects`; keyless bins report rest
+poses. `LightStart` (00 ff 01 18) creates a red `(255,2,3)` light, radius `3 × blast`, life 40 ticks;
+`SoundStart` queues for the session audio drain. SP debris follows the `Explode_Update` gate with shared
+`game_rng` draws in `Debris_CreateEx` order (gate, life, rotation, speed, 3× half-velocity, model);
+MP draws nothing (spec-gated). Debris kind defaults 0 (none), matching every observed weapon/mine
+caller (vehicles use 6); metal/stone tables from the ELF rodata (`0x02000414..1B`, `0x02000664..66`).
+All effect scatter (`jitter`) draws `game_rng`.
 * `Explode_CollisionHandler` (0x17CDE0): first tick only (`+58==0`): set 1 and call `Explode_Propagate(pos, cel, source, radius, damage)`.
 * `Explode_Propagate` (0x17C518): `Collide_SphereIntersect(pos, radius, cel, …, flags 192, 4)`; for every non-deleted object `dmg_i = damage * (1 − max(dist(obj+128, pos),0)/radius)`, ignored if `< 0.00019999999` (obj+128 is the eye for players: measured bit-equal to +0x70 in a slot-2 Skyrail savestate). By `obj+255` type:
   0 → Copter body: add `dmg_i` to `Copter+100` and `+108`; 2 → `Drone_ExplosiveHit(obj, {dmg_i, radius, source})`; 3 → `Player_Hurt(obj, dmg_i, pos)` (→ `Player_HandlePain` type 0; in MP with damage ≤0 also registers the hit); 5 → other projectiles of weapon ids 43, 52–55, 58 are detonated (`Bullet_handle_object_destruction`); 0x20 → `Break_ApplyDamage` (`breakable.hp −= dmg`, `Break_Kill` when <0); 0x21 → `Destroy_Smash` when `dmg_i ≥ 1.0` and not flagged; 0x28 → `+248 += dmg_i`; 0x35 → `MP_ApplyDamage`; 0x36 → `GT_ApplyDamage` (`hp −= dmg`) + `GT_Disable`; 0x37 `Sensor_ApplyDamage`; 0x38 `Monitor_ApplyDamage`; 0x3D (74) `Sub_ApplyDammage`; 0x4B → hit list entry with `+8 = dmg_i`.

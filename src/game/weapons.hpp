@@ -50,6 +50,8 @@ struct ExplosionEvent {
     Vec3 position;
     float radius;
     int weapon;
+    std::uint32_t script = 0x06000052u;  // effect script hash (`Explode_Create` script arg)
+    float yaw = 0;                       // base facing (`Mat_Align2Dir` by -dir to nearest player)
 };
 struct WeaponEvents {
     std::vector<SoundEvent> sounds;
@@ -163,7 +165,9 @@ public:
     // Explode_Create at `position` with the weapon's radius and damage.
     void explode(const Vec3& position, int weapon_id, int attacker);
     // Same, with an explicit def (map mines author their own radius/damage per placement).
-    void explode_at(const Vec3& pos, const WeaponDef& def, int attacker, float scale = 1.0f);
+    // `script` overrides the def's blast script when nonzero (placed mines carry p5).
+    void explode_at(const Vec3& pos, const WeaponDef& def, int attacker, float scale = 1.0f,
+                    std::uint32_t script = 0);
 
     // --- players (slot 0..3) ----------------------------------------------------------------------
     void spawn_player(int slot, const SpawnLoadout& loadout = {});   // MP_EquipPlayer, done lazily by tick()

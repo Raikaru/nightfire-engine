@@ -10,12 +10,13 @@ using namespace gl;
 
 WeaponEffects::WeaponEffects(const WeaponTable& table, CharacterBank& bank, const SpriteLibrary* sprites)
     : table_(table), bank_(bank), sprites_(sprites) {}
+WeaponEffects::~WeaponEffects() = default;  // needs Playback complete (unique_ptr member)
 
 Vec3 WeaponEffects::jitter(float scale) {
-    rng_ = rng_ * 1664525u + 1013904223u;
-    const float a = float(rng_ >> 8) * (3.14159265f / 8388608.0f);
-    rng_ = rng_ * 1664525u + 1013904223u;
-    const float b = float(rng_ >> 8) / 16777216.0f - 0.5f;
+    // Shared game_rng stream (MP-lockstep order): two draws per scatter, like the local LCG before.
+    GameRng& rng = game_rng();
+    const float a = rng.frand(2.0f * 3.14159265f);
+    const float b = rng.frand(1.0f) - 0.5f;
     return {std::cos(a) * scale, b * scale, std::sin(a) * scale};
 }
 
@@ -63,6 +64,11 @@ void WeaponEffects::consume(const WeaponEvents& events) {
         if (puffs_.size() > 256) puffs_.erase(puffs_.begin(), puffs_.begin() + (puffs_.size() - 256));
     }
     for (const ExplosionEvent& x : events.explosions) {
+        if (x.radius > 0.0f && fx_bins_.count(x.script) != 0) {
+            // Script-driven blast: entities + light + boom ride the effect script below.
+            start_playback(x);
+            continue;
+        }
         if (x.radius > 0.0f) {
             blasts_.push_back({x.position, x.radius * 0.7f, x.radius * 1.5f, 0, 18, {1.0f, 0.55f, 0.2f, 0.9f}});
             glow(x.position, {1.0f, 0.55f, 0.2f}, x.radius * 2.0f + 4.0f, 25);
@@ -76,6 +82,77 @@ void WeaponEffects::consume(const WeaponEvents& events) {
             if (x.weapon == 53 || x.weapon == 54 || x.weapon == 105) glow(x.position, {1.0f, 1.0f, 1.0f}, 12.0f, 40);
         }
     }
+}
+// `CutscenePlayer::Host` for effect scripts: sounds and lights drain via take_sounds()/take_lights();
+// channel/switch surface only; everything else is a no-op (no cameras, text, drones, fades in blasts).
+struct ExplosionHost : CutscenePlayer::Host {
+    SwitchChannels* switches = nullptr;
+    bool channel(std::uint16_t ch) const override { return switches != nullptr && switches->get(ch) != 0; }
+    void set_channel(std::uint16_t ch, std::uint8_t value) override {
+        if (switches != nullptr) switches->set(ch, value);
+    }
+    void spawn_drone(const std::array<float, 3>&, const std::uint32_t[4]) override {}
+    void enable_drones(bool) override {}
+    void break_near(const std::array<float, 3>&) override {}
+    void set_link_byte(const std::array<float, 3>&, std::uint8_t) override {}
+    void load_level(std::uint32_t) override {}
+    void sound(std::uint32_t, const std::array<float, 3>&, bool) override {}
+    void set_scriptcam(std::uint32_t) override {}
+    void camera_mode(std::uint32_t) override {}
+    void disable_player(bool) override {}
+    void ram_save() override {}
+    void text(std::uint32_t, std::uint16_t) override {}
+    void fade(float) override {}
+    void music(std::uint32_t, std::int32_t) override {}
+    void message_callback(std::uint16_t, std::uint32_t) override {}
+};
+
+struct WeaponEffects::Playback {
+    Vec3 pos{};
+    float radius = 1, yaw = 0;
+    const CutsceneBin* bin = nullptr;
+    ExplosionHost host;
+    std::unique_ptr<CutscenePlayer> player;
+    int age = 0;  // 30 Hz ticks since creation
+    int kind = 0;  // debris table selector (5,6 metal; 8,10,11 stone); 0 = none, like all ticket weapons
+    std::vector<BlastDebris> debris;
+};
+void WeaponEffects::set_level(Level* level) {
+    level_ = level;
+    model_cache_.clear();
+}
+
+void WeaponEffects::set_explosion_script(std::uint32_t hash, CutsceneBin bin) {
+    fx_bins_.emplace(hash, std::move(bin));
+}
+
+void WeaponEffects::start_playback(const ExplosionEvent& x) {
+    auto it = fx_bins_.find(x.script);
+    if (it == fx_bins_.end()) return;  // caller falls back to the generic blast
+    if (playbacks_.size() >= 16) playbacks_.erase(playbacks_.begin());
+    auto pb = std::make_unique<Playback>();
+    pb->pos = x.position;
+    pb->radius = x.radius;
+    pb->yaw = x.yaw;
+    pb->bin = &it->second;
+    pb->host.switches = &switches_;
+    pb->player = std::make_unique<CutscenePlayer>(pb->bin, x.script, &pb->host);
+    pb->player->play(false);
+    playbacks_.push_back(std::move(pb));
+}
+
+std::pair<std::size_t, std::size_t> WeaponEffects::resolve_model(std::uint32_t hash) {
+    if (level_ == nullptr) return {SIZE_MAX, SIZE_MAX};
+    if (auto it = model_cache_.find(hash); it != model_cache_.end()) return it->second;
+    for (std::size_t c = 0; c < level_->chunks().size(); ++c)
+        for (std::size_t m = 0; m < level_->chunks()[c].chunk.models.size(); ++m)
+            if (level_->chunks()[c].chunk.models[m].hash == std::int32_t(hash)) {
+                auto target = std::pair{c, m};
+                model_cache_.emplace(hash, target);
+                return target;
+            }
+    model_cache_.emplace(hash, std::pair{SIZE_MAX, SIZE_MAX});
+    return {SIZE_MAX, SIZE_MAX};
 }
 
 void WeaponEffects::tick(float mul) {
@@ -91,6 +168,99 @@ void WeaponEffects::tick(float mul) {
     std::erase_if(puffs_, [](const Puff& p) { return p.age >= p.ttl; });
     for (Blast& b : blasts_) b.age += mul;
     std::erase_if(blasts_, [](const Blast& b) { return b.age >= b.ttl; });
+    tick_playbacks(mul);
+}
+// One playback tick (`Explode_Update`): run the script, drain its light/sound queues, then the
+// SP-only debris gate. Debris RNG draws shared game_rng in `Debris_CreateEx` order; MP draws nothing.
+void WeaponEffects::tick_playbacks(float mul) {
+    for (std::size_t i = 0; i < playbacks_.size();) {
+        Playback& pb = *playbacks_[i];
+        pb.player->tick(mul);
+        for (const auto& l : pb.player->take_lights()) {
+            // `Script_LightStart` (00 ff 01 18): red-orange blast light for the script's light
+            // window (op 24 at t=0, op 26 at t=80: 40 ticks); radius scales with the blast.
+            lights_.create({pb.pos[0] + l.pos[0], pb.pos[1] + l.pos[1], pb.pos[2] + l.pos[2]},
+                           pb.radius * 3.0f, 255, 2, 3, 1.0f, 40, 0, l.type ? 1 : 0);
+        }
+        for (const auto& s : pb.player->take_sounds())
+            blast_sounds_.push_back({int(s.id), {pb.pos[0] + s.pos[0], pb.pos[1] + s.pos[1], pb.pos[2] + s.pos[2]},
+                                     s.positional, -1, -1});
+        if (!is_mp_) tick_playback_debris(pb);
+        ++pb.age;
+        if (!pb.player->playing() && pb.debris.empty())
+            playbacks_.erase(playbacks_.begin() + std::ptrdiff_t(i));
+        else
+            ++i;
+    }
+    if (blast_sounds_.size() > 64) blast_sounds_.erase(blast_sounds_.begin(), blast_sounds_.end() - 64);
+}
+
+void WeaponEffects::tick_playback_debris(Playback& pb) {
+    // `Explode_Update` debris gate, SP only (MP returns before the first Rand draw). Kind comes
+    // from the explosion caller (all observed weapon/mine call sites pass 0 = none; vehicles use 6;
+    // stone 8,10,11 needs level 07000008). With kind 0 this draws no RNG, exactly like the original.
+    if (pb.kind != 0 && pb.player->playing() && pb.age >= 1) {
+        const std::uint32_t r = game_rng().rand_int(5);
+        if (std::uint32_t(pb.age) % (r + 10) == 0) spawn_blast_debris(pb);
+    }
+    for (BlastDebris& d : pb.debris) {
+        d.age += 2.0f;
+        d.pos = d.pos + d.vel * 2.0f;
+        d.pos[1] -= 9.8f / 3600.0f * 4.0f;
+    }
+    std::erase_if(pb.debris, [](const BlastDebris& d) { return d.age >= d.life; });
+}
+
+// One `Debris_CreateEx` burst (count 3): shared-RNG draws in original order — life, rotation,
+// speed factor, three half-range velocity components, model index — then ballistic motion.
+void WeaponEffects::spawn_blast_debris(Playback& pb) {
+    static constexpr std::uint32_t kMetal[] = {0x02000414u, 0x02000415u, 0x02000416u, 0x0200041Bu};
+    static constexpr std::uint32_t kStone[] = {0x02000664u, 0x02000665u, 0x02000666u, 0x02000664u};
+    const std::uint32_t* table = nullptr;
+    if (pb.kind == 5 || pb.kind == 6) table = kMetal;
+    if (pb.kind == 8 || pb.kind == 10 || pb.kind == 11) table = kStone;
+    if (table == nullptr) return;
+    GameRng& rng = game_rng();
+    for (int k = 0; k < 3; ++k) {
+        const float life = (0.4f + rng.frand(0.3f)) * 60.0f;
+        const float rot = float(rng.rand_int(256)) + 128.0f;
+        (void)rot;
+        const float speed = (pb.radius * 0.5f) * (rng.frand(2.0f) + 0.1f);
+        const float hx = rng.frand(1.0f) - 0.5f, hy = rng.frand(1.0f) - 0.5f, hz = rng.frand(1.0f) - 0.5f;
+        const std::uint32_t model = table[rng.rand_int(3)];
+        const auto [chunk, m] = resolve_model(model);
+        if (chunk == SIZE_MAX) continue;
+        BlastDebris d;
+        d.pos = pb.pos;
+        d.vel = {speed * 0.2f + hx * speed, speed * 0.5f + hy * speed, speed * 0.2f + hz * speed};
+        d.chunk = chunk;
+        d.model = m;
+        d.life = life;
+        pb.debris.push_back(d);
+    }
+}
+std::vector<LevelRenderer::ObjectDraw> WeaponEffects::take_blast_draws() {
+    std::vector<LevelRenderer::ObjectDraw> out;
+    for (const auto& pb : playbacks_) {
+        const float c = std::cos(pb->yaw), s = std::sin(pb->yaw);
+        const float k = pb->radius / 8.0f;  // script scale: grenade radius 8 renders authored size
+        for (const auto& e : pb->player->entities()) {
+            const auto [chunk, model] = resolve_model(e.hash);
+            if (chunk == SIZE_MAX) continue;
+            const Vec3 p = {pb->pos[0] + e.pos[0], pb->pos[1] + e.pos[1], pb->pos[2] + e.pos[2]};
+            out.push_back({chunk, model,
+                           {c * k, 0, -s * k, 0, 0, k, 0, 0, s * k, 0, c * k, 0, p[0], p[1], p[2], 1}});
+        }
+        for (const BlastDebris& d : pb->debris) out.push_back({d.chunk, d.model, {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0,
+                                                                                  d.pos[0], d.pos[1], d.pos[2], 1}});
+    }
+    return out;
+}
+
+std::vector<SoundEvent> WeaponEffects::take_blast_sounds() {
+    std::vector<SoundEvent> out;
+    out.swap(blast_sounds_);
+    return out;
 }
 void WeaponEffects::glow(const Vec3& pos, const Vec3& color01, float radius, int life) {
     auto byte = [](float c) { return std::uint8_t(std::lround(std::clamp(c, 0.0f, 1.0f) * 255.0f)); };

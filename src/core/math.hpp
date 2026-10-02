@@ -20,6 +20,17 @@ inline Vec3 cross(const Vec3& a, const Vec3& b) {
 }
 inline float length(const Vec3& a) { return std::sqrt(dot(a, a)); }
 
+// Emotion Engine single-precision multiply: every operation rounds toward zero (docs/ee.md, src/ee/ps2float.hpp).
+// Host IEEE rounds to nearest, which is off by one ulp exactly when the product sits just below a float
+// (e.g. 0.7f * 20.0f is 13.9999998 on the EE but 14.0f on the host) — enough to flip integer boundaries like
+// the FindOpponent lost-sight timeout (839 vs 840 frames). Only for normal-range positive products.
+inline float ee_trunc_mul(float a, float b) {
+    const double exact = double(a) * double(b);
+    float r = float(exact);
+    if ((exact > 0.0 && r > exact) || (exact < 0.0 && r < exact)) r = std::nextafter(r, 0.0f);
+    return r;
+}
+
 inline Mat4 identity() { return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}; }
 
 inline Mat4 mul(const Mat4& a, const Mat4& b) {
