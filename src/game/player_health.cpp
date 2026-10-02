@@ -2,6 +2,7 @@
 #include <cmath>
 #include <utility>
 
+#include "core/rng.hpp"
 #include "game/player.hpp"
 
 namespace nf {
@@ -74,12 +75,16 @@ float Player::hurt(const HitInfo& hit) {
     const bool environment = int(hit.type) >= int(DamageType::Environment);   // types 5-7: MPGame lastAttacker = -2
     last_hit = {hit.point, hit.direction, scaled, hit.type, hit.part, environment ? -1 : hit.attacker, hit.weapon};
 
-    // Player_HandlePain: one hit in four makes the player grunt; the pad rumbles with the damage that got through.
-    rand_state_ = rand_state_ * 1664525u + 1013904223u;
-    if (((rand_state_ >> 16) & 3u) == 0) events_.sounds.push_back({kPainGruntSound, pos});
+    // Player_HandlePain: one hit in four makes the player grunt (Rand_Rand(4) on the shared game stream:
+    // the draw exists even though it is cosmetic, so the stream stays aligned for spread); the pad rumbles
+    // with the damage that got through. Proven by nfmips diff-mpweap (grunt iff coin == 0, rumble == through).
+    if (game_rng().rand_int(4) == 0) events_.sounds.push_back({kPainGruntSound, pos});
     events_.rumble = std::max(events_.rumble, int(health_damage));
 
-    // Player_DealWithObjHit: a bullet with a travel direction refines the indicator afterwards.
+    // Player_DealWithObjHit: the HITDATA+48 vector in view space picks the indicator side (bit 1 below,
+    // 2 above, 4 left, 8 right; along-view shots light left+right). Disassembly shows +48 is the bullet's
+    // normalized ray direction (Collide_Intersect normalizes HITTEST+64 into HITDATA+48 when the long
+    // probe flag 0x200 is set; the victim mirror copies it), i.e. the travel direction, not the normal.
     const bool has_direction = hit.direction[0] != 0.0f || hit.direction[1] != 0.0f || hit.direction[2] != 0.0f;
     if (hit.type == DamageType::Bullet && has_direction)
         vitals.pain_dir = pain_indicator(view_space(hit.direction, view_axes()));

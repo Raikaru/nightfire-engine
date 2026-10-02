@@ -14,6 +14,7 @@
 #include "driving/driving_level.hpp"
 #include "driving/input_script.hpp"
 #include "driving/mission.hpp"
+#include "driving/particles.hpp"
 #include "driving/scene_renderer.hpp"
 #include "driving/vehicle_params.hpp"
 #include "game/player_basis.hpp"
@@ -138,6 +139,8 @@ struct DriveSessionApp::Impl {
     std::vector<AiHandles> ai_handles;
     driving_app::SceneRenderer::Handle shot_handle{};
     driving_app::SceneRenderer::Handle pickup_handle{};
+    std::unique_ptr<driving_app::ParticleSystem> particles;
+    std::unique_ptr<driving_app::ParticleRenderer> particle_renderer;
     SDL_Gamepad* gamepad = nullptr;
 
     bool build() {
@@ -166,6 +169,9 @@ struct DriveSessionApp::Impl {
         }
         shot_handle = renderer->upload(drive_marker(0.5f, 0xFF33CCFF));
         pickup_handle = renderer->upload(drive_marker(1.2f, 0xFF33FF66));
+        particles = std::make_unique<driving_app::ParticleSystem>(
+            driving_app::ParticleSystem::Config::for_archive(desc->viv));
+        particle_renderer = std::make_unique<driving_app::ParticleRenderer>();
         std::printf("%.*s: mission ready (car %s)\n", int(desc->name.size()), desc->name.data(),
                     mission->session().car().c_str());
         return true;
@@ -213,7 +219,18 @@ struct DriveSessionApp::Impl {
             const Mat4 m = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, p.pos[0], p.pos[1], p.pos[2], 1};
             renderer->draw(pickup_handle, mul(vp, m));
         }
-        // Text HUD: speed, objective, timer, banner.
+        if (particles && particle_renderer) {
+            Vec3 fwd = c.target - c.eye;
+            const float fwd_len = length(fwd);
+            if (fwd_len > 1e-6f) {
+                fwd = fwd * (1.0f / fwd_len);
+                Vec3 right = cross(fwd, c.up);
+                if (length(right) > 1e-6f) {
+                    right = right * (1.0f / length(right));
+                    particle_renderer->draw(*particles, vp, c.eye, right, cross(right, fwd));
+                }
+            }
+        }
         const driving_app::DrivingHud& hud = mission->hud();
         ui.begin(w, h, false);
         ui::TextStyle style;
@@ -309,6 +326,7 @@ DriveResult DriveSessionApp::run_interactive() {
         last = now;
         while (accumulator >= kStep) {
             s.mission->tick(drive_pad(s.gamepad));
+            if (s.particles) s.particles->tick(s.mission->session(), *s.mission);
             accumulator -= kStep;
             if (s.mission->state() != driving_app::MissionState::Running) {
                 // Let the banner show for 3 seconds, then fall through to the results.
@@ -342,6 +360,7 @@ DriveResult DriveSessionApp::run_headless(const DriveHeadless& headless) {
         if (std::size_t(t) < script.size()) pad = script[std::size_t(t)];
         else pad.buttons |= kPadCross;  // straight gas
         s.mission->tick(pad);
+        if (s.particles) s.particles->tick(s.mission->session(), *s.mission);
     }
     const driving_app::DrivingHud& hud = s.mission->hud();
     const Vec3 p = s.mission->session().player_position();

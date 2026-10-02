@@ -53,18 +53,7 @@ float ps2_sinf_arg(float x) {
     return 3.1415927f - x;
 }
 
-// PS2Sinf polynomial: Horner in f32 with the .sdata constants @0x2f3b20, verified bit-near-exact
-// (max 2.4e-7 over 2001 samples incl. the ±1.00000012 endpoint overshoot) against the original.
-float ps2_sin(float x) {
-    // Table: {-0.00019807414, -0.1666665673, 0.0083330255, 2.601887e-6} (lanes c0..c3).
-    constexpr float c0 = -0.00019807414f, c1 = -0.1666665673f, c2 = 0.0083330255f, c3 = 2.601887e-6f;
-    const float a = ps2_sinf_arg(x);
-    const float a2 = a * a;
-    const float inner = a2 * c3 + c0;
-    const float m2 = a2 * inner + c2;
-    const float m1 = a2 * m2 + c1;
-    return a * (1.0f + a2 * m1);
-}
+// ps2_sin lives at weap scope below (shared with the bot aim-wobble); ps2_sinf_arg stays file-local.
 
 // 60 Hz "frames" of the original -> ticks of the running rate (n * FRAME_RATE_DIV).
 std::uint32_t frames60(const Drone& d, float n) { return std::uint32_t(std::max(n * d.rate() / 60.0f, 0.0f)); }
@@ -89,6 +78,20 @@ const WeaponDef* weapon_def(const Drone& d) {
 }
 
 }  // namespace
+// PS2Sinf polynomial: Horner in f32 with the .sdata constants @0x2f3b20, verified bit-near-exact
+// (max 2.4e-7 over 2001 samples incl. the ±1.00000012 endpoint overshoot) against the original.
+// Shared with the bot aim-wobble (BOT_opponentTargetting).
+float ps2_sin(float x) {
+    // Table: {-0.00019807414, -0.1666665673, 0.0083330255, 2.601887e-6} (lanes c0..c3).
+    constexpr float c0 = -0.00019807414f, c1 = -0.1666665673f, c2 = 0.0083330255f, c3 = 2.601887e-6f;
+    const float a = ps2_sinf_arg(x);
+    const float a2 = a * a;
+    const float inner = a2 * c3 + c0;
+    const float m2 = a2 * inner + c2;
+    const float m1 = a2 * m2 + c1;
+    return a * (1.0f + a2 * m1);
+}
+
 
 float aggression_mul(const Drone& d) {
     // BOT_getAggressionMul 0x12b?: 0.3 / 0.5 / 0.7 / 0.85 / 1.0 by Drone+0xb5, boosted at point-blank in MP.

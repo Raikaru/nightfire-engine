@@ -24,6 +24,7 @@ ArenaSettings ArenaSystem::settings_from_launch(const MpLaunch& launch) {
         s.team = int(p.team);
         s.character = int(p.character);
         s.health_bonus = p.handicap;
+        s.hud = p.hud;   // MPSettings slot+0x28 (radar/HUD toggle)
     }
     return out;
 }

@@ -243,6 +243,7 @@ public:
     std::uint16_t sub_class = 0;        // +0xda
     int voice_set = 0;
     int initial_state = 4;              // +0x5a2
+    int pre_state = 0;                  // +0x5a0: previous return state (BOTSTATE_gotoGoal writes both)
     int alt_state = 0;                  // +0x5a4
     std::uint32_t script_id = 0x6000000;  // +0x554
     Behaviour behaviour[2];             // +0x4dc / +0x4e8
@@ -311,6 +312,7 @@ public:
                                         //   DroneWeap_DoBulletAccuracy; GetOpponentInfo writes (0, bearing, 0)
     float opp_facing_a = 0;             // +0x1d0
     float opp_facing_b = 0;             // +0x1d4
+    float opp_motion_mag = 0;         // +0x1e4: 40.0 while the opponent is moving, else 0 (BOT_opponentTargetting)
     float visibility = 0;               // +0x230
     float env_visibility = 1.0f;        // +0x22c (AI volume multiplier)
     std::uint32_t last_seen_time = 0;   // +0x238
@@ -407,6 +409,7 @@ public:
         bool goal_is_object = false;    // route goal is a moving target (move_to_object)
         TargetRef goal_target;
         float applied_height = 1.0327658653f;   // stand_height already folded into pos.y (feet stay planted)
+        Vec3 reach_check_pos{};       // DroneReachCheckPos: last Can* probe destination (feet space), for the KOTH hill veto
     } mv;
     DroneLook look;
     std::unique_ptr<CharacterInstance> character;   // owned by the drone; created by DroneSystem::spawn

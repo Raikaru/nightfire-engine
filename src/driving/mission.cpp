@@ -98,12 +98,23 @@ Mission::Mission(DrivingLevel& level, const std::string& car)
     // `rs`-lane bridges spliced across index-order jumps. The spliced network is built in
     // walk order, so its spine is the identity; without splicing the spine is the raw walk.
     // Falls back to index order only when the walk finds nothing routable.
-     {
-         // Flyers (open air, no roads to chain): the data order is the route.
-         if (session_.kind() == PlayerKind::Fly && road_.size() >= 6) {
-             spine_.clear();
-             for (std::size_t i = 0; i < road_.size(); ++i) spine_.push_back(int(i));
-             player_node_ = road_.nearest(session_.player_position());
+    {
+        // Flyers (open air, no roads to chain): follow the data route in order
+        // (nearest road node per route point), not the chained network order.
+        if ((session_.kind() == PlayerKind::Fly || level_.vehicle_attributes(session_.car()).get_int("IS_FLYING", 0)) && !data_.route.empty()) {
+            spine_.clear();
+            std::vector<char> taken(road_.size(), 0);
+            for (const Vec3& rp : data_.route) {
+                float bd = 1e30f;
+                int bi = -1;
+                for (std::size_t j = 0; j < road_.size(); ++j) {
+                    if (taken[j]) continue;
+                    const Vec3 d = road_.node(j).pos - rp;
+                    const float q = dot(d, d);
+                    if (q < bd) { bd = q; bi = int(j); }
+                }
+                if (bi >= 0) { taken[std::size_t(bi)] = 1; spine_.push_back(bi); }
+            }
         } else {
             std::vector<int> walk = road_.walk_from(player_node_, data_.road);
             RoadNetwork spliced = RoadNetwork::splice_jumps(road_, walk, data_.road);
@@ -116,8 +127,8 @@ Mission::Mission(DrivingLevel& level, const std::string& car)
                 spine_ = walk;
             }
         }
-     }
-     if (spine_.size() < 6 && !road_.empty()) {
+    }
+    if (spine_.size() < 6 && !road_.empty()) {
         spine_.clear();
         for (std::size_t i = 0; i < road_.size(); ++i) spine_.push_back(int(i));
     }
@@ -467,18 +478,17 @@ void Mission::update_walk() {
         // Detours cost time; wrong-way targets cost the mission.
         int best = player_walk_;
         float bd = 1e30f;
-        for (int k = player_walk_; k < int(spine_.size()) && k < player_walk_ + 10; ++k) {
+        for (int k = player_walk_; k < int(spine_.size()) && k < player_walk_ + 40; ++k) {
             const Vec3 d = road_.node(std::size_t(spine_[k])).pos - pp;
             const float q = dot(d, d);
             if (q < bd) bd = q, best = k;
         }
-        // Hold when the car falls behind: advancing the walk to a node 60 m+ away aims it
-        // through walls/roofs at a place it cannot reach (tunnel below, street above). The
-        // car chases a reachable target instead, and the walk follows once it catches up.
-         if (bd < 3600.0f) player_walk_ = best;
-         // Progress follow: fast movers (subs at 25 m/s) cut corners outside every 60 m
-         // ball yet still travel the route — advance past segments with real progress.
-         // Proof of travel (50% along the segment), so loops cannot hijack it.
+        // Hold when the car falls behind (60 m+ to every candidate), and cap per-tick
+        // advance (loop arms within range leap the walk across the block in one tick).
+        // Teleports set it directly and bypass this.
+        if (bd < 3600.0f) player_walk_ = std::min(best, player_walk_ + 3);
+        // Progress follow: fast movers (subs at 25 m/s) cut corners outside every 60 m
+        // ball yet still travel the route — advance past segments with real progress.
         for (int k = player_walk_ + 1; k < int(spine_.size()) && k < player_walk_ + 10; ++k) {
             if (road_.progress(spine_[std::size_t(k)], pp) > 0.5f) player_walk_ = k;
         }
@@ -1267,7 +1277,10 @@ void Mission::tick_weapons(float now) {
                 const float wl = length(want);
                 if (wl > 1.0f && spd > 1.0f) {
                     want = want * (spd / wl);
-                    Vec3 v = p.vel + (want - p.vel) * std::min(1.0f, 3.0f * kDt);
+                    // Torpedoes turn harder than missiles (45 m/s vs agile diving subs needs ~5 m
+                    // radius; 3/s gives ~15 m and overshoots past them).
+                    const float turn = p.kind == SecondaryKind::Torpedoes ? 9.0f : 3.0f;
+                    Vec3 v = p.vel + (want - p.vel) * std::min(1.0f, turn * kDt);
                     p.vel = v * (spd / length(v));
                 }
             }

@@ -85,7 +85,7 @@ std::vector<WeaponSystem::Victim> WeaponSystem::collect_victims(const World& wor
         const PlayerWeapons* p = players_[std::size_t(slot)].get();
         const Player* pl = world.player(slot);
         if (!p || !pl || !pl->alive()) continue;
-        Victim v{slot, {}, {}, 0.55f, nullptr};
+        Victim v{slot, {}, {}, 0.55f, nullptr, pl->eye()};
         if (pl->substate == SubState::Crouch) {
             v.a = pl->capsule_a, v.b = pl->capsule_b, v.radius = pl->capsule_radius;
         } else {   // Player_Collision's standing capsule
@@ -99,7 +99,7 @@ std::vector<WeaponSystem::Victim> WeaponSystem::collect_victims(const World& wor
         if (!t->alive()) continue;
         const Vec3 c = t->center();
         const float h = t->half_height();
-        out.push_back({target_ids_[i], c + Vec3{0, h, 0}, c - Vec3{0, h, 0}, t->radius(), t});
+        out.push_back({target_ids_[i], c + Vec3{0, h, 0}, c - Vec3{0, h, 0}, t->radius(), t, c});
     }
     return out;
 }
@@ -126,13 +126,17 @@ void WeaponSystem::spawn_projectile(const Shooter& shooter, const WeaponDef& def
     b.owner = shooter.id;
     b.damage_scale = shooter.damage_scale;
     b.pos = shooter.origin;
-    const float shots = std::trunc(float(shooter.shots_in_burst) * def.spread_growth);
+    // Spec 7.3 (Bullet_init): shots = trunc(min(fired_in_cycle, clipSize) * growth); the draw order is
+    // MVar2(2A, A), FRand(2pi), FRand(pi). Vec_Spherical_2_Cartesian(r, theta, phi) is Y-elevation:
+    // x = r sin(theta) cos(phi), y = r sin(phi), z = r cos(theta) cos(phi) (nfmips diff-mpweap
+    // spherical section; the old port used inclination y = r cos(phi) with swapped x/z).
+    const float shots = std::trunc(std::min(float(shooter.shots_in_burst), float(def.clip_size)) * def.spread_growth);
     const float k = def.has(wf1::kAccurateAiming) && shooter.owner_aiming ? 0.0f : 1.0f;
     const float A = (def.spread + shots) * k;
     const float r = game_rng().mvar2(2.0f * A, A) * 0.0014f;   // Rand_FRand_MVar2(2A, A), U1 in [0,1)
     const float theta = game_rng().frand(2.0f * kPi), phi = game_rng().frand(kPi);   // Rand_FRand(2pi), Rand_FRand(pi)
-    // Vec_Spherical_2_Cartesian: polar axis is Y (a1[1] = r * cos phi).
-    const Vec3 offset = {r * std::sin(phi) * std::cos(theta), r * std::cos(phi), r * std::sin(phi) * std::sin(theta)};
+    const float sp = std::sin(phi), cp = std::cos(phi);
+    const Vec3 offset = {r * std::sin(theta) * cp, r * sp, r * std::cos(theta) * cp};
     b.dir = normalized(shooter.direction + offset);
     b.speed = def.speed * ((def.flags2 & wf2::kQuarterSpeed) ? 0.25f : 1.0f);
     if (def.base == 59) b.timer = def.id == 108 ? 900.0f : 60.0f * float(5 * (def.id - def.base) + 5);
@@ -165,15 +169,19 @@ void WeaponSystem::explode(const Vec3& position, int weapon_id, int attacker) {
 // Hit tests
 
 WeaponSystem::SegmentHit WeaponSystem::trace_segment(const World& world, const Vec3& from, const Vec3& to, int owner,
-                                                     const std::vector<Victim>& victims) const {
+                                                     const std::vector<Victim>& victims,
+                                                     bool solid_water) const {
     SegmentHit best;
     const Vec3 delta = to - from;
     const float len = length(delta);
     if (len < 1e-9f) return best;
-    // Collide_RayIntersect mask 522 (520 with F2 & 0x800): ghost surfaces and water are skipped. The 0x800
-    // bit only makes water solid (ray mask 520 keeps it); it never skips the world — grenades with 0x800
-    // still explode on walls. Water surfaces are unmodelled here, so every projectile sweeps the world.
-    if (auto h = world.collision().ray(from, to, pick::kIgnoreGhost | pick::kIgnoreMaterial10)) {
+    // Collide_RayIntersect mask 522 (520 with F2 & 0x800): the pick filter drops ghost-flagged (mat&0xC0)
+    // surfaces before the handler, so the handler's 0x40/0x80 pass-through tests are dead for bullets (and no
+    // MP map triangle carries bit 0x80: audited 5/5 maps, so the Rand(63)&1 coin never fires in MP). Water
+    // class 0x10 is likewise filtered (mask bit 0x2) unless F2 & 0x800 (mask 520: water stays solid).
+    unsigned pick = pick::kIgnoreGhost | pick::kIgnoreMaterial10;
+    if (solid_water) pick &= ~pick::kIgnoreMaterial10;   // mask 520: no F2&0x800 row exists in the table
+    if (auto h = world.collision().ray(from, to, pick)) {
         best.world = true;
         best.t = std::min(1.0f, h->dist / len);
         best.point = h->point;
@@ -209,19 +217,26 @@ void WeaponSystem::hurt_victim(int victim_id, const HitInfo& hit) {
         }
 }
 
-// Explode_Create + Explode_Propagate: every combatant whose centre lies within `radius` takes
+// Explode_Create + Explode_Propagate: every combatant whose obj+128 lies within `radius` takes
 // damage * (1 - dist / radius); no line-of-sight test (the original only does a sphere intersect).
+// obj+128 is the eye for players (measured bit-equal to +0x70 in a Skyrail savestate), the centre here
+// for registered targets (their +128 is unobserved; torso-height is the closest analog).
 void WeaponSystem::explode_at(const Vec3& pos, const WeaponDef& def, int attacker, float scale) {
     events_.explosions.push_back({pos, def.blast_radius, def.id});
     sound(def.flags3 & 0x2000 ? 22 : 502, pos, true);
     if (def.blast_radius <= 0.0f || !world_) return;   // smoke / flash: the event above still drives the visual
+    // Explode_Create shakes every viewer in radius (doubled, sub-0.5 radii skipped inside).
+    world_->camera_shake(pos, def.blast_radius);
     const std::vector<Victim> victims = collect_victims(*world_);
     for (const Victim& v : victims) {
-        const Vec3 c = (v.a + v.b) * 0.5f;
-        const float dmg = def.damage * scale * (1.0f - std::max(length(c - pos), 0.0f) / def.blast_radius);
-        if (dmg < 0.0002f) continue;
+        const float dc = length(v.blast_ref - pos);
+        if (dc > def.blast_radius) continue;   // outside the sphere: untouched
+        const float dmg = def.damage * scale * (1.0f - std::max(dc, 0.0f) / def.blast_radius);
+        // Below 0.0002 the blast does no damage, but the hit still routes through damage_player: in MP
+        // Explode_Propagate registers even zero-damage hits (MP_RegisterBulletHit), keeping last-attacker
+        // kill credit fresh (MpRules). Player::hurt(0) changes no health.
         HitInfo h;
-        h.damage = dmg;
+        h.damage = dmg < 0.0002f ? 0.0f : dmg;
         h.type = DamageType::Bullet;
         h.attacker = attacker;
         h.weapon = def.id;
@@ -238,6 +253,53 @@ void WeaponSystem::explode_at(const Vec3& pos, const WeaponDef& def, int attacke
     }
 }
 
+// Stun-grenade / smoke detonation (F3 & kFlashStun): Bullet_DoTrails' fuse block. No Explode_Create (these
+// rows lack F3 & kExplodes): sound 22, then per victim in the 30-unit sphere a flash-bang (players) or the
+// stun-grenade message (drones/bots). Player strength: distance falloff 1-(d-5)/85 shaped by facing
+// (full within ±30° of looking at the blast, none past ~100°), halved through walls, upgrade-only against
+// the current flash; duration = strength × 10 × ticks-per-second, colour = strength × 255.
+void WeaponSystem::stun_blast(const Vec3& pos, const WeaponDef& def, int attacker, FrameTiming timing) {
+    sound(22, pos, true);
+    // Visuals ride the existing zero-radius blast channel (grey puff; white glow for the stun row): no
+    // Explode_Create, no damage, no chain (the original's gas + white light + shake).
+    events_.explosions.push_back({pos, 0.0f, def.id});
+    if (!world_) return;
+    // Bullet_DoTrails' 0x2000 fuse block shakes every viewer in 2.0 (gas + flash combined).
+    world_->camera_shake(pos, 2.0f);
+    const std::vector<Victim> victims = collect_victims(*world_);
+    const float ticks_per_sec = 1.0f / std::max(timing.rec(), 1e-6f);
+    for (const Victim& v : victims) {
+        if (v.target != nullptr) {
+            // Drones: message 24 when the match is MP (dword_2A4924 = dword_2A4920 at MP_Start, i.e. set in
+            // every MP match) or the grenade owner is a player; no falloff/facing gate on this leg.
+            const Vec3 c = (v.a + v.b) * 0.5f;
+            if (length(c - pos) > 30.0f) continue;
+            const bool player_owned = attacker >= 0 && attacker < World::kMaxPlayers;
+            if (rules_ != nullptr || player_owned) v.target->stun();
+            continue;
+        }
+        Player* pl = world_->player(v.id);
+        if (!pl || !pl->alive()) continue;
+        const Vec3 head = pl->eye();
+        const float cur = pl->flash_strength();
+        float strength = 1.0f - (length(head - pos) - 5.0f) * (1.0f / 85.0f);
+        if (strength < cur) continue;   // upgrade-only, distance stage
+        if (strength > 1.0f) strength = 1.0f;
+        float shaped = strength;
+        if (!(pos[0] == head[0] && pos[2] == head[2])) {
+            float dy = std::atan2(pos[0] - head[0], pos[2] - head[2]) - pl->yaw;
+            dy = std::atan2(std::sin(dy), std::cos(dy));
+            const float facing = 1.0f - (std::fabs(dy) - 0.52359879f) * 0.81851107f;
+            shaped = (facing >= cur) ? strength * std::min(facing, 1.0f) : 0.0f;
+        }
+        if (cur >= shaped) continue;   // upgrade-only, final stage
+        // Line of sight halves the flash but does not re-gate it (mask 10 in the original).
+        if (world_->collision().ray(head, pos, pick::kIgnoreGhost | pick::kIgnoreMaterial10)) shaped *= 0.5f;
+        if (shaped <= 0.0f) continue;
+        pl->set_flash_bang(shaped * 10.0f * ticks_per_sec, std::uint8_t(int(shaped * 255.0f) & 0xFF));
+    }
+}
+
 // Bullet_CollisionHandler for one hit.
 void WeaponSystem::bullet_hit(Projectile& b, const SegmentHit& hit, const WeaponDef& def, const Vec3& dir) {
     const bool on_body = !hit.world;
@@ -246,13 +308,8 @@ void WeaponSystem::bullet_hit(Projectile& b, const SegmentHit& hit, const Weapon
         // hit-test has no object classes, so any solid world hit counts [INFERENCE].
         if (Player* pl = world_->player(b.owner); pl && pl->alive()) pl->begin_grapple(hit.point);
     }
-    if (!on_body && (def.id == 74 || def.id == 76)) {
-        // Stunner beam (Player_WeaponInitBullet step 5): valid only against a close combatant; a world hit
-        // refunds the round instead of firing.
-        if (PlayerWeapons* p = state(b.owner))
-            p->weapon[std::size_t(ammo_index(def.id))].clip =
-                std::int16_t(std::min<int>(p->weapon[std::size_t(ammo_index(def.id))].clip + def.rounds_per_shot, def.clip_size));
-    }
+    // (Taser validity is decided pre-spawn in init_bullet now; a world hit here only happens when the victim
+    // moved away mid-flight, so the round stays spent.)
     events_.impacts.push_back({hit.point, hit.normal, hit.surface, def.id, on_body, b.owner});
     if (on_body) {
         float dmg = def.damage;
@@ -266,7 +323,7 @@ void WeaponSystem::bullet_hit(Projectile& b, const SegmentHit& hit, const Weapon
         h.attacker = b.owner;
         h.weapon = def.id;
         h.point = hit.point;
-        h.direction = dir;
+        h.direction = dir;   // HITDATA+48 (pain vector) is the normalized ray direction: the travel dir
         h.part = hit.part;
         hurt_victim(hit.victim, h);
     } else {
@@ -303,6 +360,19 @@ void WeaponSystem::bullet_hit(Projectile& b, const SegmentHit& hit, const Weapon
         b.state = Projectile::State::Flying;
         return;
     }
+    // Ricochet (F3 & kRicochet, world hits only): class 8 (9 needs a cel flag the port does not track),
+    // success = Rand_Rand(prob) != 0 with the surface's EffectInfo probability (Bullet_CollisionHandler).
+    if (!on_body && (def.flags3 & wf3::kRicochet) != 0 && b.bounces < 3) {
+        const std::uint16_t prob = table_.surface(hit.surface).ricochet_prob;
+        if (prob != 0 && game_rng().rand_int(prob) != 0) {
+            b.pos = hit.point + hit.normal * 0.01f;
+            const float dn = dot(b.dir, hit.normal);
+            b.dir = normalized(b.dir - hit.normal * (2.0f * dn));
+            ++b.bounces;
+            b.state = Projectile::State::Flying;
+            return;
+        }
+    }
     b.state = Projectile::State::Hit;   // dead: removed by the caller
     b.delete_me = true;
 }
@@ -314,12 +384,16 @@ bool WeaponSystem::step_projectile(Projectile& b, World& world, FrameTiming timi
     const float mul = timing.mul();
     b.age += 1.0f;
 
-    // Fuse of timed explosives (F3 & 0x200): counts down FRAME_RATE_MUL per frame, mines armed by a player do not expire.
-    if ((def.flags3 & 0x200) && !(b.weapon == 55 && b.timer == 7777.0f) && b.weapon != 89 && b.weapon != 91) {
+    // Fuse of timed explosives (F3 & kTimedFuse): counts down FRAME_RATE_MUL per frame, mines armed by a
+    // player do not expire. Stun rows (F3 & kFlashStun: stun/smoke grenades) run Bullet_DoTrails' stun block
+    // (sound 22 + flash-bang / bot stun), not an explosion: they have no F3 & kExplodes row bit.
+    if ((def.flags3 & wf3::kTimedFuse) && !(b.weapon == 55 && b.timer == 7777.0f) && b.weapon != 89 &&
+        b.weapon != 91) {
         b.timer -= mul;
         if (b.timer < 0.0f) {
             b.delete_me = true;
-            explode_at(b.pos, def, b.owner, b.damage_scale);
+            if ((def.flags3 & wf3::kFlashStun) != 0) stun_blast(b.pos, def, b.owner, timing);
+            else explode_at(b.pos, def, b.owner, b.damage_scale);
             return false;
         }
     }
@@ -360,7 +434,8 @@ bool WeaponSystem::step_projectile(Projectile& b, World& world, FrameTiming timi
     if (b.travelled > def.range) step -= b.travelled - def.range;
     if (step <= 0.0f) return b.travelled <= def.range;
     const Vec3 to = b.pos + b.dir * step;
-    const SegmentHit hit = trace_segment(world, b.pos, to, b.owner, victims);
+    const SegmentHit hit =
+        trace_segment(world, b.pos, to, b.owner, victims, (def.flags2 & wf2::kSolidWater) != 0);
     if (hit.world || hit.victim >= 0) {
         bullet_hit(b, hit, def, b.dir);
         return !b.delete_me;

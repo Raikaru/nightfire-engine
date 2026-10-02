@@ -282,7 +282,7 @@ struct View {
     float yaw, pitch;
 };
 
-View view_of(const Player& p) { return {p.eye(), p.yaw, p.view_pitch()}; }
+View view_of(const Player& p) { return {p.shaken_eye(), p.yaw, p.view_pitch()}; }   // render: shake rides along
 
 Camera camera_for(const View& prev, const View& cur, float alpha) {
     auto lerp = [alpha](float a, float b) { return a + (b - a) * alpha; };
@@ -324,6 +324,7 @@ int run(int argc, char** argv) {
                 }
                 else if ((a == "--inputs" || a == "--inputs2" || a == "--inputs3" || a == "--inputs4") && i + 1 < args.size())
                     launch.inputs[a == "--inputs" ? 0 : std::size_t(a.back() - '1')] = args[++i];
+                else if (a == "--mp-trace" && i + 1 < args.size()) launch.mp_trace = args[++i];
                 else if (a.rfind("--", 0) != 0) launch.level_bin = a;
             }
             return run_match(launch);
@@ -393,10 +394,11 @@ int run(int argc, char** argv) {
     // Arenas use TuningVars.txt [MULTIPLAYER] (Plr_DMod_*), the single-player levels their own section (not modelled: [GLOBAL]).
     const bool multiplayer = spawns.front().kind == SpawnPoint::Kind::Multiplayer;
     PlayerParams params;
+    std::string tuning_text;
     if (const GameFile* tuning = gf.find("TuningVars.txt")) {
         const auto bytes = gf.read(*tuning);
-        params = player_params_from_tuning(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()),
-                                           multiplayer ? "MULTIPLAYER" : "");
+        tuning_text.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        params = player_params_from_tuning(tuning_text, multiplayer ? "MULTIPLAYER" : "");
     }
     params.health.damage.mode = multiplayer ? GameMode::Multiplayer : GameMode::SinglePlayer;
 
@@ -406,6 +408,7 @@ int run(int argc, char** argv) {
     // animation bank; damage to players goes through Player::hurt (params.health.damage).
     std::unique_ptr<CharacterBank> weapon_bank = open_character_bank(gf, bin_name);
     auto weapon_system = std::make_unique<WeaponSystem>(WeaponTable::from_elf(action_elf), params.health.damage);
+    weapon_system->set_autoaim(AutoaimTuning::load(tuning_text, multiplayer ? "MULTIPLAYER" : ""));
     weapon_system->seed_match(std::uint32_t(weapon_seed));   // --seed drives the global Rand stream
     WeaponSystem& weapons = *weapon_system;
     weapons.set_bank(weapon_bank.get());

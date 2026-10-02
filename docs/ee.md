@@ -253,6 +253,15 @@ kept next to the calls in `src/tools/nfmips.cpp`:
 | 2 | `Intersect_RayBox__FPC11HITTEST_tagP7_VECTORT1Rf` (`0x1E9008`) | `ray_box` (`src/game/collision_world.cpp`) | hit-agree 10000/10000, t-exact 9656/10000, max\|t-diff\| 4.8e-7 -> PASS (< 1e-4) |
 | 3 | `Vec_Dist3D__FPC7_VECTORT0` (`0x1E2E48`, VU0 `VSUB`/`VMUL` + FPU) | fp64 `sqrt` | exact-bit 405/10000 (4.05%), max rel err 2.8e-7 -> PASS (< 1e-6) |
 
+`nfmips <elf> diff-mpweap` emits the MP combat truth tables (Combat slice; host side `nfdump
+diff-mpweap`): 24 per-shot spread draw triples (`Rand_FRand_MVar2(2A,A)`, `Rand_FRand(2pi/pi)`,
+bit-exact vs `core/rng.hpp`), 18 `Vec_Spherical_2_Cartesian` vectors (Y-elevation
+`(r·sinθ·cosφ, r·sinφ, r·cosθ·cosφ)`, host libm within 1.2e-7), and an 83-row `Player_HandlePain`
+matrix over (damage, part, type, armour, health, MP/SP, difficulty, location, rapid) vs
+`apply_player_pain` (bit-exact health/armour/flash/pain bytes/rumble; the `Rand_Rand(4)` grunt coin is
+scripted + logged). `GameFlow_GetState` is stubbed to 2 (in play), `PlrStat_OkToUpdate` to 1
+(in mission); sound/rumble hooks log instead of touching HW.
+
 Exact numbers print on every run (see the verification log in the slice
 report). Test 1 takes `(state*, stick, speed, mul, steps, centred, full)`;
 test 2 fakes the `HITTEST` as 256 zeroed bytes + origin at `+0x20`, direction

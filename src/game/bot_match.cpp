@@ -49,6 +49,15 @@ void BotMatch::install(ArenaSession& session) {
     auto bots = std::make_unique<BotSystem>(bc);
     bots_ = bots.get();
     bots_->log_states = options_.log_states;
+    // MP_PlayerKilled Vengeful (+2) bonus (spec Part 1 §1.6 step 4): killer bot slot >= 4 with personality
+    // byte 7 whose designated victim (BOT_vars+0x76b) is the victim scores +2.0 instead of +1.0.
+    arena.set_vengeful_bonus_fn([bots = bots_](int killer, int victim) {
+        if (killer < 4 || victim < 0) return false;
+        const BotSystem::Bot* b = bots->bot_at_slot(killer);
+        if (!b || !b->brain) return false;
+        if (b->brain->v.stats.personality != std::uint8_t(Personality::Vengeful)) return false;
+        return b->brain->v.trait_opponent == victim;
+    });
     if (options_.log) bots_->log = [](const std::string& line) { std::printf("%s\n", line.c_str()); };
     for (BotSpec& spec : roster_) {
         spec.team = settings.slots[std::size_t(spec.slot)].team;

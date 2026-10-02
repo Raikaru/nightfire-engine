@@ -182,6 +182,23 @@ public:
         Bot* b = sys_.bot_at_slot(slot);
         return b ? int(b->spec.stats.personality) : 0;
     }
+    int bot_trait_opponent(int slot) const override {
+        Bot* b = sys_.bot_at_slot(slot);
+        return b && b->brain ? b->brain->v.trait_opponent : -1;
+    }
+    bool bot_targeted(int slot) const override {
+        Bot* b = sys_.bot_at_slot(slot);
+        return b && b->brain ? b->brain->v.targeted_by_bot : false;
+    }
+    bool bot_mirror(int slot, int other, float* sq_dist, bool* visible) const override {
+        Bot* b = sys_.bot_at_slot(slot);
+        if (!b || !b->brain || other < 0 || other >= 8 || !sq_dist || !visible) return false;
+        const OtherInfo& o = b->brain->v.other[std::size_t(other)];
+        if ((o.flags & otherflag::kValid) == 0) return false;
+        *sq_dist = o.sq_dist;
+        *visible = (o.flags & otherflag::kVisible) != 0;
+        return true;
+    }
     int assassin_target_for(int slot) const override {
         const ArenaSystem& a = *sys_.impl_->cfg.arena;
         if (a.settings().mode != mp_mode::kAssassination) return -1;
@@ -252,6 +269,18 @@ public:
                 if (e > 0) d2 += e * e;
             }
             if (d2 <= 9.0f) return true;
+        }
+        return false;
+    }
+    bool hill_contains(const Vec3& p) const override {
+        // MP_isPosOnHill: point-in-AABB in hill-local space (no rotation), same test as koh_update.
+        const ArenaSystem& arena = *sys_.impl_->cfg.arena;
+        for (const MpObjective& o : arena.objectives()) {
+            if (o.kind != MpObjective::Kind::Hill) continue;
+            if (std::fabs(p[0] - o.volume_centre[0]) <= o.half_extent[0] &&
+                std::fabs(p[1] - o.volume_centre[1]) <= o.half_extent[1] &&
+                std::fabs(p[2] - o.volume_centre[2]) <= o.half_extent[2])
+                return true;
         }
         return false;
     }

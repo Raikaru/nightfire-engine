@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -42,6 +43,7 @@ struct ArenaSettings {
         int team = kTeamNone;       // +0x20
         int character = 0;          // +0x24
         int health_bonus = 0;       // +0x2C: health at spawn = 100 + bonus
+        bool hud = true;            // +0x28: the radar/HUD toggle (MP_GetRadarObjects skips viewers with 0)
     };
 
     std::uint32_t mode = mp_mode::kArena;       // +0x1A4 scenario mask (Quick Game is resolved to Arena by the setup)
@@ -188,6 +190,10 @@ public:
     // MP_RegisterBulletHit + the friendly-fire filter. Records `attacker` as the victim's last attacker; false = the
     // hit must not hurt (teammate without friendly fire). attacker < 0: environment.
     bool hit_applies(int attacker_slot, int victim_slot) override;
+    // MP_areObjectsOnSameTeam without side effects (auto-aim gate).
+    bool teammates(int a, int b) const override;
+    // Assassination: the assassin's hits on the target are lethal (Player_DealWithObjHit).
+    bool assassin_lethal(int attacker_slot, int victim_slot, int part) const override;
     // MP_PlayerKilled. attacker < 0 falls back to the recorded last attacker.
     void player_killed(int victim_slot, int attacker_slot = kAttackerNone, int weapon_id = -1) override;
     void environment_kill(int victim_slot) override;
@@ -231,6 +237,9 @@ public:
     int deaths(int slot) const { return slots_.at(std::size_t(slot)).deaths; }
     // Configuration a caller may still edit between construction and start() (bot slots: name, team, character).
     ArenaSettings& mutable_settings() { return settings_; }
+    // MP_PlayerKilled's Vengeful (+2) bonus: true when `killer` (a bot) holds `victim` as its trait
+    // opponent (+0x76b) with personality 7. The bots own that state; unset means no bonus applies.
+    void set_vengeful_bonus_fn(std::function<bool(int killer, int victim)> fn) { vengeful_bonus_ = std::move(fn); }
     // Seconds until slot respawns (humans), < 0 if it is not waiting.
     float respawn_in(int slot) const;
 
@@ -340,13 +349,14 @@ private:
 
     std::vector<MpObjective> objectives_;
     std::vector<ObjectiveRuntime> runtime_;
+    std::function<bool(int killer, int victim)> vengeful_bonus_;   // MP_PlayerKilled +2 hook (bots wire it)
     std::array<std::uint16_t, 2> team_status_{};       // MPGame+0x1A8
     std::vector<std::size_t> demolition_places_, protection_places_, blueprint_places_;
-    std::array<std::vector<std::size_t>, 2> golden_places_;   // indices into data_.objects: key list, crystal list
-    std::vector<std::size_t> objective_of_object_;     // data_.objects index -> objectives_ index (SIZE_MAX none)
     int assassin_ = -1, target_ = -1;
     int golden_target_ = -1;
-    float golden_effect_ = -1;                          // remaining seconds of the running GoldenEye strike, < 0 idle
+    float golden_effect_ = -1;          // remaining stream-frames of the running GoldenEye strike, < 0 idle
+    std::array<std::vector<std::size_t>, 2> golden_places_;   // indices into data_.objects: key list, crystal list
+    std::vector<std::size_t> objective_of_object_;     // data_.objects index -> objectives_ index (SIZE_MAX none)
 };
 
 }  // namespace nf

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "game/drone_weap.hpp"
 namespace nf::bots {
 
 namespace {
@@ -127,8 +128,10 @@ float BotBrain::aggression_mul() const {
 }
 
 bool BotBrain::move_possibility(int n) {
+    // BOT_getMovePossibility (0x1265d0): Rand_Rand(m) with m = n + accuracy + 2 - speed, true iff
+    // the draw == m - 1. The draw always happens (no m <= 1 early-out): skipping it would desync the
+    // one shared RNG stream the whole match draws from.
     const int m = n + (v.stats.accuracy + 2 - v.stats.move_speed);
-    if (m <= 1) return true;
     return int(env->rand(std::uint32_t(m))) == m - 1;
 }
 
@@ -153,8 +156,15 @@ void BotBrain::sound_effect(int which) {
 }
 
 // BOT_handlePain @0x125ed8 (MP branch of NDrone2_HitDamage). Returns the health actually removed.
+// Entry guards are the standard alive test (spec Part 2A §7: 0x600 clear, 0x100 set, health > 0,
+// obj+0xfe&1 clear, obj type != 0x11), verified against the 0x125ed8 disasm.
 float BotBrain::handle_pain(float dmg, int damage_type, int loc) {
     if (!self || !self->alive() || dmg <= 0 || !env->match_playing()) return 0;
+    if ((self->flags & drone::flag::kActive) == 0) return 0;   // Drone+0x4f8 & 0x100
+    if (self->pending_delete) return 0;                        // obj+0xfe & 1 (BOT_respawn sets it; live bots run clear: slot-02 obj+0xfe = 0x0c)
+    // obj type 0x11 = eliminated (Top Agent; live ELF bots are type 2 — slot-02 savestate obj+0xff).
+    // Our drones keep 0x11 as the bot-body marker, so test elimination through the arena record instead.
+    if (!env->participant(v.slot).alive) return 0;
     if (loc != -1) dmg *= kPlrDModMulti;
     if (env->location_damage()) {
         if (loc == 5) {
@@ -166,14 +176,15 @@ float BotBrain::handle_pain(float dmg, int damage_type, int loc) {
         }
     }
     if (env->professional_mode()) dmg *= 3.0f;
-    // Armour points (BOT_vars+0x769) soak damage of types 0 / > 7 only.
+    // Armour points (BOT_vars+0x769) soak damage of types 0 / > 7 only (0x125ed8: k = 1.0 else 0.0).
     const float absorbed = (damage_type == 0 || damage_type > 7) ? std::min(float(v.armour), dmg) : 0.0f;
     v.armour = int(float(v.armour) - absorbed);
+    const float kept = dmg - absorbed;   // Drone+0x150 and the distraction use the post-armour damage
     const float before = self->health;
-    set_health(self->health - (dmg - absorbed));
-    self->last_damage = dmg;
+    set_health(self->health - kept);
+    self->last_damage = kept;
     if (self->health > 0) sound_effect(31); else sound_effect(1);
-    increase_distraction(dmg * 8.0f);
+    increase_distraction(kept * 8.0f);
     return before - self->health;
 }
 
@@ -420,9 +431,11 @@ bool BotBrain::find_opponent() {
         }
     }
     // Drop the current opponent when it died or was out of sight longer than aggression * 20 s.
+    // The timeout truncates: limit_ticks = FRAME_RATE * int(aggression * 20) (0x142744 disasm: mul.s 20.0,
+    // fptoui, then times FRAME_RATE) — a float product would overshoot by up to a second at point-blank.
     if (has_opponent()) {
         const bool gone = !alive_participant(opponent_slot_);
-        const float limit = float(self->seconds(1.0f)) * aggression_mul() * 20.0f;
+        const float limit = float(self->seconds(1.0f)) * float(int(aggression_mul() * 20.0f));
         if (gone || float(self->lost_frames) > limit) set_opponent(-1);
     }
 
@@ -456,13 +469,25 @@ bool BotBrain::find_opponent() {
                 s *= 0.25f;
             }
         }
-        // Berserkers and Guardians pile onto targets nobody else has picked (x16 for the ones already chased).
+        // Berserkers and Guardians avoid targets already picked by others (x16): for bot candidates the
+        // candidate's own targeted flag (BOT_vars+0x770, set when any bot — including me — targets it);
+        // for humans, any bot in slots 5..7 targeting them, unless bot 4 does (MPGame[4] gate, EE quirk).
         if (j != opponent_slot_ && j != trait_opp &&
             (v.personality() == Personality::Berserker || v.personality() == Personality::Guardian)) {
-            bool chased = false;
-            for (int b = 4; b < 8; ++b)
-                if (b != v.slot && b != j && env->bot_opponent(b) == j) chased = true;
-            if (chased) s *= 16.0f;
+            bool piled = false;
+            if (j >= 4) {
+                piled = env->bot_targeted(j);
+            } else {
+                const int b4opp = env->bot_opponent(4);
+                if (b4opp == -1 || b4opp != j) {
+                    for (int b = 5; b < 8; ++b)
+                        if (env->bot_opponent(b) == j) {
+                            piled = true;
+                            break;
+                        }
+                }
+            }
+            if (piled) s *= 16.0f;
         }
         score[std::size_t(j)] = s;
         if (s < best_score) {
@@ -517,16 +542,19 @@ void BotBrain::opponent_targetting() {
         if (!self->opp_first_moved) {
             if (moved > 0.025f) {
                 self->opp_first_moved = true;
+                self->opp_motion_mag = 40.0f;   // Drone+0x1e4 (0x42200000 in the 0x125b30 disasm)
                 self->opp_motion_time = now_tick;
             }
         } else if (moved < 0.025f) {
             self->opp_first_moved = false;
+            self->opp_motion_mag = 0.0f;
         }
     }
     self->aim_offset = {};
     if (ramping) {
-        self->aim_offset[0] = std::sin(float(now_tick) * 0.05f + 1.5707964f) * 1.2f;
-        self->aim_offset[1] = std::sin(float(now_tick) * 0.05f) * 1.7f;
+        // PS2Sinf, not host sin (the original calls PS2Sinf__Ff twice per tick here).
+        self->aim_offset[0] = drone::weap::ps2_sin(float(now_tick) * 0.05f + 1.5707964f) * 1.2f;
+        self->aim_offset[1] = drone::weap::ps2_sin(float(now_tick) * 0.05f) * 1.7f;
     }
     self->opp_pos = opp.pos;
 }
@@ -615,18 +643,30 @@ int BotBrain::preferred_trait_opponent() {
 // Combat move selection
 
 int BotBrain::check_attack_move(int state) {
-    bool ok = false;
+    // BOTSTATE_checkAttackMove (0x126a40; GC 0x80075628 / Xbox 0x1b9c0 agree): returns the requested state.
+    // The Can* probe is NOT a gate — a failed probe still returns the state (the mover slides along the
+    // obstruction). It only arms the KOTH veto: with a successful probe, a bot standing in the hill refuses
+    // a move whose probed destination (DroneReachCheckPos = mv.reach_check_pos, the MoveTest side effect)
+    // left the hill volume (MP_isPosOnHill). Plr2Ind < 0 → 0 is dead for bots (slots always valid).
+    bool probe_ok = false;
     switch (state) {
-    case st::kStrafeAimLeft: ok = body->can_strafe_left(); break;
-    case st::kStrafeAimRight: ok = body->can_strafe_right(); break;
-    case st::kBackoff: ok = body->can_backoff(); break;
-    case st::kRollLeftCrouch: ok = body->can_roll_left(); break;
-    case st::kRollRightCrouch: ok = body->can_roll_right(); break;
-    case st::kStepAimLeft: ok = body->can_step_left(); break;
-    case st::kStepAimRight: ok = body->can_step_right(); break;
+    case st::kStrafeAimLeft: probe_ok = body->can_strafe_left(); break;
+    case st::kStrafeAimRight: probe_ok = body->can_strafe_right(); break;
+    case st::kBackoff: probe_ok = body->can_backoff(); break;
+    case st::kRollLeftCrouch: probe_ok = body->can_roll_left(); break;
+    case st::kRollRightCrouch: probe_ok = body->can_roll_right(); break;
+    case st::kStepAimLeft: probe_ok = body->can_step_left(); break;
+    case st::kStepAimRight: probe_ok = body->can_step_right(); break;
     default: break;
     }
-    return ok ? state : 0;
+    const std::uint32_t sc = env->scenario();
+    if (probe_ok && (sc == scenario::kKingOfTheHill || sc == scenario::kTeamKingOfTheHill)) {
+        // Control_Plr2Ind < 0 (bot obj not registered) is dead for live bots but preserved: without a slot
+        // the hill flag cannot be read, so the move is refused (EE §C sweep, slot -1 rows).
+        if (!env->participant(v.slot).valid) return 0;
+        if (in_hill() && !env->hill_contains(self->mv.reach_check_pos)) return 0;
+    }
+    return state;
 }
 
 int BotBrain::evasive_move_state() {

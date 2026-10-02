@@ -46,6 +46,10 @@ public:
     // Displacement of the mover whose top face is under `feet` (within the capsule radius sideways and
     // 0.3 below), or zero: standing on it carries the player. `feet` is the ground probe point.
     Vec3 ride_displacement(const Vec3& feet, float radius) const;
+    // Player_FeetOnPoint's ray hits script solids too: true when a mover top face carries
+    // `sole` (same +-0.3 window as ride_displacement). Without this the capsule can rest on a
+    // lift while kOnGround stays clear (fall timer never resets).
+    bool standing_on_mover(const Vec3& sole, float radius) const;
 
     // `switch_channels`: 1 byte per channel, ids beyond the array read as clear.
     static constexpr std::size_t kChannels = 256;

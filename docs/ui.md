@@ -328,8 +328,9 @@ then the arena feed (`apply_arena_hud(session.hud(slot), state.mp)`,
 `nfdump <gamedir> validate` runs `validate_menu` (`assets/menu_validate.*`): both scripts parse, every skin texture and
 label sprite exists in the bin's sprite set, every control and keyframe message is implemented, keyframe page changes
 hit existing pages and every handler id (`assets/menu_messages.hpp` `menu_handler_ids`) is a page or control of a script.
-`nfui <gamedir> menu [--page 0x40000002] [--pause <level.bin>] [--trace] [--dump] [--shot out.bmp] [--press up,cross,...]`
-prints the result when a flow finishes (`--trace` lists page changes and input locks, `--dump` the parsed script), e.g.
+`nfui <gamedir> menu [--page 0x40000002] [--pause <level.bin>] [--trace] [--dump] [--shot out.bmp] [--press up,cross,...] [--frames N]`
+prints the result when a flow finishes (`--trace` lists page changes and input locks, `--dump` the parsed script,
+`--frames N` runs N idle frames after `--press` and exits instead of falling into the window loop), e.g.
 `--press wait60,down,cross,wait60,cross,wait20,cross,wait20,cross,wait80` from `--page 0x40000002` joins a game and
 reaches the scenario wheel. Verified end to end: boot `P_START -> P_MAIN` (press after the 120-frame hint delay);
 `P_MAIN -> P_NFSELECT -> (no-save box) -> P_NFDFCTY -> P_NFMAP -> StartMission (07000005.bin)`; codename

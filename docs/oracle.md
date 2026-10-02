@@ -63,6 +63,27 @@ Fresh memory card: Title -> Start boots straight into Paris Prelude. Pause -> Qu
 (AI Bots -> Setup Bot 1 -> Snow Guard -> Playing: Yes) -> Continue -> Start Game.
 PINE savestate slot 1 = main menu, slot 2 = Skyrail arena spawn.
 
+### Unlocking all missions (PINE, at the main menu)
+
+The mission-select list is driven by the `sp_level` table (ACTION.ELF `0x2DF2E0`, 12 entries of
+0x18 bytes; `Menu_GetNightfireStatus`/`Menu_SetNightfireStatus` in the decomp). Byte `+0x10` of
+each entry is the unlocked flag. Write u8 `1` to `0x2DF2E0 + i*0x18 + 0x10` for `i` in 0..11
+(single batched PINE transaction). Two ordering gotchas: the table reloads from the memory card
+on codename (re-)select, wiping the write — so navigate to mission select first (NightFire ->
+codename -> difficulty -> mission select), write the bytes, then back out to difficulty (triangle)
+and re-enter, which rebuilds the list from RAM with all 12 missions open. Quitting a mission to
+the menu keeps the bytes (no reselect happens). Alternatively load the completed profile from
+`~/Projects/nightfire-data/saves/all.ps2` (codenames TJN/007/BIG G/BOND/DEREK; BIGG is most
+complete: status `0xFFF`, all 12 scored) over a memcard slot.
+Mission rows are whole missions, not bins: row level ids are
+09000001/07000005/09000005/09000006/07000001/07000009/0700000c/07000011/09000002/09000003/07000014/0700001b;
+each ACTION mission flows through several `.bin` sub-levels in `order` (`MissionData` table
+`0x2A4350`: level, base map, order — e.g. mission 07000001 runs bins 01->02->03->04), so only the
+mission-start bins are reachable from the menu and mid-mission bins need real playthroughs.
+Per-mission-start savestates taken 2026-10-02 (slots 3:07000001, 4:07000009, 5:07000014,
+6:0700000c, 7:07000011, 8:driving row 3, 9:driving row 8 underwater): reference frames under
+`~/.cache/main-tmp/pcsx2_ref/` (`ref_<bin>.png`, `weapons_*`, `drive_*`).
+
 First trace (Skyrail, 4 s, stick forward for 2 s): 144 consecutive logic frames, no torn samples;
 speed ramps over ~2 frames to ~0.1 units/frame horizontal.
 
@@ -163,3 +184,63 @@ action floats match to 1.2e-7 and the flag bytes match except around frames the 
  - **Chaotic contact.** In the free runs the error grows where the capsule meets a stair nosing or ramp lip
    head-on (first-contact frames); the synced runs isolate the per-frame error, now < 1 cm everywhere.
 - Frame timing: the oracle's frame rate flips between 60 and 30; nfgame replays the recorded rate.
+
+## Multiplayer ground truth (MpOracle)
+
+Tools: `tools/oracle/mp_addrs.py` (address map, single source of truth),
+`mp_record.py` (per-logic-frame match recorder -> JSONL),
+`mp_compare.py` (`summary`/`determinism`/`diff`),
+`mp_scenario.py` (scripted menu setup: slot 1 main menu -> configured match).
+Engine side: `src/game/mp_trace.{hpp,cpp}` (per-frame JSONL emitter in the
+recorder's vocabulary; `nfgame --mp --mp-trace out.jsonl`), diffed with
+`mp_compare.py diff` (synced: same seed/inputs; lockstep: divergence frame +
+first field). PINE savestate slots 10+ belong to the MP oracle (1-9 are
+Movement-2's); named match-start states are also copied under
+`~/.cache/mp-oracle-tmp/sstates/`.
+
+### MP address map (ACTION.ELF USA, all verified live over PINE 2026-10-02 unless noted)
+
+| Area | Address | Notes |
+|------|---------|-------|
+| `GameState` | `0x2A3768` | `+0x30` end / `+0x34` frame / `+0x3C` start counters; torn guard: `+0x30 == +0x34-1 == +0x3C-1` |
+| RNG | `0x30D0A0` | 4 words `X Y +8 +0xC`; integer paths bit-exact vs `src/core/rng.hpp` |
+| `MPSettings` | `0x2A47A0` | 0x1dc; `+0x180` active, `+0x18c` teams, `+0x190` objective, `+0x194` participants, `+0x198` FF, `+0x19c` score limit, `+0x1a0` time min, `+0x1a4` scenario mask, `+0x1a8` map, `+0x1ac` humans, `+0x1b0` bots, `+0x1b4` weapon set, `+0x1d8` u16 pickup count |
+| `MPGame` | `0x2A4980` | 8 x 0x30 slots: `+0x04` kills, `+0x08` deaths, `+0x10` streak, `+0x18` float points, `+0x1c` obj*, `+0x20` last attacker, `+0x22` FF cooldown, `+0x26` status, `+0x28` last killer; globals `+0x180/184` team scores, `+0x188` state (0 run 1 score 2 time 3 hold 4 results 5 idle 6 restart), `+0x18c` best, `+0x190` elapsed s, `+0x194` limit s, `+0x19c` total s |
+| `glb_players` | `0x2D88E0` | human obj* x4 |
+| obj | dynamic | `+0x30` pos, `+0x54` yaw (fwd `(sin,0,cos)`), `+0xDC` collbody*, `+0xE0` BLData*/PICKUPINFO*, `+0xEC` stamp, `+0xF4` u16 state (humans: 1 alive; bots: drone state id), `+0xFF` type (2 bot 3 human 0x11/0x12 dead 0x2f pickup) |
+| BLData (human) | obj+0xE0 | `+0x894` health, `+0x8B0` armour, `+0x8A8` pitch (pi/2 units) |
+| collbody (human) | obj+0xDC | `+0x96` aim bit, `+0x98` s8 weapon id, `+0xCC` foot height |
+| `BOT_vars` | `0x26D660` | 4 x 0x780 (slot-4): `+0x000` 2 x 0x50 goals, `+0x0B0` 8 x 0x10 other-cache, `+0x140` 0x55 x 0xC weapons (clip u16 +4, has u8 +6), `+0x698` 0x21 u16 reserves, `+0x728` distraction, `+0x750` MPSettings ptr, `+0x754` Drone*, `+0x760` nav node, `+0x765` goal slot, `+0x766` state type, `+0x768` weapon, `+0x769` armour, `+0x76b` trait target |
+| Drone (bot) | via BOT_vars+0x754 | `+0xAC` health f32, `+0x150` last damage, `+0xD1C` BOT_vars back-ptr; obj+0xF4 mirrors the state id (0xDB step, 0xD7/0xD5 strafes, 0xEB goto, ...) |
+| `MPpickups` | `0x2A4B50` | 64 x 0xA0: obj* +0, pos vec4 +0x10; PICKUPINFO = *(obj+0xE0): `+0x20` s16 state (0/1/2), `+0x22` cat, `+0x24` item, `+0x2E` respawn, `+0x30` index |
+| objective exts | `0x317210`.. | Flags/Bases/Uplinks/Demolition/Protection/GoldenEye/BluePrint/EsponageBase/Hill blobs (spec 1B); `switch_channels` `0x26FD8D` (score) / `0x8E` (time) |
+| `menu_unlock_everything` | `0x30D2A7` | u8 cheat: bypasses scenario row checks (grey display, working select) |
+
+### Match setup (scripted, `mp_scenario.py`)
+
+From slot 1 (main menu, NightFire highlighted): down -> Multiplayer, cross,
+cross x2 (join Agent 1 + confirm), scenario wheel (up x15 clamps top, down xN),
+map wheel (same), character (default Bond), handicap (0), down -> AI Bots,
+per bot: cross (Setup), cross (character default), cross (config: Playing:Yes
+is the default once the page is confirmed), triangle, up -> Continue, cross,
+confirm, cross (Start). Settle 10 s after each page entry, 8 s between moves
+(the wheel eats input during its iris transition). Poke `0x30D2A7=1` on the
+scenario page. Wait for `MPSettings+0x180 == 1 && glb_players[0] != 0`, then
+save the match-start slot. Defaults: Snow Guard / Black Ops / Yakuza, all
+Phoenix, Arena FFA. Bot 1 won the first two Skyrail matches 10-4-2-0 from the
+same slot-10 state (deterministic).
+
+### Recordings
+
+| Recording | Setup | Frames / span | Notes |
+|-----------|-------|---------------|-------|
+| Skyrail Arena 3 bots (full match) | slot 10, idle human, Snow Guard/Black Ops/Yakuza | 17126 frames, elapsed 10.1..380.8 s (6.2 min), state 0->5 | `mp-skyrail-arena3bot-full.jsonl` (150 MB, ~77% keep at 60 Hz logic); Black Ops wins 10-4-2-0; 32 pickup takes; respawn delay 300 frames = 5.0 s verified (slot0 death 38388, respawn 38688) |
+| Missile Silo Arena 3 bots (partial) | slot 11 (leftover nav state), idle human | 7926 frames, elapsed 257.6..424.1 s | `mp-missilesilo-arena3bot.jsonl`; bot kills 7/7/5; 26 takes |
+| Skyrail Team Arena 3 bots (MI6 human+Dominique vs Phoenix Snow Guard+Yakuza) | slot 12, idle human | 10769 frames, elapsed 24.0..225.0 s | `mp-skyrail-teamarena.jsonl`; team scores 2/1 (enemy-kill team credit works); human untouched |
+
+### Residuals / limits
+
+- 60 Hz logic in MP (vs 30 Hz nominal): the recorder keeps ~77% of frames.
+- Respawn reuses obj memory (no pointer churn; `resync` frames only on pickup-table changes).
+- Projectiles are not enumerated live (shots inferred from clip deltas + health steps).
+- Engine synced seeding covers RNG + humans + scores/pickups; bot brains are structurally different (free-run residual, documented per-subsystem).

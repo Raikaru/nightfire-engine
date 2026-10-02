@@ -97,8 +97,22 @@ public:
     virtual int bot_opponent(int slot) const { (void)slot; return -1; }
     // Personality of a bot slot (0 for humans / unknown), for Guardian's "non-Guardian bot" rule.
     virtual int bot_personality(int slot) const { (void)slot; return 0; }
+    // Designated victim (BOT_vars+0x76b) of a bot slot, -1 none: the Vengeful +2 kill bonus reads it.
+    virtual int bot_trait_opponent(int slot) const { (void)slot; return -1; }
+    // Whether bot `target` is itself targeted by a bot (BOT_vars+0x770): Berserker/Guardian pile-on reads
+    // the *candidate's* flag and only for bot candidates (slot >= 4).
+    virtual bool bot_targeted(int slot) const { (void)slot; return false; }
+    // Another bot's perception cache (BOT_vars+0x0b0 other[]) for the mirror in BOT_setOtherPlayerInfo:
+    // when bot `slot` sees `other` as valid, this bot copies its sq_dist and visible bit instead of
+    // recomputing. Defaults: not mirrored (fresh compute, as for humans).
+    virtual bool bot_mirror(int slot, int other, float* sq_dist, bool* visible) const {
+        (void)slot; (void)other; (void)sq_dist; (void)visible;
+        return false;
+    }
     // Assassination (0x400): the slot `slot` must hunt if it is the assassin, else -1 (MP_IsAssasin/MP_getAssassinTarget).
     virtual int assassin_target_for(int slot) const { (void)slot; return -1; }
+    // MP_isPosOnHill: point-in-hill-volume test (hill-local AABB, no rotation) for the KOTH combat-move veto.
+    virtual bool hill_contains(const Vec3& p) const { (void)p; return false; }
     // BOTSTATE_isObjAlreadyAnotherTeamObjective: a teammate bot (other than `slot`) already has this objective.
     virtual bool objective_claimed_by_teammate(int objective_id, int slot) const {
         (void)objective_id; (void)slot;

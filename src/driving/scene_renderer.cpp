@@ -159,7 +159,8 @@ void SceneRenderer::draw(Handle h, const Mat4& mvp) const {
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                 glDepthMask(GL_FALSE);
-                glUniform1f(alpha_ref, b.alpha_test ? 0.5f : 0.02f);
+                // Tinted glass/water blends whole; only opaque cutout foliage discards.
+                glUniform1f(alpha_ref, 0.02f);
             } else {
                 glDisable(GL_BLEND);
                 glDepthMask(GL_TRUE);

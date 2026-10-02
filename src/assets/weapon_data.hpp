@@ -93,7 +93,9 @@ constexpr std::uint32_t kGuided = 0x4, kGravity = 0x8, kTracer = 0x10, kEjectCas
 // F3 (flags3) bits, 4.3.
 namespace wf3 {
 constexpr std::uint32_t kPlayerEffect = 0x2, kExplodes = 0x4, kRicochet = 0x10, kGrapple = 0x40, kBounce = 0x80,
-                        kSticky = 0x100, kTripbomb = 0x80000;
+                        kSticky = 0x100, kTimedFuse = 0x200, kFlashStun = 0x2000, kTripbomb = 0x80000;
+// kTimedFuse: the BU+252 timer counts down (grenades, mines, satchels). kFlashStun: when the fuse expires,
+// Bullet_DoTrails runs the stun block (sound 22 + per-victim flash-bang / bot stun), not an explosion.
 }
 
 struct AmmoDef {

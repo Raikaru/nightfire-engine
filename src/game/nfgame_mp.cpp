@@ -19,6 +19,7 @@
 #include "assets/level.hpp"
 #include "game/arena_view.hpp"
 #include "game/bot_match.hpp"
+#include "game/mp_trace.hpp"
 #include "game/drone_render.hpp"
 #include "game/local_pad.hpp"
 #include "render/gl.hpp"
@@ -77,7 +78,7 @@ struct View {
     float yaw, pitch;
 };
 
-View view_of(const Player& p) { return {p.eye(), p.yaw, p.view_pitch()}; }
+View view_of(const Player& p) { return {p.shaken_eye(), p.yaw, p.view_pitch()}; }   // render: shake rides along
 
 Camera camera_for(const View& prev, const View& cur, float alpha) {
     auto lerp = [alpha](float a, float b) { return a + (b - a) * alpha; };
@@ -236,11 +237,17 @@ int run_match(const MatchLaunch& launch) {
         long frames = launch.frames;
         if (frames < 0)
             for (const Script& s : scripts) frames = std::max(frames, s.length());
+        MpTraceSink mp_trace;
+        if (!launch.mp_trace.empty() && !mp_trace.open(launch.mp_trace))
+            throw std::runtime_error("cannot write mp-trace file " + launch.mp_trace);
         for (long f = 0; f < frames; ++f) {
             PadInputs pads{};
             for (int i = 0; i < options.humans; ++i) pads[std::size_t(i)] = scripts[std::size_t(i)].at(f);
             session.tick(pads);
+            if (mp_trace.is_open())
+                mp_trace.dump(world, session.arena(), session.weapons(), bot_match ? &bot_match->bots() : nullptr);
         }
+        mp_trace.close();
         report();
         if (bot_match) std::printf("bots:\n%s", bot_match->summary().c_str());
         if (launch.shot.empty()) return 0;

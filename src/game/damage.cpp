@@ -42,6 +42,34 @@ void DamageTuning::load(std::string_view text, std::string_view section) {
         else if (key == "Plr_DMod_UpperLimb") upper_limb = f;
     }
 }
+AutoaimTuning AutoaimTuning::load(std::string_view text, std::string_view section) {
+    AutoaimTuning t;
+    bool active = false;
+    while (!text.empty()) {
+        const auto eol = text.find('\n');
+        std::string_view line = trim(text.substr(0, eol));
+        text = eol == std::string_view::npos ? std::string_view{} : text.substr(eol + 1);
+        if (line.empty() || line.front() == '#') continue;
+        if (line.front() == '[') {
+            const std::string_view name = trim(line.substr(1, line.find(']') - 1));
+            active = name == "GLOBAL" || name == section;
+            continue;
+        }
+        if (!active) continue;
+        const auto eq = line.find('=');
+        if (eq == std::string_view::npos) continue;
+        const std::string_view key = trim(line.substr(0, eq));
+        const float f = std::strtof(std::string(trim(line.substr(eq + 1))).c_str(), nullptr);
+        if (key == "Autoaim_Range") t.range = f;
+        else if (key == "Autoaim_Angle_H") t.angle_h = f;
+        else if (key == "Autoaim_Angle_V") t.angle_v = f;
+        else if (key == "Autoaim_LockOnMul") t.lock_mul = f;
+        else if (key == "Autoaim_EasyMul") t.easy = f;
+        else if (key == "Autoaim_NormalMul") t.normal = f;
+        else if (key == "Autoaim_HardMul") t.hard = f;
+    }
+    return t;
+}
 
 float apply_player_pain(Vitals& v, const DamageTuning& t, float damage, int part, DamageType type,
                         float* health_damage) {

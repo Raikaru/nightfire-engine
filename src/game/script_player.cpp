@@ -342,9 +342,11 @@ std::vector<CutscenePlayer::EntityPose> CutscenePlayer::entities() const {
     std::vector<EntityPose> out;
     if (!playing_) return out;
     for (const Stream& s : streams_) {
-        if (!s.has_entity || key_count() == 0) continue;
+        if (!s.has_entity) continue;
+        if (key_count() == 0 && s.done) continue;
         // Interpolated pose (`Script_GetInterp` sampling, stored per tick); holds the last
-        // pose when the stream is done, and the rest pose before the first tick.
+        // pose when the stream is done, and the rest pose before the first tick. Keyless effect
+        // scripts (explosion NIS) report the rest pose; the presenter adds the blast base.
         EntityPose e;
         e.hash = s.entity_hash;
         e.pos = s.epos;

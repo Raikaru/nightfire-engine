@@ -57,10 +57,10 @@ DrivingLevel::DrivingLevel(const std::filesystem::path& gamedir, const LevelDesc
 
     // Render tuning (see docs/driving.md "Fog and lighting"): linear fog
     // (`data\tuning\Render\Fog\<track>.tun`: fogSTART/fogEND in metres,
-    // FogColour as four byte values A,R,G,B) and the sky ambient light
-    // (`Lighting\<track>.tun`: AmbientSky{World} 0..1 RGB). The snow tracks'
-    // FogColour carries the red channel packed (e.g. -13488856 = 0xFF322D28),
-    // so every channel is masked to its low byte [INFERENCE].
+    // FogColour as four values A,R,G,B; the snow tracks pack R with A into
+    // channel 1 (e.g. -13488856 = 0xFF322D28), unpacked below [INFERENCE])
+    // and the sky ambient light
+    // (`Lighting\<track>.tun`: AmbientSky{World} 0..1 RGB).
     const std::string fog_path = "data\\tuning\\Render\\Fog\\" + std::string(desc.track) + ".tun";
     if (has_file(fog_path)) {
         const Attributes fog = Attributes::parse_flat(read_text(fog_path));
@@ -75,8 +75,18 @@ DrivingLevel::DrivingLevel(const std::filesystem::path& gamedir, const LevelDesc
                 channel[i] = std::strtol(p, &end, 10);
                 p = *end == ',' ? end + 1 : end;
             }
-            for (int i = 0; i < 3; ++i)
-                fog_colour_[i] = float(channel[i + 1] & 0xFF) * (1.0f / 255.0f);
+            // Channels are bytes A,R,G,B, but the snow tracks pack R (with A) into
+            // channel 1 (e.g. -13488856 = 0xFF322D28); PCSX2 alps2 is blue-grey
+            // overcast, matching the packed bytes, so unpack those [INFERENCE].
+            if (channel[1] < 0 || channel[1] > 255) {
+                const unsigned long packed = static_cast<unsigned long>(channel[1]) & 0xFFFFFFFFul;
+                fog_colour_ = {float((packed >> 16) & 0xFF) * (1.0f / 255.0f),
+                               float((packed >> 8) & 0xFF) * (1.0f / 255.0f),
+                               float(packed & 0xFF) * (1.0f / 255.0f)};
+            } else {
+                for (int i = 0; i < 3; ++i)
+                    fog_colour_[i] = float(channel[i + 1] & 0xFF) * (1.0f / 255.0f);
+            }
         }
     }
     const std::string light_path = "data\\tuning\\Render\\Lighting\\" + std::string(desc.track) + ".tun";

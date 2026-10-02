@@ -1,6 +1,7 @@
 // Host-side differentials against the EeInterp truth tables (see nfdump_diff.hpp).
 #include "tools/nfdump_diff.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -490,4 +491,151 @@ int cmd_diff_combat(nf::GameFiles& gf, const std::string& gamedir, const std::st
     std::printf("diff-combat: %ld rows, ret %ld, fire %ld, calls %ld, rand %ld\n", rows, ret_bad, fire_bad,
                 calls_bad, rand_bad);
     return (ret_bad == 0 && fire_bad == 0 && calls_bad == 0 && rand_bad == 0) ? 0 : 1;
+}
+
+// ---- MP combat accuracy (MpCombat) ----------------------------------------------------------------------
+// CSV from `nfmips diff-mpweap`: spread draw triples in Bullet_init order (bit-exact vs the shared
+// game_rng stream), Vec_Spherical_2_Cartesian vectors (host libm vs EE PS2Sinf2: convention must match,
+// last-ulp trig noise is tolerated), and the Player_HandlePain matrix vs apply_player_pain (bit-exact
+// health/armour, flash, pain bytes and rumble int; the pain grunt coin is scripted on the EE side and only
+// checked for self-consistency with the logged sounds).
+int cmd_diff_mpweap(const std::string& csv_path) {
+    auto fbits = [](float v) {
+        std::uint32_t w = 0;
+        std::memcpy(&w, &v, 4);
+        return w;
+    };
+    std::ifstream in(csv_path);
+    if (!in) {
+        std::printf("diff-mpweap: cannot open %s\n", csv_path.c_str());
+        return 1;
+    }
+    enum class Section { None, Spread, Spherical, Pain } section = Section::None;
+    nf::GameRng rng;   // boot seed: the EE image boots the same seed
+    long spread_rows = 0, spread_bad = 0, sph_rows = 0, pain_rows = 0, pain_bad = 0, grunt_bad = 0;
+    double sph_max = 0;
+    nf::DamageTuning base;
+    std::string raw;
+    while (std::getline(in, raw)) {
+        if (!raw.empty() && raw.back() == '\r') raw.pop_back();
+        if (raw.starts_with("# section=spread")) {
+            section = Section::Spread;
+            continue;
+        }
+        if (raw.starts_with("# section=spherical")) {
+            section = Section::Spherical;
+            continue;
+        }
+        if (raw.starts_with("# section=pain")) {
+            section = Section::Pain;
+            continue;
+        }
+        if (raw.starts_with("# tuning")) {
+            const auto eq = raw.find('=');
+            const float v = std::strtof(raw.c_str() + eq + 1, nullptr);
+            if (raw.find("Plr_DMod_Multi ") != std::string::npos) base.multi = v;
+            if (raw.find("Plr_DMod_Head ") != std::string::npos) base.head = v;
+            if (raw.find("Plr_DMod_LowerLimb ") != std::string::npos) base.lower_limb = v;
+            if (raw.find("Plr_DMod_UpperLimb ") != std::string::npos) base.upper_limb = v;
+            if (raw.find("Plr_DMod_Easy ") != std::string::npos) base.easy = v;
+            if (raw.find("Plr_DMod_Normal ") != std::string::npos) base.normal = v;
+            if (raw.find("Plr_DMod_Hard ") != std::string::npos) base.hard = v;
+            continue;
+        }
+        if (raw.empty() || raw[0] == '#') continue;
+        if (raw.starts_with("shot,") || raw.starts_with("r,theta") || raw.starts_with("dmg,")) continue;
+        // Split, keeping the trailing "rumble(pad0,5,N)" commas rejoined for pain rows.
+        std::vector<std::string> c;
+        {
+            std::string cur;
+            for (char ch : raw) {
+                if (ch == ',') {
+                    c.push_back(cur);
+                    cur.clear();
+                } else cur += ch;
+            }
+            c.push_back(cur);
+        }
+        if (section == Section::Spread && c.size() == 8) {
+            const float A = std::strtof(c[1].c_str(), nullptr);
+            const std::uint32_t want_r = fbits(rng.mvar2(2.0f * A, A));
+            const std::uint32_t want_t = fbits(rng.frand(2.0f * 3.14159265358979f));
+            const std::uint32_t want_p = fbits(rng.frand(3.14159265358979f));
+            ++spread_rows;
+            const auto hex = [](const std::string& s) { return std::uint32_t(std::stoul(s, nullptr, 16)); };
+            if (want_r != hex(c[3]) || want_t != hex(c[5]) || want_p != hex(c[7])) {
+                if (spread_bad < 5)
+                    std::printf("diff-mpweap SPREAD shot %s A=%s: port %08x %08x %08x, ee %s %s %s\n",
+                                c[0].c_str(), c[1].c_str(), want_r, want_t, want_p, c[3].c_str(),
+                                c[5].c_str(), c[7].c_str());
+                ++spread_bad;
+            }
+        } else if (section == Section::Spherical && c.size() == 9) {
+            const float r = std::strtof(c[0].c_str(), nullptr), th = std::strtof(c[1].c_str(), nullptr),
+                        ph = std::strtof(c[2].c_str(), nullptr);
+            const float x = r * std::sin(th) * std::cos(ph), y = r * std::sin(ph),
+                        z = r * std::cos(th) * std::cos(ph);
+            const float ex = std::strtof(c[3].c_str(), nullptr), ey = std::strtof(c[4].c_str(), nullptr),
+                        ez = std::strtof(c[5].c_str(), nullptr);
+            ++sph_rows;
+            sph_max = std::max({sph_max, double(std::fabs(x - ex)), double(std::fabs(y - ey)),
+                                double(std::fabs(z - ez))});
+        } else if (section == Section::Pain && (c.size() == 19 || c.size() == 21)) {
+            if (c.size() == 21) {
+                c[18] = c[18] + "," + c[19] + "," + c[20];
+                c.resize(19);
+            }
+            const int coin = std::atoi(c[11].c_str());
+            if ((coin == 0) != (c[17].find("136") != std::string::npos)) {
+                std::printf("diff-mpweap EE GRUNT [%s]\n", raw.c_str());
+                ++grunt_bad;
+            }
+            nf::DamageTuning t = base;
+            t.mode = c[6] != "0" ? nf::GameMode::Multiplayer : nf::GameMode::SinglePlayer;
+            t.difficulty = std::atoi(c[8].c_str());
+            t.location_damage = c[9] != "0";
+            t.rapid = c[10] != "0";
+            nf::Vitals v;
+            v.health = std::strtof(c[4].c_str(), nullptr);
+            v.armour = std::strtof(c[3].c_str(), nullptr);
+            v.pain_alpha = std::uint8_t(std::stoul(c[5]));
+            float through = 0;
+            nf::apply_player_pain(v, t, std::strtof(c[0].c_str(), nullptr), std::atoi(c[1].c_str()),
+                                  nf::DamageType(std::atoi(c[2].c_str())), &through);
+            ++pain_rows;
+            char problems[256] = "";
+            const float want_hp = std::strtof(c[12].c_str(), nullptr);
+            const float want_ap = std::strtof(c[13].c_str(), nullptr);
+            if (v.health != want_hp)
+                std::snprintf(problems + std::strlen(problems), sizeof(problems) - std::strlen(problems),
+                              " health port=%g ee=%g", double(v.health), double(want_hp));
+            if (v.armour != want_ap)
+                std::snprintf(problems + std::strlen(problems), sizeof(problems) - std::strlen(problems),
+                              " armour port=%g ee=%g", double(v.armour), double(want_ap));
+            if (v.flash != std::strtof(c[14].c_str(), nullptr)) std::strcat(problems, " flash");
+            if (v.pain_dir != unsigned(std::stoul(c[15])))
+                std::snprintf(problems + std::strlen(problems), sizeof(problems) - std::strlen(problems),
+                              " paindir port=%u ee=%s", unsigned(v.pain_dir), c[15].c_str());
+            if (v.pain_alpha != unsigned(std::stoul(c[16])))
+                std::snprintf(problems + std::strlen(problems), sizeof(problems) - std::strlen(problems),
+                              " paalpha port=%u ee=%s", unsigned(v.pain_alpha), c[16].c_str());
+            {
+                const int ee_rum = std::atoi(c[18].c_str() + c[18].rfind(',') + 1);
+                if (int(through) != ee_rum)
+                    std::snprintf(problems + std::strlen(problems),
+                                  sizeof(problems) - std::strlen(problems), " rumble port=%d ee=%d",
+                                  int(through), ee_rum);
+            }
+            if (problems[0]) {
+                if (pain_bad < 10) std::printf("diff-mpweap PAIN [%s]:%s\n", raw.c_str(), problems);
+                ++pain_bad;
+            }
+        }
+    }
+    const bool sph_ok = sph_max < 1e-6;   // EE PS2Sinf2 vs host libm noise (measured 1.2e-7)
+    std::printf("diff-mpweap: spread %ld rows (%ld bit-mismatches), spherical %ld rows (max|diff| %g %s), "
+                "pain %ld rows (%ld mismatches, %ld grunt)\n",
+                spread_rows, spread_bad, sph_rows, sph_max, sph_ok ? "ok" : "FAIL", pain_rows, pain_bad,
+                grunt_bad);
+    return (spread_bad == 0 && sph_ok && pain_bad == 0 && grunt_bad == 0) ? 0 : 1;
 }

@@ -89,6 +89,13 @@ public:
     // Player_PositionCamera + Camera_SetToPlayer (first person): eye and orientation.
     void update_camera(FrameTiming timing);
     Vec3 eye() const;
+    // Camera_Shake (ACTION.ELF) + the Camera_Update shake block: viewer+0x200 magnitude and the
+    // render-only eye offset it produces each frame (3 Rand_FRand_MVar2 draws, then 1 Rand_FRand
+    // decay; shared game_rng stream, original order). Logic keeps reading eye(); renderers use
+    // shaken_eye(). Set by explosions (radius, doubled) and gas/stun detonations (2.0); plain
+    // bullet damage and flash-only paths do not shake in the original.
+    void camera_shake(const Vec3& pos, float radius);
+    Vec3 shaken_eye() const;
     // Camera pitch in radians (positive looks up); the heading is `yaw`.
     float view_pitch() const {
         if (const auto cam = rope_camera()) return cam->pitch;
@@ -160,6 +167,8 @@ public:
     void restore_carry(const PlayerCarry& carry, bool continuing);
     // Player_SetFlashBang: a white-out that holds for half of `duration` frames and fades in the rest.
     void set_flash_bang(float duration, std::uint8_t colour);
+    // Current flash-bang strength (BL+0x963 / 255): stun blasts only upgrade a weaker flash.
+    float flash_strength() const { return float(fade_colour) / 255.0f; }
     // Camera_SetFade argument Player_Update computes this frame (-100000 = hold, -timer = fading, 0 = none).
     float screen_fade() const { return screen_fade_; }
     // Player_Activate's probe: the sphere the use action tests against the doors, triggers and locks around the
@@ -246,6 +255,8 @@ public:
 
     float eye_height = 0.7f;    // BL+0x908
     float crouch_dip = 0.0f;    // BL+0x90C
+    float shake_ = 0.0f;        // viewer+0x200: camera shake magnitude, capped at 10 on set
+    Vec3 shake_offset_{};       // this frame's render-only eye offset (zero when the shake ends)
 
     Vitals vitals;              // BL+0x894 health, +0x8B0 armour, +0x8BC damage flash, +0x967 pain direction, +0x968 overlay
     LifeState life = LifeState::Alive;   // obj+0xF4
@@ -254,7 +265,7 @@ public:
     float model_alpha = 1.0f;       // BL+0x888: how solid the body is for other views, eases back to 1 (obj+0x106)
     float fade_total = 0.0f;        // BL+0x918 / +0x91C: flash-bang duration and frames left
     float fade_timer = 0.0f;
-    std::uint8_t fade_colour = 0xFF;   // BL+0x963
+    std::uint8_t fade_colour = 0;   // BL+0x963 (BSS-zero: no flash; stun blasts only upgrade a weaker one)
     bool death_pane = false;        // Player_HandleDeath (single player): the "dead" HUD pane 0xC is up
     bool mission_failed = false;    // switch channel 0x62, set by Player_HandleDeath once the death pane is up
 
@@ -341,7 +352,7 @@ private:
     float fall_timer_ = 0;      // BL+0x928: frames of falling (FRAME_RATE_MUL each), > 60 hurts on landing
     int death_frames_ = 0;      // GameState frame - obj+0xEC
     float screen_fade_ = 0;
-    std::uint32_t rand_state_ = 1;   // Rand(4) of the pain grunt
+    // (The pain-grunt coin toss draws game_rng(), the shared stream, not a per-player state.)
     HealthEvents events_;
     Basis body_ = yaw_basis(0.0f);   // obj+0x90 rows in the matrix-driven substates (5, 8, 9); otherwise built from `yaw`
     // Rope-like movement (player_rope.cpp): grapple, wire and zip line state.

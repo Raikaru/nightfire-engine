@@ -91,6 +91,12 @@ used); with `crouch_toggle`, L2 or Triangle pressed stands up when the same 0.95
 Camera (`Player_PositionCamera` -> `Camera_SetToPlayer` -> `Player_GetHeadPos`): eye = `(pos.x, pos.y + BLData+0x908
 - BLData+0x90C, pos.z)`; `+0x908` eases to 0.7 by 10% per frame, `+0x90C` rises to 0.45 in crouch (`0.0225*M` per
 frame) and falls back; orientation = body yaw, then pitch `-BLData+0x8A8 * pi/2` about X.
+Camera shake (`Camera_Shake` + `Camera_Update`): viewer `+0x200` magnitude, set by explosions (radius doubled,
+sub-0.5 skipped, quadratic falloff capped at 10) and gas/stun detonations (2.0); each frame with positive
+magnitude adds a render-only eye offset (3 `Rand_FRand_MVar2` draws scaled by magnitude times `REC_FRAME_RATE`,
+shared stream, original order) then decays by one `Rand_FRand` draw of magnitude/4 (never quite reaching zero,
+like the original). Plain bullet damage does not shake. `Player::camera_shake` / `World::camera_shake` /
+`Player::shaken_eye` (render paths only; logic keeps the clean eye).
 
 Spawn (`Player_Start` / `Player_Init` / `Player_StandAtNewPosition`): the markers are static instances whose
 `flags` (entity type, the `switch` in `parsemap_create_dynamic_objects`) is 0x2D or 0x24 (single player,
@@ -471,13 +477,19 @@ vehicle-side state (its own substate, sounds, gun flags, `GT_LoseControl`) is th
 `ObjectWorld::set_movers()` installs the frame's script-driven solids (lifts, doors, platforms; AABB
 plus the frame's displacement, with a script id). `collide()` pushes the capsule's end spheres and
 midpoint out of them (hits carry `placement == SIZE_MAX`) and a grounded player standing on one's top
- face is carried by `ride_displacement()`. [INFERENCE: the carry path is a reimplementation; no
- ACTION.ELF lift trace pins down the original's frame order.] Scripting/Driving own the per-tick update.
- Script-entity solids (`SP_SetPosRot` poses) publish one mover per collision-BVH leaf, not one
- merged box: stacked shaft segments would otherwise merge into a solid column and push the rider
- out (seen on 0700004a's lift collision, whose merged bounds span the whole shaft). Leaves whose
- tris are all pass-through (`Collide_Filter` 0xC0, like the original) contribute no mover.
- Per-leaf maxima persist across frames for the displacement.
+face is carried by `ride_displacement()`. [INFERENCE: the carry path is a reimplementation; no
+ACTION.ELF lift trace pins down the original's frame order.] Scripting/Driving own the per-tick update.
+Grounding also sees movers: `Player_FeetOnPoint`'s ray hits script solids in the original, so a mover
+top under the sole (`standing_on_mover`, same +-0.3 window) sets `kOnGround` even with no static floor
+below — otherwise a lift rider keeps gravity and the fall timer and dies standing still (seen: 0700004a).
+ Script-entity solids (`SP_SetPosRot` poses) publish one mover per collision-BVH leaf (a single
+ merged box would span the whole shaft and push the rider out), merged back into unions where
+ leaves touch (same top within 0.25, XZ gap under 0.6): the raw split leaves phantom internal
+ edges that shove the capsule sideways (seen: the 0700004a car deck grazed Bond off at its leaf
+ seam), while the original's triangle tests make coplanar neighbours one continuous floor.
+ Tops round up by at most the bucket epsilon (inside the ride window); per-group maxima persist
+ across frames for the displacement (regrouping resets it, benign). Leaves whose tris are all
+ pass-through (`Collide_Filter` 0xC0, like the original) contribute no mover.
 
 ## Single-player missions (`src/game/mission.*`, `objects.*`, `script_player.*`)
 
@@ -530,8 +542,11 @@ collision, 2 m box only with no model at all); the renderer hides the taken
 statics and draws the panels via `draw_objects`. Touch volumes latch channels, multiplex nets run
 AND/OR/fan-out/sequence logic, sensors trip alarm channels in their cones (searchlights pan
 theirs sinusoidally per `Searchlight_Update`: param 4/5 degree range, 480-frame cycle),
-breakables fall to bullets/blasts from the weapon events, pickups grant through `WeaponSystem`,
- turrets and mines hurt on range/proximity. Sounds, HUD texts, music events, drone spawns and
+ breakables fall to bullets/blasts from the weapon events, pickups grant through `WeaponSystem`,
+ turrets hurt on range/proximity. Mines (authored damage/radius) detonate once on proximity
+ through `WeaponSystem::explode_at` (`Mine_Update` ~ `Explode_Create`: falloff, shake, boom,
+ chain-detonation; Remote Mine row for sound/credit, world attacker), so the mission binds the
+ weapon world in `pre_tick` (its tick runs later). Sounds, HUD texts, music events, drone spawns and
  level/movie requests queue out of the tick for the frontend. `nfdump <gamedir> script <level.bin>`
  lists every door (placement, unlock/lock channels, auto flag, position) after the class census.
 

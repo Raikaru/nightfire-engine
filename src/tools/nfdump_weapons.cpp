@@ -1,15 +1,82 @@
 #include "tools/nfdump_weapons.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <string>
 
 #include "assets/elf.hpp"
 #include "assets/strings.hpp"
 #include "assets/weapon_data.hpp"
+#include "game/arena_data.hpp"
 
 namespace nf {
 
 namespace {
+
+// Direct-hit damage of one MP shot by zone, exactly as Player_HandlePain scales it (diff-mpweap proves
+// the scaler bit-exact): part -1 (explosions) skips the x4 multi; head x4, limbs x0.8 on top of the multi.
+// Splash weapons override the direct damage first (Bullet_update: 1.0 for ids 42/44-47, 0.0 for 43/52-55/58-64).
+float zone_damage(const WeaponDef& w, float zone_mul) {
+    float direct = w.damage;
+    if (w.blast_radius > 0.0f) {
+        if (w.id == 42 || (w.id >= 44 && w.id <= 47)) direct = 1.0f;
+        if (w.id == 43 || (w.id >= 52 && w.id <= 55) || (w.id >= 58 && w.id <= 64)) direct = 0.0f;
+    }
+    return direct * 4.0f * zone_mul;
+}
+
+// Rounds of this weapon's direct torso hits to kill 100 hp unarmoured (0 damage -> never).
+int shots_to_kill(const WeaponDef& w) {
+    const float per = zone_damage(w, 1.0f);
+    return per <= 0.0f ? -1 : int(std::ceil(100.0f / per));
+}
+
+bool in_mp_sets(const WeaponSets& sets, int id) {
+    for (std::size_t r = 0; r < sets.matrix.size(); ++r) {
+        if (r == std::size_t(WeaponSets::kRandomRow)) continue;   // rebuilt per match, not a fixed set
+        for (std::int16_t slot : sets.matrix[r])
+            if (slot == id) return true;
+    }
+    for (std::int16_t g : sets.useable)
+        if (g == id) return true;
+    return false;
+}
+
+void print_mp_table(const WeaponTable& table, const StringTable& text) {
+    // Provenance: every value below is read from the emulated weapon_data static initializer
+    // (`nfmips init --check` proves it byte-equal to the original; `nfdump validate` re-checks the spot
+    // values). Damage zones apply the MP scaler (x4 + location) that `nfdump diff-mpweap` proves bit-exact;
+    // intervals are 60 Hz frames (the firing state machine cools max(1, interval) frames per shot).
+    const WeaponSets sets = WeaponSets::builtin();   // PickupMatrix + UseableGuns, validated vs ELF
+    std::printf("# id mp name | mode | MP-set | int(frames,ms) | head torso limb | stk | pel | spread0deg grow | "
+                "speed(u/s) | range | blast | clip/pool | notes\n");
+    for (const WeaponDef& w : table.weapons()) {
+        const float head = zone_damage(w, 4.0f), torso = zone_damage(w, 1.0f), limb = zone_damage(w, 0.8f);
+        const int stk = shots_to_kill(w);
+        const float spread_deg = (w.spread * 0.0014f) * 57.29578f;
+        const int interval = std::max(1u, w.fire_interval);
+        std::string notes;
+        if ((w.id == 42 || (w.id >= 44 && w.id <= 47) || w.id == 43 || (w.id >= 52 && w.id <= 55) ||
+             (w.id >= 58 && w.id <= 64)) && w.blast_radius > 0.0f)
+            notes += "blast-direct-override ";
+        if (w.id == 74 || w.id == 76) notes += "taser-gated ";
+        if (w.pellets == 0) notes += "detonator/no-bullet ";
+        if ((w.flags1 & 0x20000u) != 0u) notes += "lock-on ";
+        if ((w.flags2 & 0x4u) != 0u) notes += "guided ";
+        if (w.autoaim > 0.0f) notes += "autoaim ";
+        if (w.selectable != 1) notes += "unselectable ";
+        if (notes.empty()) notes = "-";
+        else notes.pop_back();
+        std::printf("%3u %-22.22s | %-14.14s | %s | %4u %7.1f | %7.1f %7.1f %7.1f | %3d | %3u | %8.2f %5.2f | "
+                    "%9.1f | %7.1f | %5.1f | %4d/%4d | %s\n",
+                    w.id, std::string(text.label(w.mp_name_label)).c_str(),
+                    std::string(text.label(w.mode_label)).c_str(), in_mp_sets(sets, w.id) ? "MP" : "  ",
+                    interval, interval * 1000.0f / 60.0f, head, torso, limb, stk, w.pellets, spread_deg,
+                    w.spread_growth, w.speed * 60.0f, w.range, w.blast_radius, w.clip_size,
+                    table.ammo(w.ammo_type).max, notes.c_str());
+    }
+}
+
 
 StringTable load_text(GameFiles& files) {
     const GameFile* f = files.find("USATxt.dat");
@@ -24,6 +91,10 @@ int cmd_weapons(GameFiles& files, const std::filesystem::path& gamedir, const st
     const Elf32 elf(read_file(gamedir / "ACTION.ELF"));
     const WeaponTable table = WeaponTable::from_elf(elf);
     const StringTable text = load_text(files);
+    if (!args.empty() && args[0] == "mp-table") {
+        print_mp_table(table, text);
+        return 0;
+    }
     const int only = args.empty() ? -1 : std::atoi(args[0].c_str());
     std::printf("id  base sel alt cat  dmg   blast  cls   pel range  speed  spr int dly zoom ammo rps clip  name / mode\n");
     for (const WeaponDef& w : table.weapons()) {

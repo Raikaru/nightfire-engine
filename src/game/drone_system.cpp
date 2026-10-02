@@ -65,6 +65,14 @@ struct DroneSystem::Target final : DamageTarget {
                   hit.direction[2] == 0.0f;
         sys->hurt_drone(drone_id, h);
     }
+    void stun() override {
+        // Bullet_DoTrails message 24 (stun-grenade blast): route as kMsgStunGrenade, like the original
+        // broadcast (no falloff/facing gate on this leg). Bots enter BotImpactStunGrenade through their
+        // handler (dead-checked there; the state arms its own stun_ticks timer); SP drones have no stun
+        // state and ignore the message. (Placed here, not on the arena body: stun_blast resolves victims
+        // through DroneSystem::damage_target, which vends these adapters.)
+        if (Drone* d = sys->find(drone_id)) d->send_self(kMsgStunGrenade);
+    }
 };
 
 DroneSystem::DroneSystem(World& world, CharacterBank& bank, DroneConfig config)

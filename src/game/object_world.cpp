@@ -139,4 +139,14 @@ Vec3 ObjectWorld::ride_displacement(const Vec3& feet, float radius) const {
     return ride;
 }
 
+bool ObjectWorld::standing_on_mover(const Vec3& sole, float radius) const {
+    for (const Mover& mover : movers_) {
+        if (sole[0] < mover.min[0] - radius || sole[0] > mover.max[0] + radius) continue;
+        if (sole[2] < mover.min[2] - radius || sole[2] > mover.max[2] + radius) continue;
+        const float drop = mover.max[1] - sole[1];
+        if (drop < -0.3f || drop > 0.3f) continue;
+        return true;
+    }
+    return false;
+}
 }  // namespace nf

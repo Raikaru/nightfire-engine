@@ -82,6 +82,7 @@ private:
     bool inside_box(const Box& b, float x, float y, float z) const;
     void parse_emitter_defs();
     void build_emitters();
+    void build_leaf_emitters(const std::vector<const Placement*>& points);
     void update_emitters(const std::function<bool(int)>& channel);
 
     Level& level_;
@@ -99,7 +100,7 @@ private:
     }
 
     GLuint program_ = 0;
-    GLint u_mvp_ = -1;
+    GLint u_mvp_ = -1, u_atest_ = -1, u_aref_ = -1;
     // Rain streak meshes (Raindrop, plus smoke_1_dust on levels 09-0B).
     GLuint rain_vao_ = 0;
     std::vector<MeshBatch> rain_batches_;

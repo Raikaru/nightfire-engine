@@ -150,14 +150,14 @@ track mesh and collision set and decodes every vehicle model (0 failures).
  `MISSION COMPLETE` with the GT_LoseControl-style autopilot (`Mission::tick_player`):
  
  | nfdrive name | archive | gates | result (60 Hz ticks) |
- | paris | MIS01 | 15 | win @ 17257 |
- | alps | MIS3 | 30 | win @ 29299 |
- | alps2 | MIS4 | 43 | win @ 21875 |
- | underwater | MIS11 | 15 | BOT-DOWN (lethal pursuer; see note) |
- | jungle1 | MIS13A | 11 | win @ 112134 |
- | jungle2 | MIS13B | 2 | win @ 352 |
+ | paris | MIS01 | 15 | win @ 11985 |
+ | alps | MIS3 | 30 | win @ 29181 |
+ | alps2 | MIS4 | 43 | win @ 16634 |
+ | underwater | MIS11 | 15 | win @ 5365 |
+ | jungle1 | MIS13A | 11 | win @ 163992 |
+ | jungle2 | MIS13B | 2 | win @ 1397 |
  | jungle3 | MIS13C | 0 + 4 hunters | win @ 2449 (roadless dogfight) |
- | race | RACE | 5/lap x3 | win @ 51251 |
+ | race | RACE | 5/lap x3 | win @ 54655 |
  
  Objectives (`Mission::build_gates`, `tick_objectives`): gates are mission trigger
  volumes (radius 8+) containing a spine node, in walk order, plus a walk-end destination
@@ -178,11 +178,10 @@ track mesh and collision set and decodes every vehicle model (0 failures).
  `Mission::player_debug()` exposes live autopilot
  telemetry (pos/target/yaw/d0/walk/K-turn flags) for stall diagnosis.
  
- Underwater BOT-DOWN ([INFERENCE]/unverified): a pursuer sub rams for ~47/contact and
- the bot cannot kill it (8 diving homing torpedoes all miss agile subs; secondary
- auto-selects but never connects) or outrun it, and shield/mine stocks do not save it.
- Needs torpedo-vs-sub lethality work (Weapons) or human tactics. All other missions win
- on real position-entered data gates.
+ Underwater was BOT-DOWN until the torpedo homing turn rate was fixed (9.0/s vs 3.0/s —
+ 45 m/s fish outran their own turn vs agile subs, circled, never connected; pursuer rams
+ then decided every run). With diving torpedoes that connect, the bot sinks its pursuers
+ and completes all 15 gates. Lesson: verify projectile lethality, not just fire discipline.
  
  ## District seams ([INFERENCE]/unverified — revisit with a PCSX2 PINE trail recording)
  
@@ -208,26 +207,44 @@ track mesh and collision set and decodes every vehicle model (0 failures).
  load the missing piece and remove `tick_districts`; if it shows fall/respawn/cutscene,
  keep the cuts.
  
+ ## Mission rules ([INFERENCE] mechanism mapped, semantics pending live RAM)
+ 
+ Rule records (`Rule` entry, N×32B: type/a/b/el + sr links/params) per mission: paris 114,
+ alps 101, alps2 80, underwater 176, jungle1 49, jungle2 26, jungle3 31, race 14. Type ids
+ present: 0,2,3,4,6,7,8,9,10,12,13,14 (paris lacks 7/8/12; race lacks 0/2/4/6/10/14).
+ Parameter shapes ([INFERENCE]): type 7 b=2..60 no -1 (Timer-like seconds), type 13 b=4..57
+ no -1 (Range-like radii), type 14 b=-1..63 sequential (ProgCounter-like stages), type 9
+ dominant small ints (82 across four missions), type 6 similar. No static type→class map
+ exists (factory unrecoverable; demangler polluted; no vtable/table in rodata).
+ EeInterp EE findings: 15 CheckRule labels are NOT 15 functions (only Prog 0x241BB8 has a
+ jal caller from ProcessRules 0x23CF18; rest are tails/links; no vtables; O32-incompatible
+ v0/s0 regs; pointer-dispatched inline code). Timer lookup chain mapped (rule+52 name →
+ 0x24B1A0 → registry root 0x34BA6C → walker/hash tables); entry needs live registry bytes
+ (RAM dump queued behind MP acceptance). Prog runs standalone on zeros. Raw dumps:
+ rules_{paris,underwater,jungle2,race}.txt + rules_paris_raw.hex + rules_uw_type7.hex.
+ 
  ## Fog and lighting (`data\tuning\Render\`)
-
+ 
  Per-track render tuning, applied by `DrivingLevel` to the `SceneRenderer`
  (`set_fog`/`set_ambient`; the viewport clears to the fog colour):
-
+ 
  | file | keys | used as |
  |---|---|---|
  | `Fog/<track>.tun` | `fogSTART`, `fogEND` (metres), `fogmode`, `fogDensity`, `FogColour` | linear fog `fogSTART`..`fogEND`; `fogmode`/`fogDensity` currently ignored (all files say mode 3) |
  | `Lighting/<track>.tun` | `AmbientSky{World}` (0..1 RGB) | global diffuse tint multiplying texture × vertex colour |
-
- `FogColour` holds four byte values `A,R,G,B` (e.g. Paris `255,22,15,20` = near-black
- night haze; underwater `128,32,66,130` = steel blue). The snow tracks pack the red
- channel (`-13488856` = `0xFF322D28`, `-6909784` = `0xFF9690A8`), so every channel is
- masked to its low byte [INFERENCE]. Sky-dome/celestial batches (`sky*`, `moon` shapes)
+ 
+ `FogColour` holds four values `A,R,G,B` (e.g. Paris `255,22,15,20` = near-black
+ night haze; underwater `128,32,66,130` = steel blue). The snow tracks pack red
+ with alpha into channel 1 (`-13488856` = `0xFF322D28` → `(50,45,40)`,
+ `-6909784` = `0xFF9690A8` → `(150,144,168)`), which the loader unpacks;
+ PCSX2 alps2 is blue-grey overcast, matching the packed bytes [INFERENCE].
+ Sky-dome/celestial batches (`sky*`, `moon` shapes)
  are drawn unfogged [INFERENCE: `RSky_Draw` exists but its pseudocode is only flag
  clearing; the domes are ordinary instances]. Values: Paris end 1450 m, Alps 251 m,
  Alps2/Race 551 m, underwater 251 m, jungle1 400 m, jungle2 2000 m, jungle3 1200 m
  (all start 1 m). `CarRender/default.tun` (`Skyblend`, `Skybright`: vehicle
  environment mapping) is not implemented yet.
-
+ 
  ## Not done
-
+ 
  Sky rendering, particles and explosion shake of the camera.
