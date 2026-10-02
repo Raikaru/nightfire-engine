@@ -3,7 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
-#include <random>
+#include "core/rng.hpp"
 #include <vector>
 
 #include "assets/character.hpp"
@@ -12,6 +12,7 @@
 #include "game/projectiles.hpp"
 #include "game/world.hpp"
 namespace nf { struct HudState; }   // ui/hud.hpp; defined there, filled by fill_hud for the UI slice.
+namespace nf::drone { class DroneSystem; }   // game/drone_system.hpp; threat query for idle fidgets
 namespace nf {
 
 // Weapon animation object states (`obj+244` of BLData+2024, docs/spec-weapons.md 6.1).
@@ -76,7 +77,9 @@ struct PlayerWeapons {
     float cooldown = 0;                // BLData+2348 (60 Hz frames)
     int shots_left = 0;                // +2358
     int cycle_start = 0;               // burst size at trigger time (spread growth: def+40 - shots_left)
-    std::uint8_t idle_phase = 0;       // +2393
+    std::uint8_t idle_phase = 0;       // +2393: 0 wait, 1 fidget playing, 3 fidget armed (spec 760)
+    int idle_frames = 0;               // +2362: settled frames while idle
+    int fidget_frames = 0;             // +2366: fidget countdown (20 s once started)
     bool bullet_spawned = false;       // +2396
     bool alt_reload = false;           // +2392
     bool alt_hand = false;
@@ -95,6 +98,8 @@ struct PlayerWeapons {
     std::size_t anim_cmd_next = 0;     // next script sound command to trigger
     std::uint32_t anim_script = 0;
     unsigned sleeve = 0;               // BLData+2405
+    std::uint32_t datum0_entity = 0;   // Player_WeaponFiring datum-0 override: entity model hash, 0 = hidden
+    std::uint32_t datum0_part = 0;     // skin part hidden while the override runs (def.datum0_gfx, e.g. suppressor)
 };
 
 // First-person weapon draw data (Player_SetWeaponAnim / Player_PositionGun).
@@ -109,13 +114,15 @@ struct ViewModel {
     Vec3 flash_color{};         // 0..1 (def+86/85/84)
     float zoom = 1.0f;
     bool aiming = false;
+    std::uint32_t datum0_entity = 0;   // draw this model at datum 0 (0 = hide; Characters honours it)
+    std::uint32_t datum0_part = 0;     // skip the skin part with this hash (parked suppressor placeholder)
 };
 
 // The weapon system: inventory, the weapon state machine, bullets/projectiles/explosions and damage. A
 // `System` that runs after the players moved.
 class WeaponSystem : public System {
 public:
-    WeaponSystem(WeaponTable table, DamageTuning tuning, std::uint32_t seed = 1);
+    WeaponSystem(WeaponTable table, DamageTuning tuning);
     ~WeaponSystem() override;
 
     const WeaponTable& table() const { return table_; }
@@ -124,6 +131,7 @@ public:
     // Weapon skins and animation scripts (a level's CharacterBank). Without it weapons have no animation
     // timing: every anim counts as finished at once and there is no view model.
     void set_bank(CharacterBank* bank) { bank_ = bank; }
+    void set_drone_system(const drone::DroneSystem* drones) { drones_ = drones; }   // threat gate for idle fidgets; null = none
     void set_match_rules(MatchRules* rules) { rules_ = rules; }
     // The world the shooters live in; tick() attaches it too, call this earlier when fire()/spawn_player() run before the first tick.
     void attach(World& world) { world_ = &world; }
@@ -188,8 +196,14 @@ public:
     int ammo_index(int weapon_id) const;                   // Player_AmmoIndex
     bool has_ammo(const PlayerWeapons& p, int weapon_id) const;   // Player_WeaponHasAmmo
 
-    // Deterministic random source shared by spread, ricochets, sound picks.
-    float frand();                                          // [0, 1)
+    // Deterministic random source shared by spread, ricochets, sound picks: the process-global
+    // game Rand stream (core/rng.hpp; Rand_Rand/Rand_FRand/Rand_FRand_MVar2 exact).
+    float frand();                                          // [0, 1), Rand_FRand(1)
+    GameRng& rng() { return game_rng(); }
+    void seed(std::uint32_t x, std::uint32_t y) { game_rng().seed(x, y); }   // differential poking
+    void seed_match(std::uint32_t s) {   // --seed / options.seed: fold one word into both lanes
+        game_rng().seed(GameRng::kBootX ^ s, GameRng::kBootY ^ (s * 0x85EBCA6Bu));
+    }
 
 private:
     // One thing a bullet can hit: a player capsule or a registered target.
@@ -226,7 +240,8 @@ private:
     void set_firing_anim(PlayerWeapons& p, const WeaponDef& d);            // Player_SetFiringAnim
     void start_reload(PlayerWeapons& p, const WeaponDef& d);
     void set_weapon_anim(PlayerWeapons& p);                                // Player_SetWeaponAnim
-    void play_script(PlayerWeapons& p, std::uint32_t script, bool loop);
+    void update_datum0(PlayerWeapons& p);                                  // Player_WeaponFiring datum-0 override
+    void play_script(PlayerWeapons& p, std::uint32_t script, bool loop, float speed = 1.0f);
     void play_script_reversed(PlayerWeapons& p, std::uint32_t script);
     bool script_stopped(const PlayerWeapons& p) const;
     float script_frame(const PlayerWeapons& p) const;
@@ -256,6 +271,7 @@ private:
     WeaponTable table_;
     DamageTuning tuning_;
     CharacterBank* bank_ = nullptr;
+    const drone::DroneSystem* drones_ = nullptr;   // threat gate for idle fidgets (Bots-2 any_visible_threat)
     MatchRules* rules_ = nullptr;
     std::array<std::unique_ptr<PlayerWeapons>, World::kMaxPlayers> players_;
     std::array<SpawnLoadout, World::kMaxPlayers> loadouts_{};
@@ -264,7 +280,6 @@ private:
     int next_target_id_ = World::kMaxPlayers;
     std::vector<Projectile> projectiles_;
     WeaponEvents events_;
-    std::mt19937 rng_;
     World* world_ = nullptr;   // valid during tick() and fire()
     FrameTiming timing_;
     // Weapon anim scripts advance FRAME_RATE_MUL script frames per logic frame (60 fps scripts), see docs/gameplay.md.

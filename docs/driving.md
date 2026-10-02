@@ -149,25 +149,85 @@ track mesh and collision set and decodes every vehicle model (0 failures).
  `nfdrive <gamedir> <level> --auto --frames N --shot out.bmp` drives every mission to
  `MISSION COMPLETE` with the GT_LoseControl-style autopilot (`Mission::tick_player`):
  
- | nfdrive name | archive | result (60 Hz ticks) |
- |---|---|---|
- | paris | MIS01 | win @ 63790 |
- | alps | MIS3 | win @ 26022 |
- | alps2 | MIS4 | win @ 474 |
- | underwater | MIS11 | win @ 2554 |
- | jungle1 | MIS13A | win @ 14470 |
- | jungle2 | MIS13B | win @ 1661 |
- | jungle3 | MIS13C | win @ 1961 (roadless dogfight) |
+ | nfdrive name | archive | gates | result (60 Hz ticks) |
+ | paris | MIS01 | 15 | win @ 17257 |
+ | alps | MIS3 | 30 | win @ 29299 |
+ | alps2 | MIS4 | 43 | win @ 21875 |
+ | underwater | MIS11 | 15 | BOT-DOWN (lethal pursuer; see note) |
+ | jungle1 | MIS13A | 11 | win @ 112134 |
+ | jungle2 | MIS13B | 2 | win @ 352 |
+ | jungle3 | MIS13C | 0 + 4 hunters | win @ 2449 (roadless dogfight) |
+ | race | RACE | 5/lap x3 | win @ 51251 |
  
+ Objectives (`Mission::build_gates`, `tick_objectives`): gates are mission trigger
+ volumes (radius 8+) containing a spine node, in walk order, plus a walk-end destination
+ volume when the data thins out (jungle2). A win requires physically entering every gate
+ in sequence (3D distance under the trigger's own radius) — never walk-index proximity
+ (recoveries/teleports advance the walk without driving) and never a fixed blunder
+ radius (looping routes start within metres of their own later gates). Missed gates
+ behind the walk are driven back to, or respawned onto past 60 m. Roadless jungle3 instead
+ requires killing every non-player hunter ([INFERENCE]: static fodbase guns are outside
+ the vehicle-damage model, so the hunter kill stands in for base destruction).
  Recovery stack that makes this possible: visibility-gated lookahead (`route_ahead`),
  lane snap + slalom dodge, K-turn (reverse-with-lock from 109 deg, yaw-snap onto the
- target after a 3 s wedged reversal), section-boundary hop (walk jumps over 100 m
- teleport across instead of driving into the void), lost/progress/beached teleports,
- cliff/grade corner-speed limits. Roadless assaults (jungle3) dogfight instead: steer at
+ target after a 3 s wedged reversal), district-seam loading cuts (`tick_districts`,
+ [INFERENCE]/unverified — see "District seams" below), forward out-of-world respawn
+ (walk+3 leapfrog past bed holes), lost/progress/beached recoveries, cliff/grade
+ corner-speed limits. Roadless assaults (jungle3) dogfight instead: steer at
  the nearest live hunter while the demo gunner fires, until tick_objectives sees none left.
  `Mission::player_debug()` exposes live autopilot
  telemetry (pos/target/yaw/d0/walk/K-turn flags) for stall diagnosis.
  
- ## Not done
+ Underwater BOT-DOWN ([INFERENCE]/unverified): a pursuer sub rams for ~47/contact and
+ the bot cannot kill it (8 diving homing torpedoes all miss agile subs; secondary
+ auto-selects but never connects) or outrun it, and shield/mine stocks do not save it.
+ Needs torpedo-vs-sub lethality work (Weapons) or human tactics. All other missions win
+ on real position-entered data gates.
  
+ ## District seams ([INFERENCE]/unverified — revisit with a PCSX2 PINE trail recording)
+ 
+ Each mission is a single track `.crp` in its `MISxx.VIV` (plus `.ssh` textures and
+ `data\loading\loading.sfn`, which is an `FNTS` loading-screen font, not a streaming
+ script). All 2552 render instances and 994 collision instances load upfront; nothing
+ streams in or out, and DRIVING.ELF references no district chunks (only `%s.crp` and
+ `%s_S.ssh` patterns). The `rn` road data itself jumps 100 m+ between consecutive nodes
+ at district seams; no deck, render instance, lane piece, or dynamic (`ps` type-2)
+ collision exists in the seams, and the trigger/lane/objective data ends at the same
+ boundaries. `tick_districts` respawns the car across seams (driver-agnostic loading cut);
+ out-of-world recovery respawns forward (walk+3) past bed holes. Every driven metre is
+ on real parsed collision.
+ Paris seam coordinates (walk node positions, metres): seam 1 walk 192 (-152,0,278) ->
+ walk 193 (-229,0,112), ~183 m void; seam 2 (viaduct) walk 251 (-618,7,-532) ->
+ walk 252 (-748,7,-530), ~130 m void (deck ends x=-628/-630, landing resumes x=-745/-750,
+ full void column x -640..-740 at z=-532, nothing below either); channel bed hole near
+ walk 408 (205,-4.6,751) -> walk 409 (271,-7.6,715) with a ~25 m bed gap in between.
+ Evidence: 4 m fine-grid ground scans, `in`/`ci`/`cn`/render/lane/trigger inventories,
+ zero type-2 `ps` records, sub_1B1988 no-op for Paris, gap/deck cells absent from `cn`,
+ EeInterp EE-execution agreement; no PCSX2 ground-truth recording yet (sniper opener
+ unsolved, PCSX2 thermally down). If a recording later shows continuous deck, find and
+ load the missing piece and remove `tick_districts`; if it shows fall/respawn/cutscene,
+ keep the cuts.
+ 
+ ## Fog and lighting (`data\tuning\Render\`)
+
+ Per-track render tuning, applied by `DrivingLevel` to the `SceneRenderer`
+ (`set_fog`/`set_ambient`; the viewport clears to the fog colour):
+
+ | file | keys | used as |
+ |---|---|---|
+ | `Fog/<track>.tun` | `fogSTART`, `fogEND` (metres), `fogmode`, `fogDensity`, `FogColour` | linear fog `fogSTART`..`fogEND`; `fogmode`/`fogDensity` currently ignored (all files say mode 3) |
+ | `Lighting/<track>.tun` | `AmbientSky{World}` (0..1 RGB) | global diffuse tint multiplying texture × vertex colour |
+
+ `FogColour` holds four byte values `A,R,G,B` (e.g. Paris `255,22,15,20` = near-black
+ night haze; underwater `128,32,66,130` = steel blue). The snow tracks pack the red
+ channel (`-13488856` = `0xFF322D28`, `-6909784` = `0xFF9690A8`), so every channel is
+ masked to its low byte [INFERENCE]. Sky-dome/celestial batches (`sky*`, `moon` shapes)
+ are drawn unfogged [INFERENCE: `RSky_Draw` exists but its pseudocode is only flag
+ clearing; the domes are ordinary instances]. Values: Paris end 1450 m, Alps 251 m,
+ Alps2/Race 551 m, underwater 251 m, jungle1 400 m, jungle2 2000 m, jungle3 1200 m
+ (all start 1 m). `CarRender/default.tun` (`Skyblend`, `Skybright`: vehicle
+ environment mapping) is not implemented yet.
+
+ ## Not done
+
  Sky rendering, particles and explosion shake of the camera.

@@ -23,7 +23,7 @@ bool can_throw_grenade(Drone& d, const CombatStubs& st = {}) {
     // opponent at 8..20 m, CanDoAnimState(0x49). Draw order is load-bearing (diff-combat rand column).
     const SpExt& e = sx(d);
     if (e.clip == 0 || e.clip_max == 0) return false;
-    const std::uint32_t coin = st.rand_draw ? st.rand_draw(2) : d.sys->rand() % 2;
+    const std::uint32_t coin = st.rand_draw ? st.rand_draw(2) : d.sys->rand_int(2);
     if (coin != 0) return false;
     if (!d.opponent.valid() || d.opp_dist < 8.0f || d.opp_dist > 20.0f) return false;
     return st.anim_ok ? st.anim_ok(kGrenade) : anim_can_do(d, kGrenade);
@@ -75,7 +75,7 @@ int first_sight_state(Drone& d) {
     }
     talk(d, Speech::Other);   // NDrone2_SeenPlayerTalk
     if (d.has_beh(beh::kChallengeNear)) {
-        if (d.sys->rand() % 2 == 0) return 0;
+        if (d.sys->rand_int(2) == 0) return 0;
         return choose_combat_move(d);
     }
     if (d.has_beh(beh::kAimStandPreferred)) return 0;

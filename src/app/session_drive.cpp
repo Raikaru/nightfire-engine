@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 #include "driving/drive_session.hpp"
 #include "driving/driving_level.hpp"
@@ -65,6 +66,22 @@ Mat4 drive_perspective(float fovy, float aspect, float znear, float zfar) {
             2.0f * zfar * znear / (znear - zfar), 0};
 }
 
+// Small untextured octahedron for projectiles/pickups (same stand-in as nfdrive).
+driving_app::SceneMesh drive_marker(float r, std::uint32_t color) {
+    driving_app::SceneMesh m;
+    driving_app::MeshBatch b;
+    const float v[6][3] = {{r, 0, 0}, {-r, 0, 0}, {0, r, 0}, {0, -r, 0}, {0, 0, r}, {0, 0, -r}};
+    for (auto& p : v) b.vertices.push_back({{p[0], p[1], p[2]}, {0, 0}, color});
+    const int t[8][3] = {{0, 2, 4}, {2, 1, 4}, {1, 3, 4}, {3, 0, 4}, {2, 0, 5}, {1, 2, 5}, {3, 1, 5}, {0, 3, 5}};
+    for (auto& tri : t) {
+        b.indices.push_back(tri[0]);
+        b.indices.push_back(tri[1]);
+        b.indices.push_back(tri[2]);
+    }
+    m.batches.push_back(std::move(b));
+    return m;
+}
+
 // Frontend/drive-menu pad (nfui mapping) from the keyboard plus a gamepad.
 PadState drive_menu_pad(SDL_Gamepad* gamepad) {
     PadState s;
@@ -114,6 +131,13 @@ struct DriveSessionApp::Impl {
     driving_app::SceneRenderer::Handle track_handle{};
     driving_app::SceneRenderer::Handle body_handle{};
     driving_app::SceneRenderer::Handle wheel_handles[4]{};
+    struct AiHandles {
+        driving_app::SceneRenderer::Handle body{};
+        driving_app::SceneRenderer::Handle wheels[4]{};
+    };
+    std::vector<AiHandles> ai_handles;
+    driving_app::SceneRenderer::Handle shot_handle{};
+    driving_app::SceneRenderer::Handle pickup_handle{};
     SDL_Gamepad* gamepad = nullptr;
 
     bool build() {
@@ -125,10 +149,23 @@ struct DriveSessionApp::Impl {
         level = std::make_unique<driving_app::DrivingLevel>(ctx.gamedir, *desc);
         mission = std::make_unique<driving_app::Mission>(*level, car_name);
         renderer = std::make_unique<driving_app::SceneRenderer>(level->shapes());
+        renderer->set_fog(level->fog_colour(), level->fog_start(), level->fog_end());
+        renderer->set_ambient(level->ambient());
         track_handle = renderer->upload(level->track());
         const driving_app::DriveSession& s = mission->session();
         body_handle = renderer->upload(s.body_mesh(), {&s.car_shapes()});
         for (int w = 0; w < 4; ++w) wheel_handles[w] = renderer->upload(s.wheel_meshes()[w], {&s.car_shapes()});
+        for (const driving_app::AiCar& a : mission->ai()) {
+            AiHandles h;
+            if (a.model >= 0) {
+                const driving_app::CarModel& m = mission->models()[std::size_t(a.model)];
+                h.body = renderer->upload(m.body, {&m.shapes});
+                for (int w = 0; w < 4; ++w) h.wheels[w] = renderer->upload(m.wheels[w], {&m.shapes});
+            }
+            ai_handles.push_back(h);
+        }
+        shot_handle = renderer->upload(drive_marker(0.5f, 0xFF33CCFF));
+        pickup_handle = renderer->upload(drive_marker(1.2f, 0xFF33FF66));
         std::printf("%.*s: mission ready (car %s)\n", int(desc->name.size()), desc->name.data(),
                     mission->session().car().c_str());
         return true;
@@ -137,15 +174,45 @@ struct DriveSessionApp::Impl {
     void draw_frame() {
         int w, h;
         window.begin_frame(w, h);
-        glClearColor(0.6f, 0.65f, 0.7f, 1);
+        // Game viewport (4:3 pillarbox unless widescreen); the drive camera uses the
+        // game aspect and the text HUD below draws on the self-pillarboxing ui canvas.
+        const GameView gv = game_view(config, w, h);
+        const int gl_y = h - gv.y - gv.h;
+        glDisable(GL_SCISSOR_TEST);
+        glViewport(0, 0, w, h);
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_SCISSOR_TEST);
+        glViewport(gv.x, gl_y, gv.w, gv.h);
+        glScissor(gv.x, gl_y, gv.w, gv.h);
+        glClearColor(level->fog_colour()[0], level->fog_colour()[1], level->fog_colour()[2], 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         const driving_app::CameraPose& c = mission->session().camera_pose();
-        const Mat4 vp =
-            mul(drive_perspective(c.fovy, float(w) / float(std::max(h, 1)), c.znear, c.zfar),
-                drive_look_at(c.eye, c.target, c.up));
+        const Mat4 vp = mul(drive_perspective(c.fovy, gv.aspect, c.znear, c.zfar), drive_look_at(c.eye, c.target, c.up));
         renderer->draw(track_handle, vp);
         renderer->draw(body_handle, mul(vp, mission->session().body_matrix()));
         for (int i = 0; i < 4; ++i) renderer->draw(wheel_handles[i], mul(vp, mission->session().wheel_matrix(i)));
+        for (std::size_t i = 0; i < mission->ai().size() && i < ai_handles.size(); ++i) {
+            const driving_app::AiCar& a = mission->ai()[i];
+            if (a.model < 0) continue;
+            if (a.driver && a.driver->role() == driving_app::AiRole::Heli) {
+                renderer->draw(ai_handles[i].body, mul(vp, mission->heli_matrix(*a.driver)));
+                continue;
+            }
+            renderer->draw(ai_handles[i].body, mul(vp, mission->ai_body_matrix(i)));
+            if (mission->models()[std::size_t(a.model)].has_wheels)
+                for (int k = 0; k < 4; ++k)
+                    renderer->draw(ai_handles[i].wheels[k], mul(vp, mission->ai_wheel_matrix(i, k)));
+        }
+        for (const driving_app::Projectile& p : mission->projectiles()) {
+            const Mat4 m = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, p.pos[0], p.pos[1], p.pos[2], 1};
+            renderer->draw(shot_handle, mul(vp, m));
+        }
+        for (const driving_app::Pickup& p : mission->pickups()) {
+            if (p.respawn > 0) continue;
+            const Mat4 m = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, p.pos[0], p.pos[1], p.pos[2], 1};
+            renderer->draw(pickup_handle, mul(vp, m));
+        }
         // Text HUD: speed, objective, timer, banner.
         const driving_app::DrivingHud& hud = mission->hud();
         ui.begin(w, h, false);

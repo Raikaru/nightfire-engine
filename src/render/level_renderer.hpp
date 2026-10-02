@@ -17,7 +17,7 @@ namespace nf {
 struct Camera {
     Vec3 eye{0, 0, 0};
     float yaw = 0, pitch = 0;  // radians; yaw 0 looks down -Z, positive pitch looks up
-    float fovy = 1.1f;
+    float fovy = 1.0471976f;   // Camera_CalcViewAngles(viewer, 1.0471976): 60 degrees vertical
 
     Vec3 forward() const;
     Vec3 right() const;

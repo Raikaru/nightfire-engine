@@ -36,6 +36,7 @@
 #include "game/mission.hpp"
 #include "audio/audio.hpp"
 #include "game/actions.hpp"
+#include "game/arena_view.hpp"   // kViewFovY (Camera_CalcViewAngles 1.0471976)
 #include "game/drone_cli.hpp"
 #include "game/drone_render.hpp"
 #include "game/nfgame_effects.hpp"
@@ -404,11 +405,13 @@ int run(int argc, char** argv) {
     // Weapons: weapon_data / ammo_data from the ELF's static initializer, skins and anim scripts from the level's
     // animation bank; damage to players goes through Player::hurt (params.health.damage).
     std::unique_ptr<CharacterBank> weapon_bank = open_character_bank(gf, bin_name);
-    auto weapon_system = std::make_unique<WeaponSystem>(WeaponTable::from_elf(action_elf), params.health.damage, std::uint32_t(weapon_seed));
+    auto weapon_system = std::make_unique<WeaponSystem>(WeaponTable::from_elf(action_elf), params.health.damage);
+    weapon_system->seed_match(std::uint32_t(weapon_seed));   // --seed drives the global Rand stream
     WeaponSystem& weapons = *weapon_system;
     weapons.set_bank(weapon_bank.get());
     world.add_system(std::move(weapon_system));
     if (drone_cli.enabled()) drone_cli.setup(world, level, *weapon_bank, action_elf, gf, weapons, bin_name);
+    weapons.set_drone_system(drone_cli.system());   // null without --sp (idle-fidget threat gate)
     // Single-player mission flow (objectives, doors, triggers, cutscenes): skipped for arenas
     // and with --no-mission (bare movement for oracle traces). The World owns the system;
     // mission_ptr stays valid for the session.
@@ -542,7 +545,7 @@ int run(int argc, char** argv) {
         window.begin_frame(width, height);
         const float aspect = float(width) / float(std::max(height, 1));
         Camera wc = cam;
-        if (weapons.zoom(0) > 1.0f) wc.fovy = 1.1f / weapons.zoom(0);  // Player_Zoom (script fov wins)
+        if (weapons.zoom(0) > 1.0f) wc.fovy = kViewFovY / weapons.zoom(0);   // Player_Zoom (script fov wins)
         glClearColor(0.25f, 0.3f, 0.4f, 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         if (mission_ptr) renderer.set_hidden_placements(mission_ptr->hides());

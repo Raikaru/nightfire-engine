@@ -42,9 +42,10 @@ namespace {
 Mat4 look_at(const Vec3& eye, const Vec3& target, const Vec3& up) {
     Vec3 f = target - eye;
     f = f * (1.0f / length(f));
-    Vec3 r = cross(up, f);
-    r = r * (1.0f / length(r));
-    const Vec3 u = cross(f, r);
+    Vec3 r = cross(f, up);
+    const float rl = length(r);
+    r = rl > 1e-6f ? r * (1.0f / rl) : Vec3{1, 0, 0};
+    const Vec3 u = cross(r, f);
     return {r[0], u[0], -f[0], 0, r[1], u[1], -f[1], 0, r[2], u[2], -f[2], 0, -dot(r, eye), -dot(u, eye), dot(f, eye), 1};
 }
 
@@ -333,10 +334,11 @@ int run(int argc, char** argv) {
 
     DrivingLevel level(o.gamedir, *desc);
     const SceneMesh& track = level.track();
-
     const bool headless = !o.shot.empty();
     Window window("nfdrive - " + std::string(desc->name), 1024, 768, headless);
     SceneRenderer renderer(level.shapes());
+    renderer.set_fog(level.fog_colour(), level.fog_start(), level.fog_end());
+    renderer.set_ambient(level.ambient());
     const auto track_handle = renderer.upload(track);
     // One mission run (rebuilt on R): mission sim + its GPU model handles.
     struct AiHandles { SceneRenderer::Handle body, wheels[4]; };
@@ -436,7 +438,7 @@ int run(int argc, char** argv) {
     auto frame = [&](int w, int h) {
         DriveSession& session = run.mission.session();
         Mission& mission = run.mission;
-        glClearColor(0.35f, 0.42f, 0.55f, 1);
+        glClearColor(level.fog_colour()[0], level.fog_colour()[1], level.fog_colour()[2], 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         Mat4 vp;
         if (!o.free_camera) {

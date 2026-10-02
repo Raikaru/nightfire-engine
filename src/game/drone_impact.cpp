@@ -105,14 +105,14 @@ void location_death_anim(Drone& d, int end_state) {
     }
     d.head_shot = false;
     const int variants = 4;
-    anim_call(d, 0, kDeath, int(d.sys->rand() % variants), end_state, 0);
+    anim_call(d, 0, kDeath, int(d.sys->rand_int(variants)), end_state, 0);
 }
 
 void location_impact_anim(Drone& d) {
     // DroneAnim_LocationImpactAnim 0x13c8b0: flinch clip by the bone that was hit.
     int variant;
     if (!d.has_last_hit) {
-        variant = 5 + int(d.sys->rand() % 8);
+        variant = 5 + int(d.sys->rand_int(8));
     } else {
         switch (d.last_hit.part) {
             case 4: case 5: variant = 5; break;
@@ -120,7 +120,7 @@ void location_impact_anim(Drone& d) {
             case 0x1e: case 0x1f: case 0x20: case 0x23: variant = 9; break;
             case 0x31: case 0x32: case 0x33: variant = 0xd; break;
             case 0x35: case 0x36: case 0x37: variant = 0xc; break;
-            default: variant = 6 + int(d.sys->rand() % 2); break;
+            default: variant = 6 + int(d.sys->rand_int(2)); break;
         }
     }
     anim_call(d, 0, kImpact, variant, d.smi.saved, 0);

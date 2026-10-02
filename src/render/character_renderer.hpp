@@ -34,8 +34,15 @@ public:
     // `sleeve` selects the arm mesh of weapon skins (AnimSleeveGetEntity index). Rigid parts follow their bone.
     // `facial` = the object's morph weights (CharacterInstance::facial()); the strongest eight displace the
     // morphed vertices of skinned meshes before skinning, as SkinIt does.
+    // Datum overrides (Player_WeaponFiring rewrites datum 0 per frame; WeaponView feeds vm.datum0_*):
+    // `hidden_part` skips the rigid part with that model hash (0 = none; the parked suppressor placeholder
+    // the original never loads for Semi variants — our bank loads everything, so the skip replicates the
+    // original's part-loop null-skip). `attached_hash` draws that model at `attached_matrix` instead
+    // (0 = none; e.g. the silenced muzzle suppressor at datum 0 from CharacterInstance::datum_world(0),
+    // object space like the palette). Never both for the same model: the caller sets exactly one path.
     void draw(const Camera& cam, float aspect, const SkinDef& skin, const Palette& palette, const Mat4& model,
-              unsigned sleeve = 0, const std::vector<float>& facial = {}, const CharacterLighting& lighting = {});
+              unsigned sleeve = 0, const std::vector<float>& facial = {}, const CharacterLighting& lighting = {},
+              std::uint32_t hidden_part = 0, std::uint32_t attached_hash = 0, const Mat4& attached_matrix = Mat4{});
 
     // Union of the bind-pose bounding boxes of the skin's meshes (skinned meshes and rigid parts).
     void bounds(const SkinDef& skin, unsigned sleeve, Vec3& lo, Vec3& hi);

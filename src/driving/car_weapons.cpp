@@ -148,7 +148,7 @@ bool WeaponSet::fire_secondary(float now, const Vec3& muzzle, const Vec3& forwar
                 sfx.push_back({"SFX_RocketTrans", muzzle, 1.0f});
                 break;
             case SecondaryKind::Torpedoes:
-                p.vel = {dir[0] * kTorpedoSpeed, 0, dir[2] * kTorpedoSpeed};
+                p.vel = dir * kTorpedoSpeed;   // run at firer depth/pitch (subs dive; y=0 sailed over them)
                 p.damage = kTorpedoDamage;
                 p.blast = kTorpedoBlast;
                 p.life = 10.0f;

@@ -315,6 +315,9 @@ WeaponDef decode(const std::vector<std::uint8_t>& b, std::size_t o) {
     d.anim_aim_alt = get<std::uint32_t>(b, at(188));
     d.anim_draw = get<std::uint32_t>(b, at(192));
     d.anim_holster = get<std::uint32_t>(b, at(196));
+    d.unk200 = get<std::uint32_t>(b, at(200));
+    d.anim_deepidle = get<std::uint32_t>(b, at(204));
+    d.anim_settle = get<std::uint32_t>(b, at(208));
     d.anim_misc = get<std::uint32_t>(b, at(212));
     d.anim_holster_alt = get<std::uint32_t>(b, at(216));
     d.model_gfx = get<std::uint32_t>(b, at(220));

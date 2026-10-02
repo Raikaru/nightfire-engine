@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "assets/character.hpp"
+#include "core/rng.hpp"
 #include "game/damage.hpp"
 #include "game/drone.hpp"
 #include "game/world.hpp"
@@ -128,7 +129,16 @@ public:
     // Position/aliveness of a target (players read World::player).
     std::optional<Vec3> target_pos(const TargetRef& t) const;
     bool target_alive(const TargetRef& t) const;
-
+    // Visible threats for the weapon idle/fidget gate (ELF 0x298E14 walk): any drone with health(d+172) > 0,
+    // not waiting for its switch channel (state 1 = kStWaitSwitch), and alertness(d+1292) > 0.5. Note the
+    // third term is `alertness` (+0x50c = 1292), not `visibility` (+0x230): the walk reads the 0..1
+    // alert level, i.e. threats aware of the player. Read-only per frame, no tick-order dependency.
+    bool any_visible_threat() const {
+        for (const auto& o : drones_) {
+            if (o->health > 0 && o->smi.cur != 1 && o->alertness > 0.5f) return true;
+        }
+        return false;
+    }
     // ---- services ---------------------------------------------------------------------------------------
     World& world() { return world_; }
     const CollisionWorld& collision() const { return world_.collision(); }
@@ -159,9 +169,8 @@ public:
     std::uint32_t sight_cursor() const { return sight_cursor_; }
     void set_sight_cursor(std::uint32_t c) { sight_cursor_ = c; }
     FrameTiming timing() const { return timing_; }
-    std::uint32_t rand();                               // Rand_Rand
+    std::uint32_t rand_int(std::uint32_t n);          // Rand_Rand(n) in [0, n)
     float frand(float range);                           // Rand_FRand
-    void seed(std::uint32_t s) { rng_ = s; }
 
     // World-level noise (Sound_Alertness): weapons/footsteps call this; drones within 50 m that hear (behaviour
     // 0x1f) get a kMsgSoundAlert with loudness-scaled alertness. `loudness` is the original 0..100 value.
@@ -205,7 +214,6 @@ private:
     std::uint32_t sight_cursor_ = 0;
     AlertRecord alert_record_;
     int next_id_ = 1;
-    std::uint32_t rng_ = 12345;
     int delivery_depth_ = 0;
 };
 

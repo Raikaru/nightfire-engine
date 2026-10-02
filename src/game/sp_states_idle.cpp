@@ -56,7 +56,7 @@ int state_idle(Drone& d, const Msg& m) {
     case kMsgTimeout:
         if (d.has_beh(beh::kIdleFidget)) {
             if (d.alertness >= 0.66f) anim_call(d, 0, kStandAlertLook);
-            else anim_call(d, 0, kIdleAnim, int(d.sys->rand() % 3));
+            else anim_call(d, 0, kIdleAnim, int(d.sys->rand_int(3)));
             set_idle_timeout(d, 0x2d, 5);
         }
         return 1;
@@ -158,7 +158,7 @@ int state_patrol(Drone& d, const Msg& m) {
             if (d.has_beh(beh::kPatrolAlert) && d.alertness >= 0.66f) {
                 anim_call(d, 0, kWalkAlert);
             } else {
-                anim_call(d, 0, kIdleAnim, int(d.sys->rand() % 3), kStPatrol);
+                anim_call(d, 0, kIdleAnim, int(d.sys->rand_int(3)), kStPatrol);
             }
         }
         return 1;

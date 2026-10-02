@@ -20,6 +20,7 @@
 #include "assets/strings.hpp"
 #include "audio/audio.hpp"
 #include "audio/music_director.hpp"
+#include "game/arena_view.hpp"   // kViewFovY (Camera_CalcViewAngles 1.0471976)
 #include "game/drone_render.hpp"
 #include "game/drone_system.hpp"
 #include "game/local_pad.hpp"
@@ -36,6 +37,7 @@
 #include "render/character_renderer.hpp"
 #include "render/gl.hpp"
 #include "render/level_renderer.hpp"
+#include "render/weather_renderer.hpp"
 
 namespace nf::app {
 
@@ -103,6 +105,7 @@ struct SpSession::Impl {
     std::unique_ptr<WeaponEffects> effects;
     std::unique_ptr<Hud> hud;
     std::unique_ptr<LevelRenderer> renderer;
+    std::unique_ptr<WeatherRenderer> weather;
     std::unique_ptr<CharacterRenderer> chars;
     std::unique_ptr<WeaponView> weapon_view;
     std::unique_ptr<drone::DroneRenderer> drone_renderer;
@@ -121,6 +124,7 @@ struct SpSession::Impl {
     PlrStats plr_;              // mission counters feeding the results score
     PlrScoreTables score_tables_;
     bool score_tables_ok_ = false;
+    bool give_given = false, give_done = false;  // --give ID debug equip progress
     int prev_muzzle_ = 0;              // muzzle_frames edge = one trigger pull
     std::uint64_t prev_deaths_ = 0;    // SpSystem::stats.deaths edge = kills
     std::uint64_t prev_mframes_ = 0;   // mission frames edge = elapsed time
@@ -158,7 +162,7 @@ struct SpSession::Impl {
 
         bank = open_character_bank(ctx.files, launch.bin);
         auto weapons_owned =
-            std::make_unique<WeaponSystem>(WeaponTable::from_elf(ctx.action_elf), params.health.damage, 1u);
+            std::make_unique<WeaponSystem>(WeaponTable::from_elf(ctx.action_elf), params.health.damage);
         weapons_owned->set_bank(bank.get());
         weapons = weapons_owned.get();
         world->add_system(std::move(weapons_owned));
@@ -174,6 +178,7 @@ struct SpSession::Impl {
         drones = sys.get();
         drones->set_nav(nav->empty() ? nullptr : nav.get());
         drones->set_weapons(weapons);
+        weapons->set_drone_system(drones);   // idle-fidget threat gate (any_visible_threat)
         drones->callbacks().player_alive = [this](int slot) { return weapons->alive(slot); };
         sp::SpConfig spcfg;
         spcfg.level_id = level_id;
@@ -205,6 +210,8 @@ struct SpSession::Impl {
                 mission_sys->set_channel(std::uint16_t(ch), std::uint8_t(val));
                 std::printf("mission: debug preset channel %d = %d\n", ch, val);
             }
+            if (launch.give >= 0)  // --give ID: applied in tick_world once the slot state exists
+                std::printf("mission: debug give weapon %d (armed, applies when idle)\n", launch.give);
             break;
         }
 
@@ -219,6 +226,8 @@ struct SpSession::Impl {
 
         renderer = std::make_unique<LevelRenderer>(*level);
         renderer->set_level(level_id);
+        weather = std::make_unique<WeatherRenderer>(*level);
+        weather->set_level(level_id);
         chars = std::make_unique<CharacterRenderer>(*bank);
         weapon_view = std::make_unique<WeaponView>(*bank, *chars);
         drone_renderer = std::make_unique<drone::DroneRenderer>(*bank);
@@ -278,6 +287,21 @@ struct SpSession::Impl {
         audio->update();
     }
 
+    // --give ID debug equip: slot state is spawned lazily on the first tick and select
+    // only adopts from Idle, so give once the state exists, then select once idle.
+    void maybe_give() {
+        if (launch.give < 0 || give_done) return;
+        if (weapons->state(0) == nullptr) return;
+        if (!give_given) {
+            if (!weapons->give_weapon(0, launch.give, 999)) return;
+            give_given = true;
+        }
+        if (weapons->anim_state(0) != WeaponAnim::Idle) return;
+        weapons->select_weapon(0, launch.give);
+        give_done = true;
+        std::printf("mission: debug give weapon %d equipped\n", launch.give);
+    }
+
     void tick_world(const PadState& pad) {
         PadInputs pads{};
         pads[0] = pad;
@@ -287,11 +311,15 @@ struct SpSession::Impl {
         prev_use_ = pad.held(kPadCross);
         if (mission_sys) mission_sys->pre_tick(*world, {use, false, false, false});
         world->tick(pads);
+        if (weather)
+            weather->update(world->player(0)->eye(),
+                            [this](int ch) { return spsys->channels.on(ch); });
         feed_stats();
         poll_mission();
         effects->consume(weapons->events());
         effects->tick(FrameTiming{}.mul());
         weapons->events().clear();
+        maybe_give();
         // End of mission: the state machine settles on Done (success shows results, failure the
         // end-mission page); without a mission entry the legacy death/fail signals end it.
         if (mission_sys) {
@@ -350,9 +378,13 @@ struct SpSession::Impl {
     void draw_frame(const Camera& cam) {
         int width = 0, height = 0;
         window.begin_frame(width, height);
-        const float aspect = camera_aspect(width, height);
+        // Game viewport: 4:3 pillarbox (black bars) unless widescreen. All 3D below
+        // uses the game aspect; the HUD canvas pillarboxes itself in ui.begin.
+        const GameView gv = game_view(config, width, height);
+        const int gl_y = height - gv.y - gv.h;
+        const float aspect = gv.aspect;
         Camera wc = cam;
-        wc.fovy = 1.1f / std::max(1.0f, weapons->zoom(0));
+        wc.fovy = kViewFovY / std::max(1.0f, weapons->zoom(0));
         // Cutscene camera override (NIS): eye + forward + degree FOV [INFERENCE: degrees].
         if (mission_sys) {
             if (const auto sc = mission_sys->script_camera()) {
@@ -363,11 +395,19 @@ struct SpSession::Impl {
                 wc.fovy = sc->fov * 3.14159265f / 180.0f;
             }
         }
+        glDisable(GL_SCISSOR_TEST);
+        glViewport(0, 0, width, height);
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_SCISSOR_TEST);
+        glViewport(gv.x, gl_y, gv.w, gv.h);
+        glScissor(gv.x, gl_y, gv.w, gv.h);
         glClearColor(0.25f, 0.3f, 0.4f, 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         renderer->draw(wc, aspect, false);
+        if (weather && weather->active())
+            weather->draw(wc, renderer->view_projection(wc, aspect));
         drone_renderer->draw(wc, aspect, *drones);
-        effects->draw(wc, aspect, *chars, weapons->projectiles());
         glClear(GL_DEPTH_BUFFER_BIT);
         const ViewModel vm = weapons->viewmodel(0);
         if (vm.visible && vm.skin && vm.anim) {
@@ -686,7 +726,11 @@ SpResult SpSession::run_headless(const SpHeadless& headless) {
     if (has_start) s.world->player(0)->place_at_rest(start_pos, start_yaw, start_pitch, 1.0f);
     long ran = 0;
     for (long i = 0; i < headless.frames; ++i) {
-        const PadState pad = i < long(script.size()) ? script[std::size_t(i)].pad : PadState{};
+        // Headless neutral: raw 0x80 sticks read as +1/128 strafe/turn (axis()), so a still
+        // mission would drift. Live pads pass compensate_sticks (0x80 -> 0x7F -> exact 0);
+        // script pads from --inputs already contain compensated bytes (see actions.hpp).
+        const PadState pad =
+            i < long(script.size()) ? script[std::size_t(i)].pad : compensate_sticks(PadState{});
         s.tick_world(pad);
         ran = i + 1;
         if (s.mission_sys && s.mission_sys->state() == MissionSystem::State::Done) break;

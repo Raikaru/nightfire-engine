@@ -86,7 +86,7 @@ public:
     const std::vector<Pickup>& pickups() const { return pickups_; }
     std::vector<SoundEvent> drain_sfx();
     // Checkpoints remaining (for progress display/probing).
-    std::size_t checkpoints_left() const { return checkpoints_.size(); }
+    std::size_t checkpoints_left() const { return gates_.size(); }
     // Position of the next checkpoint gate (player position when none remain).
     Vec3 next_checkpoint() const;
     // Route progress 0..1 along the spine (for HUD progress + probing).
@@ -111,6 +111,8 @@ public:
 
 private:
     void update_walk();  // monotonic route progress for autopilot/checkpoints/AI
+    void build_gates();  // checkpoint trigger volumes along the spine, in route order
+    void tick_recoveries();  // lost/progress/gate respawns (all drivers)
     void tick_districts();  // district-seam loading cuts (driver-agnostic respawn)
     void spawn_ai();
     void spawn_traffic();
@@ -147,7 +149,8 @@ private:
     DrivingHud hud_;
 
     // Checkpoint race state.
-    std::vector<int> checkpoints_;  // road node per checkpoint (last = finish)
+    struct Gate { Vec3 pos{}; float radius = 0; int walk = -1; };  // mission trigger in route order
+    std::vector<Gate> gates_;  // all must be entered in order (last = finish)
     std::vector<int> spine_;        // full road chain from the start node (race order)
     int spine_index(int node) const;
     int player_node_ = -1, player_lap_ = 0;
@@ -177,6 +180,8 @@ private:
     std::uint8_t kturn_lock_ = 0;  // latched K-turn lock side
     Vec3 last_target_{};           // autopilot steering target (telemetry)
     float kturn_clock_ = 0;        // sustained-reversal timer (yaw-snap tripwire)
+    float gate_cool_ = 0;          // missed-gate respawn throttle (independent of recover)
+    float d0pers_clock_ = 0;       // slow large-error persistence (angle-snap tripwire)
     float beach_clock_ = 0;        // wheels-dangling timer (fast beached recovery)
     bool nudge_side_ = false;     // alternating lateral nudge side on recovery teleports
     PadState auto_gun();      // synthetic fire inputs for the demo driver (R1 gunner + L1 gadgets)

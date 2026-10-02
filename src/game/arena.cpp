@@ -47,13 +47,13 @@ int ArenaSettings::bot_count() const {
 }
 
 ArenaSystem::ArenaSystem(World& world, ArenaSettings settings, const WeaponSets& sets, PickupWeaponFn weapon,
-                         const StringTable* strings, std::uint32_t seed)
-    : world_(world), settings_(std::move(settings)), sets_(sets), weapon_info_(std::move(weapon)), strings_(strings), rng_(seed) {
+                         const StringTable* strings)
+    : world_(world), settings_(std::move(settings)), sets_(sets), weapon_info_(std::move(weapon)), strings_(strings) {
     if (settings_.mode == mp_mode::kQuickGame) settings_.mode = mp_mode::kArena;   // the front end resolves it; be safe
     // MP_Init: the round timer of Demolition / Protection is 60 s when the match is untimed.
     if ((settings_.mode == mp_mode::kDemolition || settings_.mode == mp_mode::kProtection) && settings_.time_limit < 0)
         settings_.time_limit = 60.0f;
-    if (settings_.weapon_set == WeaponSets::kRandomRow) PickupField::make_random_weapon_set(sets_, rng_);   // Pickup_MakeRandomWeaponSet
+    if (settings_.weapon_set == WeaponSets::kRandomRow) PickupField::make_random_weapon_set(sets_);   // Pickup_MakeRandomWeaponSet
 
     data_ = read_arena_level(world_.level());
     // MP_RegisterSpawnPoint: the point is the floor under the marker, raised by 1.6.
@@ -153,7 +153,7 @@ ArenaSpawn ArenaSystem::spawn_point(int team, int slot) {
         case SpawnSelection::Near: pick = nearest; break;
         case SpawnSelection::Far: pick = farthest; break;
         case SpawnSelection::Random:
-            if (!candidates.empty()) pick = candidates[rng_() % candidates.size()];
+            if (!candidates.empty()) pick = candidates[game_rng().rand_int(std::uint32_t(candidates.size()))];
             break;
     }
     if (!pick) pick = first;   // no candidate: the first slot of the range

@@ -38,5 +38,6 @@ std::unique_ptr<Scene> make_movie_scene(SceneArgs& args);
 // Headless text modes (no window, dispatched by nfui.cpp before the window is created); return the exit code.
 int run_mp_text(SceneArgs& args);
 int run_movie_stats(const std::string& gamedir, const std::vector<std::string>& extra);
+int run_import_save(SceneArgs& args);
 
 }  // namespace nf

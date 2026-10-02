@@ -223,9 +223,9 @@ int evasive_move(Drone& d) {
     if (gate(d, beh::kStep, 0x5a)) choices[n++] = 4;
     if (n == 0) return 0;
     DroneSystem& sys = *d.sys;
-    auto coin = [&] { return sys.rand() % 2 == 0; };
+    auto coin = [&] { return sys.rand_int(2) == 0; };
     int state = 0;
-    switch (choices[sys.rand() % unsigned(n)]) {
+    switch (choices[sys.rand_int(unsigned(n))]) {
         case 1:   // roll
             if (d.has_beh(beh::kRoll)) {
                 if (coin()) {
@@ -280,7 +280,7 @@ int choose_combat_move(Drone& d, const CombatStubs& st) {
     const bool stationary = (d.flags & flag::kStationary) != 0;
     auto rand_draw = [&](std::uint32_t n) -> std::uint32_t {
         if (st.rand_draw) return st.rand_draw(n);
-        return n == 0 ? 0 : d.sys->rand() % n;
+        return n == 0 ? 0 : d.sys->rand_int(n);
     };
     auto anim_ok = [&](int dasc) { return st.anim_ok ? st.anim_ok(dasc) : anim_can_do(d, dasc); };
     if (stationary || d.has_beh(beh::kNeverMovesInCombat)) return 0;

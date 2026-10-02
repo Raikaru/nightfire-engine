@@ -1,3 +1,5 @@
+#include "game/actions.hpp"
+#include "game/drone_system.hpp"
 #include "game/weapons.hpp"
 
 #include <algorithm>
@@ -20,6 +22,8 @@ constexpr int kActZoom = 6;         // D-pad up (-1) / down (+1)
 
 constexpr int kNoWeapon = 71;       // Player_WeaponNone
 constexpr int kFists = 1;
+constexpr int kFidgetDeep = 600;      // +2362 frames for the +204 path (20 s at 30 Hz logic)
+constexpr int kFidgetHold = 600;      // +2366 = 20 s at 30 Hz once a +212 starts
 
 bool is_gadget(int id) { return id >= 74 && id < 95; }
 
@@ -37,12 +41,14 @@ Vec3 view_forward(float yaw, float pitch) {
 
 }  // namespace
 
-WeaponSystem::WeaponSystem(WeaponTable table, DamageTuning tuning, std::uint32_t seed)
-    : table_(std::move(table)), tuning_(tuning), rng_(seed) {}
+WeaponSystem::WeaponSystem(WeaponTable table, DamageTuning tuning)
+    : table_(std::move(table)), tuning_(tuning) {
+    // Draws go to the process-global stream (core/rng.hpp); frontends seed once per match.
+}
 
 WeaponSystem::~WeaponSystem() = default;
 
-float WeaponSystem::frand() { return std::uniform_real_distribution<float>(0.0f, 1.0f)(rng_); }
+float WeaponSystem::frand() { return game_rng().frand(1.0f); }
 
 void WeaponSystem::sound(int id, const Vec3& pos, bool positional, int listener, int exclude) {
     events_.sounds.push_back({id, pos, positional, listener, exclude});
@@ -349,6 +355,8 @@ void WeaponSystem::weapon_select(PlayerWeapons& p) {   // Player_WeaponSelect
             p.current = p.selected;
             p.anim_state = WeaponAnim::ModeSwitch;
             p.weapon[table_.weapon(p.current).base].upgrade_off = std::int8_t(p.current - table_.weapon(p.current).base);
+            const WeaponDef& now = table_.weapon(p.current);
+            play_script(p, now.anim_draw ? now.anim_draw : now.anim_idle, false);   // must terminate: ModeSwitch ends on stop
             return;
         }
     }
@@ -386,11 +394,39 @@ void WeaponSystem::set_weapon_anim(PlayerWeapons& p) {   // Player_SetWeaponAnim
     p.anim_weapon = p.current;
 }
 
-void WeaponSystem::play_script(PlayerWeapons& p, std::uint32_t script, bool loop) {
+void WeaponSystem::update_datum0(PlayerWeapons& p) {   // Player_WeaponFiring datum-0 entity override (0x1A5460)
+    // F1 & kSwapDatum (0x800): datum 0 shows def.datum0_gfx (+124, suppressor/sight model). Otherwise the
+    // paired variant (cur + alt) is checked: when IT swaps, datum 0 is hidden (entity 0, the flash-quad/LED
+    // convention). Either way the datum0_gfx-hashed skin part (the parked placeholder) is hidden. In anim
+    // state MODE_SWITCH datum 0 is forced hidden even for swapping variants. Unverified gates from the
+    // decompile (anim+220 value, one byte flag on the swapping branch) are not modelled: no anim object means
+    // no override at all here, which covers the empty case.
+    p.datum0_entity = 0;
+    p.datum0_part = 0;
+    if (!p.anim) return;
+    const WeaponDef& cur = table_.weapon(p.current);
+    std::uint32_t gfx = 0;
+    bool show = false;
+    if (cur.has(wf1::kSwapDatum)) {
+        gfx = cur.datum0_gfx;
+        show = true;
+    } else if (cur.alt != 0) {
+        const int pair = p.current + cur.alt;
+        if (pair > 0 && pair < WeaponTable::kWeaponCount && table_.weapon(pair).has(wf1::kSwapDatum)) {
+            const std::uint32_t pg = table_.weapon(pair).datum0_gfx;
+            gfx = pg != 0 ? pg : cur.datum0_gfx;
+        } else return;   // the override does not run: leave every part alone
+    } else return;
+    if (gfx == 0) return;
+    p.datum0_part = gfx;
+    if (show && p.anim_state != WeaponAnim::ModeSwitch) p.datum0_entity = gfx;
+}
+
+void WeaponSystem::play_script(PlayerWeapons& p, std::uint32_t script, bool loop, float speed) {
     p.anim_reverse = false;
     p.anim_script = 0;
     if (!p.anim || script == 0) return;
-    if (!p.anim->play(script, loop)) return;
+    if (!p.anim->play(script, loop, speed)) return;
     p.anim_script = script;
     p.anim_cmd_next = 0;
     p.anim_frame_prev = 0;
@@ -462,7 +498,7 @@ void WeaponSystem::set_firing_anim(PlayerWeapons& p, const WeaponDef& d) {   // 
     bool alt = false;
     const auto& clip = p.weapon[std::size_t(ammo_index(d.id))].clip;
     if ((d.has(wf1::kDryFireAnim) || d.id == 17) && clip <= 0) alt = true;
-    else if (d.has(wf1::kRandomAltFire)) alt = int(frand() * 100.0f) >= 51;
+    else if (d.has(wf1::kRandomAltFire)) alt = game_rng().rand_int(100) >= 51;   // Rand_Rand(100), ~49% alt
     else if (d.has(wf1::kAlternateHands)) {
         alt = p.alt_hand;
         p.alt_hand = !p.alt_hand;
@@ -494,6 +530,7 @@ void WeaponSystem::anim_update(int slot, PlayerWeapons& p, World& world, FrameTi
         if (script) play_script(p, script, true);
         p.anim_state = WeaponAnim::Idle;
     };
+    if (p.anim_state != WeaponAnim::Idle) { p.idle_frames = 0; p.fidget_frames = kFidgetHold; }   // +2362=0, +2366 pinned (decomp state!=0 branch)
     switch (p.anim_state) {
         case WeaponAnim::Lower:
         case WeaponAnim::LowerAlt: {
@@ -524,6 +561,7 @@ void WeaponSystem::anim_update(int slot, PlayerWeapons& p, World& world, FrameTi
                 sound(is_gadget(d.id) ? 641 : 642, {}, false, slot);
             } else {
                 to_idle(idle_script(d));
+                p.idle_phase = 3;   // spec 760: fidget armed (no draw anim to wait for)
             }
             break;
         }
@@ -532,6 +570,7 @@ void WeaponSystem::anim_update(int slot, PlayerWeapons& p, World& world, FrameTi
                 to_idle(idle_script(cur));
                 p.cooldown = 0;
                 reset_zoom_for_weapon(p);
+                p.idle_phase = 3;   // spec 760: fidget armed after draw
             } else if (p.selected != p.current) {
                 p.previous = p.current;
                 p.anim_state = WeaponAnim::LowerWait;   // the draw is abandoned: lower straight away
@@ -589,7 +628,7 @@ void WeaponSystem::anim_update(int slot, PlayerWeapons& p, World& world, FrameTi
                 if (script_stopped(p)) {
                     p.anim_state = WeaponAnim::ModeSwitch;
                     play_script(p, cur.anim_fire_alt, false);
-                    p.idle_phase = 1;
+                    p.idle_phase = 1;   // spec 760: transient replay-idle after wind-down
                 }
                 break;
             }
@@ -633,30 +672,79 @@ void WeaponSystem::anim_update(int slot, PlayerWeapons& p, World& world, FrameTi
             if (script_stopped(p)) {
                 p.aim = true;
                 p.anim_state = WeaponAnim::Idle;
-                p.idle_phase = 1;
+                p.idle_phase = 3;   // spec 760: fidget armed after aim change
             }
             break;
         case WeaponAnim::AimOut:
             if (script_stopped(p)) {
                 p.anim_state = WeaponAnim::Idle;
-                p.idle_phase = 1;
+                p.idle_phase = 3;   // spec 760: fidget armed after aim change
             }
             break;
         case WeaponAnim::Idle:
-        default:
-            if (p.idle_phase == 1) {
-                if (script_stopped(p) || p.anim_script == 0) {
+        default: {
+            // Idle fidget machine (spec 760, Player_SetWeaponAnimObj state 0): +2362 counts Idle frames
+            // (cleared on state/phase change, pinned by PlayerSetting[340]); +2366 spaces +212 repeats.
+            if (world.settings(slot).idle_count_hold) p.idle_frames = 0;   // PlayerSetting[340]: pin +2362
+            else if (p.idle_frames < kFidgetDeep) p.idle_frames++;   // +2362 counts Idle frames
+            // Quiet = no aim and sticks in the deadzone (cursor proxy: the original tests BLData+288/292,
+            // which only move outside the stick deadzone; uncompensated centred sticks read ~0.008 here).
+            const auto centred = [&](int a) { return std::fabs(in.actionf(a)) < 0.05f; };
+            const bool quiet =
+                !p.aim && centred(kActTurn) && centred(kActStrafe) && centred(kActForward) &&
+                centred(kActLookX) && centred(kActLookY) && centred(kActLookPitch);
+            // Threat blocks +208 and triggers +212 (spec polarity).
+            const bool threat = drones_ && drones_->any_visible_threat();
+            if (p.fidget_frames > 0) p.fidget_frames--;
+            // +204 first per state-0 frame (count only — fires even aiming, any phase).
+            if (p.idle_frames >= kFidgetDeep && cur.anim_deepidle != 0) {
+                play_script(p, cur.anim_deepidle, false);
+                if (p.anim_script == cur.anim_deepidle) {
+                    p.idle_phase = 1;
+                    p.idle_frames = 0;
+                }
+            } else if (p.idle_phase == 1) {
+                if (script_stopped(p)) {
                     if (cur.anim_idle) play_script(p, cur.anim_idle, true);
                     p.idle_phase = 0;
+                    p.idle_frames = 0;
                 }
-            } else if (p.idle_phase >= 2) {
-                p.idle_phase = 0;
+            } else if (p.idle_phase == 3) {
+                if (p.anim_script == cur.anim_settle && cur.anim_settle != 0) {
+                    if (script_stopped(p)) {
+                        // +208 finished: disturbed (aim/stick/threat) → +212 one-shot, else HOLD the end frame.
+                        if ((!quiet || threat) && cur.anim_misc) {
+                            play_script(p, cur.anim_misc, false, 1.25f);   // AddSpeed 1.25 (decomp 0x1A383C)
+                            if (p.anim_script == cur.anim_misc) {
+                                p.idle_phase = 1;
+                                p.idle_frames = 0;
+                                p.fidget_frames = kFidgetHold;
+                            }
+                        }
+                    }
+                    // Else +208 still playing: wait. Either way the end frame holds (no replay).
+                } else if (cur.anim_settle != 0 && quiet && !threat && p.fidget_frames == 0) {
+                    play_script(p, cur.anim_settle, false);   // first quiet frame: +208 once, then hold
+                    if (p.anim_script != cur.anim_settle) p.idle_phase = 0;   // script not in bank: give up
+                } else {
+                    if (cur.anim_settle == 0 && cur.anim_misc == 0 && cur.anim_deepidle == 0) p.idle_phase = 0;
+                    if (p.anim_script == 0 || (script_stopped(p) && p.anim_script != cur.anim_idle)) {
+                        if (cur.anim_idle) play_script(p, cur.anim_idle, true);   // liveness after draw/aim
+                    }
+                }
+            } else if (p.idle_phase == 0) {
+                // +204 is handled above (first per state-0 frame); here only the direct +208 when quiet.
+                if (quiet && !threat && p.fidget_frames == 0 && cur.anim_settle != 0) {
+                    play_script(p, cur.anim_settle, false);   // phase-0 direct +208 (no accumulation)
+                    if (p.anim_script == cur.anim_settle) p.idle_phase = 3;
+                }
             }
             if (p.selected != p.current) {
                 p.previous = p.current;
                 weapon_select(p);
             }
             break;
+        }
     }
 }
 
@@ -914,6 +1002,7 @@ void WeaponSystem::tick_player(int slot, World& world, FrameTiming timing) {
         p.recoil_phase += speed * 1.8f + 0.02f * timing.mul();
     }
     anim_update(slot, p, world, timing);
+    update_datum0(p);   // Player_WeaponFiring datum-0 entity override, every frame (suppressor/LEDs/digits)
     weapon_input(slot, p, world, timing);
     weapon_firing(slot, p, world, timing);
     advance_anim(slot, p, world);
@@ -957,6 +1046,8 @@ ViewModel WeaponSystem::viewmodel(int slot) const {
                 -(hip[2] + std::sin(ph * 0.84328997f) * 0.02f)};
     v.muzzle_flash = float(p->muzzle_frames);
     v.flash_color = {float(d.flash_r) / 255.0f, float(d.flash_g) / 255.0f, float(d.flash_b) / 255.0f};
+    v.datum0_entity = p->datum0_entity;
+    v.datum0_part = p->datum0_part;
     return v;
 }
 

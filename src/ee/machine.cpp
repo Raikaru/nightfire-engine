@@ -7,6 +7,7 @@
 #include <zlib.h>
 #include <zstd.h>
 #include "ee/disasm.hpp"
+#include "ee/hostfile.hpp"
 
 namespace nf::ee {
 
@@ -463,6 +464,45 @@ void Machine::load_ram_dump(const std::string& path) {
     const std::vector<u8> d = read_file(path);
     if (d.size() > Memory::kRamSize) fail("RAM dump is larger than 32 MB");
     std::memcpy(mem.ram(), d.data(), d.size());
+}
+void Machine::set_fs_root(const std::string& root) {
+    if (root.empty()) return;
+    fs_ = std::make_unique<HostFs>(root);
+    fs_->install(*this);
+}
+void Machine::load_sym_file(const std::string& path) {
+    const std::vector<u8> d = read_file(path);
+    if (d.size() < 8) fail(path + " is too small for a symbol table");
+    // Records are (u32 value, u32 name offset); the string table starts at the first record whose
+    // name offset points at itself, i.e. records run until an offset that lands past all previous
+    // ones. In practice (DRIVING.SYM) records fill [0, strtab) exactly with 8-byte stride.
+    auto rd32 = [&](size_t o) {
+        u32 v;
+        std::memcpy(&v, d.data() + o, 4);
+        return v;
+    };
+    // Records are (u32 value, u32 name offset); the string table follows the records. Scan record
+    // candidates while the name offset points forward into the file at a plausible string; the
+    // first failure ends the table (DRIVING.SYM: 12 719 records, then strings).
+    size_t n = 0;
+    while ((n + 1) * 8 <= d.size()) {
+        const u32 off = rd32(n * 8 + 4);
+        if (off < (n + 1) * 8 || off >= d.size()) break;
+        size_t e = off;
+        while (e < d.size() && d[e] != 0 && e - off < 512) ++e;
+        if (e >= d.size() || e - off < 1) break;
+        ++n;
+    }
+    if (n == 0) fail(path + " has no symbol records");
+    for (size_t k = 0; k < n; ++k) {
+        const u32 value = rd32(k * 8), off = rd32(k * 8 + 4);
+        if (value == 0) continue;
+        EeSymbol s{std::string(reinterpret_cast<const char*>(d.data() + off)), value, 0,
+                   symbols_by_addr_.find(value) == symbols_by_addr_.end()};
+        if (s.name.empty()) continue;
+        symbols_.push_back(s);
+        symbols_by_addr_.try_emplace(value, s);
+    }
 }
 
 }  // namespace nf::ee

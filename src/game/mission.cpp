@@ -158,6 +158,20 @@ void MissionSystem::pre_tick(World& world, const std::vector<bool>& use) {
                    [&](int slot, float dmg, DamageType type, const std::array<float, 3>&) {
                        weapons_.hurt_player(slot, dmg, type, -1);
                    });
+    // Script-driven solids (`SP_SetPosRot`): entity poses from the playing scripts become
+    // movers before the players collide (one tick behind the script clock: scripts advance
+    // in System::tick, after collision).
+    std::vector<SpObjects::ScriptEntity> script_ents;
+    for (const auto& p : players_) {
+        for (const auto& e : p->entities()) {
+            SpObjects::ScriptEntity se;
+            se.hash = e.hash;
+            se.pos = e.pos;
+            se.quat = e.quat;
+            script_ents.push_back(se);
+        }
+    }
+    objects_->update_script_entities(script_ents);
     world.objects().set_movers(objects_->movers());
     // Import drone one-shot writes AFTER the object tick (multiplex re-eval above stores its
     // outputs unconditionally), then export the merged state so drone 1-bits stay sticky.

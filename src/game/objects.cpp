@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "assets/nav_data.hpp"
+#include "assets/collision.hpp"  // parse_collision (script-driven mover bounds)
 #include "assets/cutscene.hpp"  // spline_eval3d / slerp_acc (framelist eval)
 #include "game/damage.hpp"
 #include "game/sp_common.hpp"  // SwitchChannels
@@ -37,7 +38,9 @@ bool is_volume_class(std::uint32_t cls) {
 }  // namespace
 
 SpObjects::SpObjects(Level& level, std::uint32_t level_id, sp::SwitchChannels& channels)
-    : level_(level), level_id_(level_id), channels_(channels), trigger_volumes_(make_volumes(level)) {}
+    : level_(level), level_id_(level_id), channels_(channels), trigger_volumes_(make_volumes(level)) {
+    // Level-load draws (e.g. searchlight sweep phases) go to the process-global stream.
+}
 
 CollisionWorld SpObjects::make_volumes(Level& level) {
     return CollisionWorld::of_objects(level, std::span<const std::uint32_t>(kVolumeClasses, std::size(kVolumeClasses)));
@@ -199,15 +202,11 @@ void SpObjects::build() {
                 se.sweep = true;
                 se.amp = (hi - lo) * 0.5f * 0.017453294f;
                 se.base_yaw = (hi + lo) * 0.5f * 0.017453294f;
-                // Pitch center from the placement aim (`+20` source unknown).
-                const Placement& pl = level_.placements()[i];
-                const float py = pl.transform[9] /
-                                 std::sqrt(std::max(1e-12f, pl.transform[8] * pl.transform[8] +
-                                                                pl.transform[9] * pl.transform[9] +
-                                                                pl.transform[10] * pl.transform[10]));
-                se.base_pitch = std::asin(std::clamp(py, -1.0f, 1.0f));
-                // Desynced start phases (`Rand(480)` in the original; hashed for determinism).
-                se.phase = float((i * 2654435761u) % 480u);
+                // Pitch center is the raw aim component (`+20` = Create arg's 2nd float).
+                se.base_pitch = level_.placements()[i].transform[9];
+                // Desynced start phases (`Rand_Rand(480)` in the original, drawn here in
+                // static order like parsemap from the process-global stream).
+                se.phase = float(game_rng().rand_int(480));
             }
             sensors_.push_back(se);
             break;
@@ -525,8 +524,130 @@ void SpObjects::door_pose(DoorObject& d, std::array<float, 16>& out) const {
     out = m;
 }
 
+void SpObjects::update_script_entities(const std::vector<ScriptEntity>& ents) {
+    // Script-driven solids (`SP_SetPosRot`): an entity pose whose model hash matches a
+    // placement drives that placement's collision like a mover (`Door_Interp` poses do for
+    // doors). Key poses are offsets composed with the placement transform.
+    if (ents.empty()) return;
+    const MapChunk* map = level_.map() ? &level_.map()->chunk : nullptr;
+    if (!map) return;
+    std::vector<std::size_t> published;  // one draw override per placement (streams may share a hash);
+    // movers are per solid leaf so stacked shaft segments ride/displace independently
+    for (const ScriptEntity& e : ents) {
+        for (std::size_t i = 0; i < level_.placements().size(); ++i) {
+            const Placement& p = level_.placements()[i];
+            if (p.instance >= map->statics.size() || p.chunk >= level_.chunks().size()) continue;
+            const auto& models = level_.chunks()[p.chunk].chunk.models;
+            if (p.model >= models.size()) continue;
+            const Model& md = models[p.model];
+            if (md.hash < 0 || std::uint32_t(md.hash) != e.hash || md.collision.empty()) continue;
+            bool seen = false;
+            for (std::size_t q : published)
+                if (q == i) {
+                    seen = true;
+                    break;
+                }
+            if (seen) continue;
+            published.push_back(i);
+            // Model-space solid leaves, parsed once (BVH leaves with non-pass-through
+            // tris; `Collide_Filter` skips 0xC0 material the same way).
+            auto sit = script_solids_.find(i);
+            if (sit == script_solids_.end()) {
+                Collision coll;
+                try {
+                    coll = parse_collision(md.collision);
+                } catch (...) {
+                    continue;
+                }
+                ScriptSolid solid;
+                for (const CollisionBox& box : coll.boxes) {
+                    if (!box.leaf) continue;
+                    bool init = true;
+                    std::array<float, 3> mn{}, mx{};
+                    for (std::uint32_t ti = box.first_tri; ti < box.end_tri && ti < coll.tris.size(); ++ti) {
+                        const CollisionTri& tri = coll.tris[ti];
+                        if (tri.material & 0xC0) continue;
+                        for (const Vec3& v : tri.v) {
+                            if (init) {
+                                mn = v;
+                                mx = v;
+                                init = false;
+                            } else {
+                                for (int k = 0; k < 3; ++k) {
+                                    mn[std::size_t(k)] = std::min(mn[std::size_t(k)], v[std::size_t(k)]);
+                                    mx[std::size_t(k)] = std::max(mx[std::size_t(k)], v[std::size_t(k)]);
+                                }
+                            }
+                        }
+                    }
+                    if (init) continue;
+                    solid.leaves.emplace_back(mn, mx);
+                }
+                if (solid.leaves.empty()) continue;
+                script_solids_[i] = std::move(solid);
+                sit = script_solids_.find(i);
+            }
+            // World matrix = placement transform composed with the key pose (same quat
+            // convention as the door poses).
+            const float x = e.quat[0], y = e.quat[1], z = e.quat[2], w = e.quat[3];
+            Mat4 local = identity();
+            local[0] = 1 - 2 * (y * y + z * z);
+            local[1] = 2 * (x * y + z * w);
+            local[2] = 2 * (x * z - y * w);
+            local[4] = 2 * (x * y - z * w);
+            local[5] = 1 - 2 * (x * x + z * z);
+            local[6] = 2 * (y * z + x * w);
+            local[8] = 2 * (x * z + y * w);
+            local[9] = 2 * (y * z - x * w);
+            local[10] = 1 - 2 * (x * x + y * y);
+            local[12] = e.pos[0];
+            local[13] = e.pos[1];
+            local[14] = e.pos[2];
+            const StaticInstance* st = statics(i);
+            std::array<float, 16> base = st ? instance_transform(*st) : p.transform;
+            const Mat4 world = mul(base, local);
+            ScriptSolid& solid = sit->second;
+            const bool first = solid.last_max.size() != solid.leaves.size();
+            if (first) solid.last_max.assign(solid.leaves.size(), Vec3{});
+            for (std::size_t li = 0; li < solid.leaves.size(); ++li) {
+                Mover m;
+                bool init = true;
+                for (int cx = 0; cx < 8; ++cx) {
+                    const Vec3 corner{cx & 1 ? solid.leaves[li].second[0] : solid.leaves[li].first[0],
+                                      cx & 2 ? solid.leaves[li].second[1] : solid.leaves[li].first[1],
+                                      cx & 4 ? solid.leaves[li].second[2] : solid.leaves[li].first[2]};
+                    const Vec3 v = transform_point(world, corner);
+                    if (init) {
+                        m.min = v;
+                        m.max = v;
+                        init = false;
+                    } else {
+                        for (int k = 0; k < 3; ++k) {
+                            m.min[std::size_t(k)] = std::min(m.min[std::size_t(k)], v[std::size_t(k)]);
+                            m.max[std::size_t(k)] = std::max(m.max[std::size_t(k)], v[std::size_t(k)]);
+                        }
+                    }
+                }
+                m.id = std::uint32_t(i);
+                if (first) {
+                    solid.last_max[li] = m.max;
+                } else {
+                    m.displacement = {m.max[0] - solid.last_max[li][0], m.max[1] - solid.last_max[li][1],
+                                      m.max[2] - solid.last_max[li][2]};
+                    solid.last_max[li] = m.max;
+                }
+                movers_.push_back(m);
+            }
+            DrawOverride dr;
+            dr.placement = i;
+            dr.transform = world;
+            draws_.push_back(dr);
+            hides_.push_back(i);
+        }
+    }
+}
+
 bool SpObjects::use_door(DoorObject& d) {
-    if (d.rate <= 0 || d.locked_shown) return false;
     const auto center = placement_pos(d.placement);
     if (d.lock_channel != 0 && channels_.on(int(d.lock_channel))) {
         texts_.push_back({0x02000003, 180, 1});

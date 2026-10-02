@@ -14,11 +14,11 @@ bool stand_idle_anim(Drone& d, bool timed) {
     std::uint32_t delay = 0;
     const int cur = d.smi.cur;
     if (cur == kStIdle) {
-        dasc = kStandIdle1 + int(d.sys->rand() % 3);
-        delay = d.seconds(float(5 + d.sys->rand() % 5));
+        dasc = kStandIdle1 + int(d.sys->rand_int(3));
+        delay = d.seconds(float(5 + d.sys->rand_int(5)));
     } else if (cur == kStPartyGirl && d.has_beh(0x47)) {
-        dasc = kStandIdle1 + int(d.sys->rand() % 4);
-        delay = d.seconds(float(5 + d.sys->rand() % 5));
+        dasc = kStandIdle1 + int(d.sys->rand_int(4));
+        delay = d.seconds(float(5 + d.sys->rand_int(5)));
     }
     if (d.char_class == 0x10) dasc = kStandIdle3;   // 0x26
     if (dasc != kStandIdle1 && !anim_can_do(d, dasc)) dasc = kStandIdle1;
@@ -65,7 +65,7 @@ void patrol_talk(Drone& d) {
     if (d.char_class != 3) return;
     static thread_local std::uint32_t next_talk = 0;   // NPCGlobals+0x1b4: one voice line per 10 s over all drones
     if (d.now() < next_talk) return;
-    if (d.sys->rand() % 2 != 0) {
+    if (d.sys->rand_int(2) != 0) {
         next_talk = d.now() + d.seconds(5.0f);
         return;
     }

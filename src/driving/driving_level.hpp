@@ -36,6 +36,14 @@ public:
     const SceneMesh& track() const { return track_; }
     // `.ssh` files of the track, in `sn` slot order, then the shared render libraries.
     const std::vector<SshFile>& shapes() const { return shapes_; }
+    // Render tuning (`data\tuning\Render\Fog/<track>.tun`, `Lighting/<track>.tun`):
+    // linear-fog colour (0..1 RGB) and range in metres, plus the sky ambient light
+    // (AmbientSky{World}, 0..1 RGB) used as the global diffuse tint. Missing files keep
+    // the historical defaults (grey 400..1500 m, unscaled light).
+    const Vec3& fog_colour() const { return fog_colour_; }
+    float fog_start() const { return fog_start_; }
+    float fog_end() const { return fog_end_; }
+    const Vec3& ambient() const { return ambient_; }
 
     BigArchive& archive() { return archive_; }
     bool has_file(std::string_view path) const { return archive_.find(path) != nullptr; }
@@ -55,6 +63,9 @@ private:
     ElfImage elf_;
     SceneMesh track_;
     std::vector<SshFile> shapes_;
+    Vec3 fog_colour_{0.6f, 0.65f, 0.7f};
+    float fog_start_ = 400.0f, fog_end_ = 1500.0f;
+    Vec3 ambient_{1.0f, 1.0f, 1.0f};
 };
 
 }  // namespace nf::driving

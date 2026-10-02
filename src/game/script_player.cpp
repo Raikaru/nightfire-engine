@@ -135,6 +135,10 @@ void CutscenePlayer::interpolate(Stream& s) {
                      1 - 2 * (q[0] * q[0] + q[1] * q[1])};
         s.fov = fov;  // +32 blended fov (`SCRIPTINFO` +148 scale is 1.0)
     }
+    if (s.has_entity) {
+        s.epos = p;
+        s.equat = q;
+    }
 }
 
 void CutscenePlayer::fire(const ScriptCommand& cmd, Stream& s) {
@@ -338,16 +342,13 @@ std::vector<CutscenePlayer::EntityPose> CutscenePlayer::entities() const {
     std::vector<EntityPose> out;
     if (!playing_) return out;
     for (const Stream& s : streams_) {
-        if (!s.has_entity || s.done || key_count() == 0) continue;
+        if (!s.has_entity || key_count() == 0) continue;
+        // Interpolated pose (`Script_GetInterp` sampling, stored per tick); holds the last
+        // pose when the stream is done, and the rest pose before the first tick.
         EntityPose e;
         e.hash = s.entity_hash;
-        // Whole-track mapping over the entity's active window [start, script end].
-        const float span = std::max(1.0f, end_time_ - s.entity_start);
-        const float f = std::clamp((s.time - s.entity_start) / span, 0.0f, 1.0f);
-        const float fi = f * float(key_count() - 1);
-        const std::size_t i = std::min(key_count() - 1, std::size_t(fi));
-        e.pos = key_pos(i);
-        e.quat = key_quat(i);
+        e.pos = s.epos;
+        e.quat = s.equat;
         out.push_back(e);
     }
     return out;

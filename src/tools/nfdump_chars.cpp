@@ -134,8 +134,9 @@ std::size_t validate_chars(GameFiles& gf, const std::filesystem::path& gamedir) 
     std::size_t skinned_meshes = 0, batches = 0, triangles = 0, vertices = 0, parts = 0, part_triangles = 0;
     std::size_t morph_blocks = 0, morph_meshes = 0, morph_vertices = 0, morph_deltas = 0, datums = 0, script_cmds = 0, script_missing = 0, seq_no_skeleton = 0;
     std::set<std::uint32_t> unique_skins, unique_meshes;
+    std::set<unsigned> script_flag_values;   // every distinct AnimScript.flags on disc (Y-zero source hunt)
     const std::vector<AnimSet> anim_sets = read_anim_sets(Elf32(read_file(gamedir / "ACTION.ELF")));
-    std::size_t cel_checks = 0, cel_ray_checks = 0, switch_checks = 0, dyn_checks = 0, tint_checks = 0;
+    std::size_t cel_checks = 0, cel_ray_checks = 0, switch_checks = 0, dyn_checks = 0, tint_checks = 0, mask_checks = 0, datum_checks = 0;
     std::size_t env_models = 0;
     std::size_t light_zones = 0, script_events = 0, event_scripts = 0, strafe_runs = 0, root_checks = 0, map_lights = 0, facial_runs = 0, blend_runs = 0, locomotion_runs = 0, sets_unresolved = 0;
     auto finite_palette = [](const Palette& p) {
@@ -449,6 +450,54 @@ std::size_t validate_chars(GameFiles& gf, const std::filesystem::path& gamedir) 
                     }
                     ++blend_runs;
                 }
+                if (!body.empty()) {
+                    // Script flag 0x2000000 (root Y-zero) has no disc source, so exercise the mechanism
+                    // synthetically against an unmasked twin ticked in lockstep.
+                    CharacterInstance plain(bank, sk), masked(bank, sk);
+                    if (!plain.play(body[0]->hash) || !masked.play(body[0]->hash))
+                        throw FormatError("cannot start mask probe clip");
+                    if (!masked.set_layer_root_y_mask(body[0]->hash, true)) throw FormatError("mask setter missed");
+                    for (int t = 0; t < 20; ++t) {
+                        plain.tick();
+                        masked.tick();
+                        const Vec3 a = plain.root_motion(), b = masked.root_motion();
+                        if (!(b[1] == 0)) throw FormatError("Y-masked root leaks Y");
+                        if (!(b[0] == a[0] && b[2] == a[2])) throw FormatError("Y mask perturbs X/Z");
+                        if (!std::isfinite(b[0]) || !std::isfinite(b[2])) throw FormatError("non-finite masked root");
+                    }
+                    if (!masked.set_layer_root_y_mask(body[0]->hash, false)) throw FormatError("unmask missed");
+                    for (int t = 0; t < 5; ++t) {
+                        plain.tick();
+                        masked.tick();
+                        const Vec3 a = plain.root_motion(), b = masked.root_motion();
+                        if (!(a[0] == b[0] && a[1] == b[1] && a[2] == b[2])) throw FormatError("unmasked twin diverges");
+                    }
+                    ++mask_checks;
+                }
+                if (!sk.datums.empty()) {
+                    // Datum entity slots (AnimDatumSetEntity): set / expire / clear / unknown-id.
+                    const std::int32_t did = sk.datums.front().id;
+                    CharacterInstance ci(bank, sk);
+                    if (ci.datum_entity(did) != 0) throw FormatError("fresh slot not hidden");
+                    if (!ci.set_datum_entity(did, 0x02000842u, 3)) throw FormatError("slot set missed");
+                    if (ci.datum_entity(did) != 0x02000842u) throw FormatError("slot query mismatch");
+                    ci.tick();
+                    ci.tick();
+                    if (ci.datum_entity(did) != 0x02000842u) throw FormatError("slot expired early");
+                    ci.tick();
+                    if (ci.datum_entity(did) != 0) throw FormatError("slot did not expire");
+                    if (!ci.set_datum_entity(did, 0x02000842u, -1)) throw FormatError("permanent set missed");
+                    for (int t = 0; t < 10; ++t) ci.tick();
+                    if (ci.datum_entity(did) != 0x02000842u) throw FormatError("permanent slot expired");
+                    // 255 is the draw loop's unchanged lane: never decremented, however many ticks pass.
+                    if (!ci.set_datum_entity(did, 0x02000842u, 255)) throw FormatError("255 set missed");
+                    for (int t = 0; t < 300; ++t) ci.tick();
+                    if (ci.datum_entity(did) != 0x02000842u) throw FormatError("255 lane counted down");
+                    if (!ci.set_datum_entity(did, 0, 0)) throw FormatError("slot clear missed");
+                    if (ci.datum_entity(did) != 0) throw FormatError("cleared slot visible");
+                    if (ci.set_datum_entity(123456789, 1, 1)) throw FormatError("unknown datum accepted");
+                    ++datum_checks;
+                }
                 if (sk.facial_count && !face.empty()) {
                     CharacterInstance ci(bank, sk);
                     for (unsigned layer = 0; layer < 3; ++layer)
@@ -545,6 +594,7 @@ std::size_t validate_chars(GameFiles& gf, const std::filesystem::path& gamedir) 
         }
         for (const auto& [hash, sc] : bank.scripts()) {
             script_cmds += sc.cmds.size();
+            script_flag_values.insert(sc.flags);   // Y-zero source hunt: expect only 0x3C/0x7C disc-wide
             for (auto seq : sc.sequences())
                 if (!bank.sequence(seq)) ++script_missing;
         }
@@ -562,6 +612,13 @@ std::size_t validate_chars(GameFiles& gf, const std::filesystem::path& gamedir) 
                 cel_checks, cel_ray_checks, switch_checks, dyn_checks, tint_checks);
     std::printf("            %zu script events fired by %zu scripts; %zu locomotion runs with the strafe layer enabled (%zu root-motion checks)\n",
                 script_events, event_scripts, strafe_runs, root_checks);
+    std::printf("            %zu root Y-mask runs, %zu datum slot runs; script header flags on disc:", mask_checks, datum_checks);
+    for (unsigned fl : script_flag_values) std::printf(" 0x%X", fl);
+    std::printf(" (want only 0x3C 0x7C: no Y-zero source)\n");
+    if (script_flag_values != std::set<unsigned>{0x3C, 0x7C}) {
+        std::printf("FAIL unexpected script header flags present\n");
+        ++failures;
+    }
     // 876 environment-mapped models on the disc (weapons/characters/glass); the count pins the box-flag parser.
     std::printf("            %zu environment-mapped models decoded\n", env_models);
     if (env_models != 876) {

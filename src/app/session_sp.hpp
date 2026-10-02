@@ -23,6 +23,7 @@ struct SpLaunch {
     int difficulty = 2;   // GameState+0x28: 1 easy, 2 normal, 3 hard
     // Debug channel presets (nfgame --channel): applied to the mission switch channels at start.
     std::vector<std::pair<int, int>> channels;
+    int give = -1;  // debug equip (nightfire --give ID): give + select at start (< 0 = loadout only)
 };
 
 enum class SpExit {

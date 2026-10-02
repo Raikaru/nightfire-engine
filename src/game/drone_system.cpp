@@ -246,7 +246,7 @@ Drone& DroneSystem::spawn(SpawnInfo info) {
     d->initial_state = info.initial_state >= 0 ? info.initial_state : kStateIdle;
     if (info.dtype >= 0) d->dtype = d->dtype_base = std::uint8_t(info.dtype);
     if (info.side > 0) d->side = std::uint8_t(info.side);
-    d->rand_phase = rand() % 10000;   // obj+0xec
+    d->rand_phase = rand_int(10000);   // obj+0xec
     d->ext = std::move(info.ext);
     d->yaw = info.yaw;
     d->mv.dest_angle = info.yaw;   // no steering target yet: keep facing
@@ -345,12 +345,9 @@ bool DroneSystem::target_alive(const TargetRef& t) const {
     return false;
 }
 
-std::uint32_t DroneSystem::rand() {
-    rng_ = rng_ * 1664525u + 1013904223u;
-    return (rng_ >> 8) & 0xffffff;
-}
+std::uint32_t DroneSystem::rand_int(std::uint32_t n) { return game_rng().rand_int(n); }
 
-float DroneSystem::frand(float range) { return range * float(rand() & 0xffff) / 65536.0f; }
+float DroneSystem::frand(float range) { return game_rng().frand(range); }
 
 void DroneSystem::emit_noise(const Vec3& pos, float loudness, int source) {
     // DroneFunc_HandleSoundAlerts 0x148a30 + Sound_Alertness: every drone that hears (behaviour 0x1f) within 50 m gets

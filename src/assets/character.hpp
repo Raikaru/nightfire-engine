@@ -350,6 +350,10 @@ public:
     // object by this delta). Axes can be masked (script/list flags 0x1000000..0x4000000 zero x, y, z).
     Vec3 root_motion() const;
     void set_root_motion_axes(bool x, bool y, bool z);
+    // Zeroes the Y of the root delta of every body layer playing `script` (script flag 0x2000000). No disc
+    // content triggers this path (verified dormant), so it defaults off; NPC/drone/cutscene code that needs a
+    // Y-locked layer can opt in. Returns false when no body layer plays `script`.
+    bool set_layer_root_y_mask(std::uint32_t script, bool mask);
     // The root bone's translation of the current pose before extraction (layers folded like the pose, a phase
     // partner excluded): AnimFrameResolve
     // stores its y in sAnimObject+0x5C ("root height", plus the object's +0x60 offset) and the game moves the
@@ -387,6 +391,17 @@ public:
     const Palette& palette() const;        // updated lazily after any change
     Mat4 bone_world(std::size_t bone) const;
     Mat4 datum_world(std::int32_t datum) const;
+    // Attached-model slots (AnimDatumSetEntity): the skin's datum records carry no file entity
+    // (36-byte id/bone/translation/rotation each); the entity is purely runtime state per datum id,
+    // sized by the skin's datum list. `entity` 0 clears the slot (hidden); otherwise the model hash stays
+    // for `life` ticks (< 0 or 255 = permanent, like the draw loop's unchanged 255 lane; the original counts
+    // render draws instead of ticks). Returns false when the skin has no datum with that id.
+    struct DatumSlot {
+        std::uint32_t entity = 0;
+        int life = 0;   // remaining ticks (< 0 or 255 = permanent); life 0 with entity set is erased at once
+    };
+    bool set_datum_entity(std::int32_t id, std::uint32_t entity, int life);
+    std::uint32_t datum_entity(std::int32_t id) const;   // 0 = none, hidden, or expired
 
 private:
     enum class Drive { Time, Distance, Phase };
@@ -409,6 +424,10 @@ private:
         // AnimSetUpdate ORs 0x8d000000 onto walk/strafe layers: script flags 0x1000000/0x4000000 zero the
         // X/Z of the layer's root delta in AnimSeqTick (Y passes, so locomotion root is Y-only).
         bool mask_root_xz = false;
+        // Script flag 0x2000000 zeroes root Y the same way. Verified dormant: no append path, script opcode,
+        // or drone/bot/cutscene writer sets layer bit 25 anywhere in the ACTION.ELF corpus, and every disc
+        // script header carries flags 0x3C/0x7C only — settable only through set_layer_root_y_mask().
+        bool mask_root_y = false;
         // Fresh layers hold frame 1.0 through their first tick (the 0x20000000 one-shot; Phase follow is
         // exempt). Distance still accumulates, blends still step, no events fire.
         bool fresh = true;
@@ -448,6 +467,7 @@ private:
     bool extract_root_ = true;
     std::array<bool, 3> root_axes_{true, true, true};
     std::vector<AnimEvent> events_;
+    std::map<std::int32_t, DatumSlot> datum_slots_;   // runtime entity overrides by datum id
     std::uint32_t next_id_ = 1;
     float tick_accumulator_ = 0;
     mutable bool dirty_ = true;

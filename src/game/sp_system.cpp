@@ -359,7 +359,7 @@ void SpSystem::tick(nf::World& world, nf::FrameTiming) {
         for (int& slot : s.slots) {
             if (slot != 0) continue;
             const std::uint32_t before = drones_.los_rays;
-            int pick = int(drones_.rand() % std::max<std::uint32_t>(1, s.pool));
+            int pick = int(drones_.rand_int(std::max<std::uint32_t>(1, s.pool)));
             const nf::Player* player = world.player(0);
             std::size_t chosen = SIZE_MAX;
             for (std::size_t t = 0; t < s.templates.size(); ++t) {

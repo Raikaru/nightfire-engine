@@ -40,7 +40,7 @@ struct Script {
 
     PadState at(long frame) const {
         auto it = std::lower_bound(frames.begin(), frames.end(), frame, [](const auto& f, long v) { return f.first < v; });
-        return it != frames.end() && it->first == frame ? it->second : PadState{};
+        return it != frames.end() && it->first == frame ? it->second : compensate_sticks(PadState{});
     }
     long length() const { return frames.empty() ? 0 : frames.back().first + 1; }
 };

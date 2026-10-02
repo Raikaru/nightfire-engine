@@ -11,8 +11,9 @@ using namespace gl;
 
 namespace {
 
-// Vertex colour: PS2 0x80 = 1.0 per channel, and the GS modulates (TFX = MODULATE, TCC = 1) as
-// Cs = Ct * Cf >> 7, As = At * Af >> 7, clamped to 0..255. Alpha is kept in GS units (0x80 = 1.0).
+// Vertex colour: file bytes run 0x00..0xFF with 0xFF = full brightness (a disc-wide census finds
+// 30% of all level vertices at pure white and almost none at 0x80, so 0xFF is the authored white).
+// The viewer applies file units directly (v_color = byte / 255); alpha stays in GS units (0x80 = 1.0).
 const char* kVertexShader = R"(#version 330 core
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec2 a_uv;
@@ -24,7 +25,7 @@ out float v_alpha;
 out float v_depth;
 void main() {
     v_uv = a_uv;
-    v_color = a_rgba.rgb * (255.0 / 128.0);
+    v_color = a_rgba.rgb;
     v_alpha = floor(a_rgba.a * 255.0 + 0.5);
     gl_Position = u_mvp * vec4(a_pos, 1.0);
     v_depth = gl_Position.w;
@@ -202,6 +203,8 @@ Mat4 LevelRenderer::view_projection(const Camera& cam, float aspect) const {
 // Sorts placements into Game_Draw's lists using the model flags (View_AddCels / View_AddObjects):
 // 0x1 alpha list, 0x2000 weapon layer, 0x10 never drawn as world geometry; class 0x2A statics are sky
 // objects drawn by View_DrawSky in slot order, layer (param 4) 1 before and 0 after the opaque world.
+// Object-class instances of is_non_drawable_class (spawn markers, triggers, volumes, emitters, lights)
+// are skipped: the original builds gameplay state for them and never draws their marker meshes.
 void LevelRenderer::classify_placements() {
     struct SkyEntry {
         Item item;
@@ -232,6 +235,7 @@ void LevelRenderer::classify_placements() {
             continue;
         }
         bool cel = (inst.flags & 0x8000) != 0;
+        if (!cel && is_non_drawable_class(inst.object_class())) continue;
         bool hidden = (model.flags & kModelHidden) || (!cel && (model.flags & 0x8000));
         if (hidden) hidden_.push_back(item);
         else if (model.flags & kModelWeaponLayer) weapon_.push_back(item);

@@ -3,7 +3,8 @@
 //          [--sleeve n] [--yaw a --pitch b --dist d] [--shot out.bmp]
 // Also: --at x,y,z / --at-start (stand in the level at that point / the Player1 start, world drawn, ambient + lights as the game computes them), --tint r,g,b (object tint bytes), --light-at n (stand at the level's n-th point light and use the lights the game would pick), --focus <bone> (orbit that bone), --facial <id> (facial sequence/script), --look h,v, --blend-to <id> [--at ticks --ticks n] (run
 // `at` ticks, blend to the second clip, run n more), --set <AnimSet name> --speed s [--max-speed m]
-// [--at ticks --ticks n] (AnimSetUpdate locomotion for that many ticks). Without --anim the mesh is drawn in bind pose. --anim takes a sequence (04xxxxxx) or a script (06xxxxxx)
+// [--at ticks --ticks n] (AnimSetUpdate locomotion for that many ticks). --hide-part <hash> skips one rigid
+// part, --attach <hash> draws it at datum 0 (datum-entity override demo). Without --anim the mesh is drawn in bind pose. --anim takes a sequence (04xxxxxx) or a script (06xxxxxx)
 // hash in hex; a short value is a sequence id. Interactive: drag = orbit, wheel = zoom, Space = pause,
 // Left/Right = step a frame, Esc = quit. `nfdump <gamedir> chars <bin> <skin>` lists what is available.
 #include "viewer/char_view.hpp"
@@ -47,6 +48,8 @@ struct Options {
     Vec3 at{0, 0, 0};
     bool at_start = false, have_at = false, tint_given = false, flash = false;
     float fade = 1.0f;   // object alpha 0..1 (TweakA / 128): fades drive it, 0x80 = 1.0
+    std::uint32_t hide_part = 0;    // skip rigid part with this model hash (datum-0 suppressor demo)
+    std::uint32_t attach = 0;       // draw this model at datum 0 (0 = none)
     bool have_frame = false;
     unsigned sleeve = 0;
     float yaw = 0.6f, pitch = 0.15f, dist = 0;
@@ -75,6 +78,8 @@ Options parse(int argc, char** argv) {
             if (std::sscanf(v.c_str(), "%f,%f,%f", &o.at[0], &o.at[1], &o.at[2]) != 3) throw std::runtime_error("--at x,y,z");
             o.have_at = true;
         } else if (a == "--light-at") o.light_at = std::stoi(next(i));
+        else if (a == "--hide-part") o.hide_part = parse_hex(next(i));
+        else if (a == "--attach") o.attach = parse_hex(next(i));
         else if (a == "--flash") o.flash = true;   // a muzzle-flash light at the character (dynamic light demo)
         else if (a == "--fade") o.fade = std::stof(next(i));   // object alpha 0..1 (TweakA fades)
         else if (a == "--focus") o.focus = std::stoi(next(i));
@@ -268,7 +273,14 @@ int run_character_view(int argc, char** argv) {
         target = transform_point(model, target);
         Camera cam = orbit_camera(target, o.dist, o.yaw, o.pitch);
         if (world) world->draw(cam, float(width) / float(std::max(height, 1)), false);
-        renderer.draw(cam, float(width) / float(std::max(height, 1)), *skin, pal, model, o.sleeve, instance.facial(), lighting);
+        Mat4 attached_matrix = identity();
+        std::uint32_t attached_hash = 0;
+        if (o.attach != 0 && skin->find_datum(0)) {
+            attached_hash = o.attach;
+            attached_matrix = instance.datum_world(0);
+        }
+        renderer.draw(cam, float(width) / float(std::max(height, 1)), *skin, pal, model, o.sleeve, instance.facial(),
+                      lighting, o.hide_part, attached_hash, attached_matrix);
     };
 
     if (!o.shot.empty()) {

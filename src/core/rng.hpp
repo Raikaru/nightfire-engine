@@ -16,10 +16,9 @@
 //   MVar2(a, b)    = a * (conv(v1) * 2^-32) - b
 //
 // conv(v1): v1 < 0 (signed 32) goes through the doubling idiom
-// `(v&1 | (unsigned)v>>1)` twice (unsigned-scale coverage [0.5, 1)); otherwise
-// `(float)(int32)v1` ([0, 0.5)). Together they cover [0, 1) uniformly.
 // Boot seed is the ELF image words (X0 = 0x1F123BB5, Y0 = 0x159A55E5, verified);
-// the game's runtime reseed (if any) is still unmapped (EeInterp).
+// there is no game-side reseed (streams self-update only) and RandTable1/2 are
+// shipped .data, never written (EeInterp-verified, no init function exists).
 //
 // Fidelity: the integer paths are bit-exact; the float paths truncate every op
 // like the EE (double-exact intermediates + pull toward zero) and verify bit-exact
@@ -79,10 +78,11 @@ private:
 
     // Truncate a double-exact value to float toward zero (EE model). Exact whenever
     // the double holds the true result (int32 converts, float products); sums go the
-    // same route and are verified bit-exact by differential.
+    // same route and are verified bit-exact by differential. Pull only when the
+    // conversion rounded away from zero (a toward-zero round is already truncated).
     static float truncf(double d) {
         float r = float(d);
-        if (double(r) != d) r = std::nextafterf(r, 0.0f);
+        if (std::abs(double(r)) > std::abs(d)) r = std::nextafterf(r, 0.0f);
         return r;
     }
     static float ee_mul(float a, float b) { return truncf(double(a) * double(b)); }
@@ -91,11 +91,19 @@ private:
     float convert() const {
         const std::uint32_t v1 = (x_ << 16) | (y_ & 0xFFFFu);
         if (std::int32_t(v1) < 0) {
-            const std::uint32_t h = (v1 & 1u) | (v1 >> 1);
-            return float(h) + float(h);  // doubling is exact
+            const std::uint32_t h = (v1 & 1u) | (v1 >> 1);  // < 2^31, fits int32
+            return truncf(double(std::int32_t(h))) + truncf(double(std::int32_t(h)));
         }
         return truncf(double(std::int32_t(v1)));
     }
 };
+
+// Process-global draw stream: the original's RNG is global mutable state (seeded at
+// boot, never reseeded), so all runtime consumers draw here in tick order. Starts at
+// the boot seed; frontends reseed once per match (`--seed`). Single-threaded use only.
+inline GameRng& game_rng() {
+    static GameRng instance;
+    return instance;
+}
 
 }  // namespace nf

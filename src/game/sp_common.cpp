@@ -4,7 +4,7 @@ namespace nf::sp {
 
 void set_idle_timeout(Drone& d, int min_seconds, int rand_seconds) {
     // NDrone2_SetIdleTimeOut: Drone+0x104 = now + (Rand_Rand(r) + min) * FRAME_RATE_INT
-    const std::uint32_t r = rand_seconds > 0 ? d.sys->rand() % std::uint32_t(rand_seconds) : 0;
+    const std::uint32_t r = rand_seconds > 0 ? d.sys->rand_int(std::uint32_t(rand_seconds)) : 0;
     d.idle_timeout = d.now() + d.seconds(float(r + std::uint32_t(min_seconds)));
 }
 

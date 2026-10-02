@@ -46,14 +46,23 @@ void Submarine::step(const FlightInput& in, const TrackCollision& collision) {
     // Dive planes: pitch follows LY with depth-rate damping; auto-level near the surface.
     const float want_pitch = std::clamp(-in.pitch * 0.5f, -0.5f, 0.5f);
     pitch_ += std::clamp(want_pitch - pitch_, -0.8f * kDt, 0.8f * kDt);
-    pos_ += forward() * (speed_ * kDt);
+    // Trench walls: probe the swim step and stop at them so straight-gas runs stay inside
+    // the visual track (previously the boat drove through rock into the void). Floors and
+    // ceilings (|normal.y| large) are handled by the keel/surface clamp below, not here.
+    const Vec3 swim = forward() * (speed_ * kDt);
+    SegmentHit wall;
+    if (std::abs(speed_) > 0.5f && collision.segment_hit(pos_, pos_ + swim, wall) &&
+        std::abs(wall.normal[1]) < 0.6f) {
+        speed_ *= 0.2f;
+    } else {
+        pos_ += swim;
+    }
     // Buoyancy: drift up toward periscope depth (3 m under the surface datum y=0 of uw_mis11).
     const float floor = floor_at(collision, pos_, pos_[1] - 30.0f);
     const float surface = 0.0f;  // uw_mis11 water datum [INFERENCE: tracks sampled near y=0]
     const float keel = 2.0f;
     if (speed_ < 3.0f) pos_[1] += ((surface - 3.0f) - pos_[1]) * 0.2f * kDt;
     pos_[1] = std::clamp(pos_[1], floor + keel, surface - 1.0f);
-    (void)collision;
 }
 
 float Submarine::rpm() const { return 800.0f + std::abs(throttle_) * 5000.0f; }

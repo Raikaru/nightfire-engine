@@ -86,7 +86,7 @@ std::optional<int> ArenaSystem::pick_target(int team_filter, int exclude, bool a
         pool.push_back(i);
     }
     if (pool.empty()) return std::nullopt;
-    return pool[rng_() % pool.size()];
+    return pool[game_rng().rand_int(std::uint32_t(pool.size()))];
 }
 
 // ---- creation --------------------------------------------------------------------------------------------------
@@ -158,7 +158,7 @@ void ArenaSystem::start() {
     create_objectives();
     auto pick = [&](const std::vector<std::size_t>& places) {
         if (places.empty()) return;
-        const std::size_t i = places[rng_() % places.size()];
+        const std::size_t i = places[game_rng().rand_int(std::uint32_t(places.size()))];
         objective_of_object_[i] = spawn_objective(i);
     };
     switch (settings_.mode) {
@@ -187,7 +187,7 @@ void ArenaSystem::restart_scenario() {
     }
     const auto& places = demolition ? demolition_places_ : protection_places_;
     if (!places.empty()) {
-        const std::size_t i = places[rng_() % places.size()];
+        const std::size_t i = places[game_rng().rand_int(std::uint32_t(places.size()))];
         objective_of_object_[i] = spawn_objective(i);
     }
     total_elapsed_ = 0;
@@ -494,7 +494,7 @@ void ArenaSystem::blueprint_update(std::size_t i, bool force) {
     ObjectiveRuntime& rt = runtime_[i];
     auto relocate = [&] {
         if (blueprint_places_.empty()) return;
-        const MpObjectPlacement& place = data_.objects[blueprint_places_[rng_() % blueprint_places_.size()]];
+        const MpObjectPlacement& place = data_.objects[blueprint_places_[game_rng().rand_int(std::uint32_t(blueprint_places_.size()))]];
         bp.home = bp.pos = place.pos;
         bp.volume_centre = place.pos + bp.model_centre_offset;
         rt.place = 0;
@@ -571,7 +571,7 @@ void ArenaSystem::golden_update(std::size_t i, bool force) {
     const auto& places = golden_places_[key ? 0 : 1];
     auto rehome = [&] {
         if (places.empty()) return;
-        const MpObjectPlacement& p = data_.objects[places[rng_() % places.size()]];
+        const MpObjectPlacement& p = data_.objects[places[game_rng().rand_int(std::uint32_t(places.size()))]];
         obj.home = obj.pos = p.pos;
         obj.volume_centre = p.pos + obj.model_centre_offset;
     };
@@ -657,7 +657,7 @@ void ArenaSystem::golden_strike(FrameTiming timing) {
         rt->timer = 0;
         const auto& places = golden_places_[o->kind == K::GoldenKey ? 0 : 1];
         if (!places.empty()) {
-            const MpObjectPlacement& p = data_.objects[places[rng_() % places.size()]];
+            const MpObjectPlacement& p = data_.objects[places[game_rng().rand_int(std::uint32_t(places.size()))]];
             o->home = o->pos = p.pos;
             o->volume_centre = p.pos + o->model_centre_offset;
         }

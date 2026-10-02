@@ -7,13 +7,13 @@
 #include <cstdio>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
-#include <string>
 #include <vector>
 
 #include "ee/cpu.hpp"
+#include "ee/hostfile.hpp"
 #include "ee/types.hpp"
-
 namespace nf::ee {
 
 // One loaded ELF symbol.
@@ -21,6 +21,9 @@ struct EeSymbol {
     std::string name;
     u32 value = 0;  // virtual address
     u32 size = 0;
+    // True when the address comes only from a .SYM file with no exact ELF
+    // entry beneath it (stale link risk): verify with disasm before calling.
+    bool approx = false;
 };
 
 // Arguments for Machine::call. Integer/pointer arguments fill a0-a3 then the
@@ -94,6 +97,11 @@ public:
     // destruction_0 at 0x1B3488 with a0=1, a1=0xFFFF). RAM changes are KEPT.
     void run_static_init(u64 step_limit = 500'000'000);
 
+    // Merges a linker symbol dump (u32 value, u32 name-offset records plus
+    // a trailing string table, e.g. DRIVING/DRIVING.SYM) into the symbol
+    // tables so stripped ELFs (DRIVING.ELF) resolve by name too. ELF symtab
+    // wins ties. Throws on I/O or format errors.
+    void load_sym_file(const std::string& path);
     // Hooks keyed by address.
     void hook(u32 entry, Hook fn) { hooks_[entry] = std::move(fn); }
     bool hook(const std::string& sym, Hook fn);
@@ -123,6 +131,10 @@ public:
     void load_ram_dump(const std::string& path);
     // Direct RAM access for verification (read-only view of the image).
     std::vector<u8> dump(u32 va, u32 len);
+    // Serves disc files from a host directory (see ee/hostfile.hpp): installs
+    // open/read/write/lseek/close + sce* hooks backed by root. The HostFs is
+    // owned by the Machine so hook captures stay valid.
+    void set_fs_root(const std::string& root);
 
     // Disassembles `count` instructions at `entry` without executing.
     std::string disasm_range(u32 entry, u32 count) const;
@@ -154,6 +166,7 @@ private:
     std::map<u32, Hook> hooks_;
     u32 alloc_ptr_ = kAllocBase;
     u32 sentinel_ = 0xFFFFFFF0u;
+    std::unique_ptr<class HostFs> fs_;
 };
 
 }  // namespace nf::ee

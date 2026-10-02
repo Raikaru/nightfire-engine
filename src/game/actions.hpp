@@ -42,6 +42,7 @@ struct PlayerSettings {
     bool crouch_toggle = true;   // PlayerSetting[4]: Player_SSCrouch / Player_HandleJump
     bool auto_center = true;     // PlayerSetting[7]: Player_SSWalk recentres pitch when walking
     bool health_fade = false;    // PlayerSetting[0xB]: Player_Update lets the health bar's damage flash fade (default 0: stays lit)
+    bool idle_count_hold = false;   // PlayerSetting[340]: pins the weapon-idle counter +2362 at 0 (deep fidget never fires; no known frontend writer)
     // Controller style (PlayerSetting+0xE). Only style 7, the default, is mapped.
 };
 
