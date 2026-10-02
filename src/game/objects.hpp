@@ -267,6 +267,7 @@ private:
         std::uint32_t kind = 0;
         std::uint16_t gate_channel = 0;
         float damage = 10, radius = 2;
+        std::uint32_t script = 0;  // mines: explosion script hash (p5); 0 = weapon default
         bool spent = false;  // mines: detonated once, then hidden
     };
     struct Switch {

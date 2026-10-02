@@ -219,6 +219,16 @@ struct SpSession::Impl {
         if (level->map()) fx_sprites.add(level->map()->chunk);
         effects = std::make_unique<WeaponEffects>(weapons->table(), *bank, &fx_sprites);
         effects->set_map_lights(bank->lights());
+        effects->set_level(level.get());
+        for (const BinEntry& e : parse_bin_archive(Bytes(bin_bytes))) {
+            if (e.type != EntryType::Script || (e.hash != 0x06000052 && e.hash != 0x060007C4)) continue;
+            try {
+                effects->set_explosion_script(std::uint32_t(e.hash), parse_cutscene_bin(e.data));
+            } catch (const std::exception& ex) {
+                std::fprintf(stderr, "nightfire: %s: effect script %08x skipped: %s\n", launch.bin.c_str(),
+                             e.hash, ex.what());
+            }
+        }
 
         add_level_sprites(ctx.assets.sprites, Bytes(bin_bytes));
         HudConfig hcfg;
@@ -276,6 +286,11 @@ struct SpSession::Impl {
             audio->play_sfx(std::uint32_t(e.id), o);
         }
         weapons->events().sounds.clear();
+        for (const SoundEvent& e : effects->take_blast_sounds()) {
+            audio::PlayOptions o;
+            if (e.positional) o.position = e.position;
+            audio->play_sfx(std::uint32_t(e.id), o);
+        }
         const Player& p = *world->player(0);
         const float c = std::cos(p.view_pitch());
         audio::Listener l;
@@ -409,6 +424,7 @@ struct SpSession::Impl {
         if (weather && weather->active())
             weather->draw(wc, renderer->view_projection(wc, aspect));
         drone_renderer->draw(wc, aspect, *drones);
+        renderer->draw_objects(wc, aspect, effects->take_blast_draws());
         glClear(GL_DEPTH_BUFFER_BIT);
         const ViewModel vm = weapons->viewmodel(0);
         if (vm.visible && vm.skin && vm.anim) {

@@ -10,6 +10,8 @@
 #include <sstream>
 
 #include "assets/character.hpp"
+#include "assets/bin_archive.hpp"
+#include "assets/cutscene.hpp"
 #include "assets/level.hpp"
 #include "audio/audio.hpp"
 #include "audio/music_director.hpp"
@@ -184,6 +186,15 @@ struct MpSession::Impl {
         }
         effects = std::make_unique<WeaponEffects>(session->weapons().table(), *bank, &fx_sprites);
         effects->set_map_lights(bank->lights());
+        effects->set_level(level.get());
+        effects->set_multiplayer(true);
+        for (const BinEntry& e : parse_bin_archive(Bytes(read_level_bin(ctx.files, bin)))) {
+            if (e.type != EntryType::Script || (e.hash != 0x06000052 && e.hash != 0x060007C4)) continue;
+            try {
+                effects->set_explosion_script(std::uint32_t(e.hash), parse_cutscene_bin(e.data));
+            } catch (const std::exception&) {
+            }
+        }
 
         add_level_sprites(ctx.assets.sprites, Bytes(read_level_bin(ctx.files, bin)));
         for (int i = 0; i < options.humans; ++i) {
@@ -257,6 +268,11 @@ struct MpSession::Impl {
             audio->play_sfx(std::uint32_t(e.id), o);
         }
         session->weapons().events().sounds.clear();
+        for (const SoundEvent& e : effects->take_blast_sounds()) {
+            audio::PlayOptions o;
+            if (e.positional) o.position = e.position;
+            audio->play_sfx(std::uint32_t(e.id), o);
+        }
         const Player& p = *world->player(0);
         const float c = std::cos(p.view_pitch());
         audio::Listener l;
@@ -363,6 +379,7 @@ struct MpSession::Impl {
                 chars->draw(cam, r.aspect(), anim.skin(), anim.palette(), player_model_matrix(q), 0, anim.facial(), {});
             }
             effects->draw(cam, r.aspect(), *chars, session->weapons().projectiles());
+            renderer->draw_objects(cam, r.aspect(), effects->take_blast_draws());
             glClear(GL_DEPTH_BUFFER_BIT);
             const ViewModel vm = session->weapons().viewmodel(i);
             if (vm.visible && vm.skin && vm.anim) {

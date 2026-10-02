@@ -91,6 +91,8 @@ def main():
     time.sleep(args.settle)
     hold("cross")
     time.sleep(10.0)
+    hold("cross")   # confirm ready -> scenario page (four holds total)
+    time.sleep(10.0)
 
     snap("03-scenario")
     # Cycle-until-match: select, read what the wheel gave, step down on mismatch.
@@ -135,38 +137,9 @@ def main():
     else:
         raise SystemExit("map wheel never selected %#x" % want_map)
     snap("05-map-sel")
-    vpad("press", "cross", 400)
-    time.sleep(10.0)
-    snap("07-character")
-    vpad("press", "cross", 400)
-    time.sleep(10.0)
-    snap("08-handicap")
-    vpad("press", "cross", 400)
-    time.sleep(10.0)
-    snap("09-options")
-    vpad("press", "down", 400)
-    time.sleep(args.settle)
-    vpad("press", "cross", 400)
-    time.sleep(10.0)
-    snap("10-bots")
-    for _ in range(args.bots):
-        vpad("press", "cross", 400)
-        time.sleep(10.0)
-        vpad("press", "cross", 400)
-        time.sleep(10.0)
-        vpad("press", "cross", 400)
-        time.sleep(10.0)
-        vpad("press", "down", 400)
-        time.sleep(args.settle)
-    snap("11-bots-done")
-    vpad("press", "triangle", 400)
-    time.sleep(10.0)
-    vpad("press", "up", 400)
-    time.sleep(args.settle)
-    vpad("press", "cross", 400)
-    time.sleep(10.0)
-    snap("12-confirm")
-    if args.bot_chars:
+    def poke_roster():
+        if not args.bot_chars:
+            return
         chars = [int(x) for x in args.bot_chars.split(",")]
         teams = [int(x) for x in args.bot_teams.split(",")] if args.bot_teams else [0] * len(chars)
         assert len(chars) == len(teams) and len(chars) <= 4, "--bot-chars/_teams: up to 4 paired ids"
@@ -184,6 +157,43 @@ def main():
             pine.write(WRITE8, base + 0x10, ch)
             pine.write(WRITE8, base + 0x11, 1)
         print("poked bot roster", list(zip(chars, teams)), flush=True)
+    poke_roster()   # early: options/confirm pages see the intended teams+count
+    vpad("press", "cross", 400)
+    time.sleep(10.0)
+    snap("07-character")
+    vpad("press", "cross", 400)
+    time.sleep(10.0)
+    snap("08-handicap")
+    vpad("press", "cross", 400)
+    time.sleep(10.0)
+    snap("09-options")
+    if args.bot_chars:
+        vpad("press", "cross", 400)   # Continue directly; roster already poked
+        time.sleep(10.0)
+    else:
+        vpad("press", "down", 400)
+        time.sleep(args.settle)
+        vpad("press", "cross", 400)
+        time.sleep(10.0)
+        snap("10-bots")
+        for _ in range(args.bots):
+            vpad("press", "cross", 400)
+            time.sleep(10.0)
+            vpad("press", "cross", 400)
+            time.sleep(10.0)
+            vpad("press", "cross", 400)
+            time.sleep(10.0)
+            vpad("press", "down", 400)
+            time.sleep(args.settle)
+        snap("11-bots-done")
+        vpad("press", "triangle", 400)
+        time.sleep(10.0)
+        vpad("press", "up", 400)
+        time.sleep(args.settle)
+        vpad("press", "cross", 400)
+        time.sleep(10.0)
+    snap("12-confirm")
+    poke_roster()   # idempotent re-poke guards menu clobbering
     vpad("press", "cross", 400)
     # wait for the match to go live
     live = False

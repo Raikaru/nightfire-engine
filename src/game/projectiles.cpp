@@ -221,10 +221,28 @@ void WeaponSystem::hurt_victim(int victim_id, const HitInfo& hit) {
 // damage * (1 - dist / radius); no line-of-sight test (the original only does a sphere intersect).
 // obj+128 is the eye for players (measured bit-equal to +0x70 in a Skyrail savestate), the centre here
 // for registered targets (their +128 is unobserved; torso-height is the closest analog).
-void WeaponSystem::explode_at(const Vec3& pos, const WeaponDef& def, int attacker, float scale) {
-    events_.explosions.push_back({pos, def.blast_radius, def.id});
+void WeaponSystem::explode_at(const Vec3& pos, const WeaponDef& def, int attacker, float scale,
+                              std::uint32_t script) {
+    const std::uint32_t hash = script != 0 ? script : def.blast_script();
+    // Base facing (`Mat_Align2Dir` by -(vector to nearest player)); identity with no world/players.
+    float yaw = 0;
+    if (world_ != nullptr) {
+        float best = -1;
+        for (int i = 0; i < World::kMaxPlayers; ++i) {
+            const Player* pl = world_->player(i);
+            if (pl == nullptr || !pl->alive()) continue;
+            const Vec3 e = pl->eye();
+            const float d2 =
+                (e[0] - pos[0]) * (e[0] - pos[0]) + (e[2] - pos[2]) * (e[2] - pos[2]);
+            if (best < 0 || d2 < best) {
+                best = d2;
+                yaw = std::atan2(-(e[0] - pos[0]), -(e[2] - pos[2]));
+            }
+        }
+    }
+    events_.explosions.push_back({pos, def.blast_radius, def.id, hash, yaw});
     sound(def.flags3 & 0x2000 ? 22 : 502, pos, true);
-    if (def.blast_radius <= 0.0f || !world_) return;   // smoke / flash: the event above still drives the visual
+    if (def.blast_radius <= 0.0f || !world_) return;  // smoke / flash: the event above still drives the visual
     // Explode_Create shakes every viewer in radius (doubled, sub-0.5 radii skipped inside).
     world_->camera_shake(pos, def.blast_radius);
     const std::vector<Victim> victims = collect_victims(*world_);
