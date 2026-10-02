@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 
 namespace nf::driving {
 
@@ -46,15 +47,45 @@ DrivingLevel::DrivingLevel(const std::filesystem::path& gamedir, const LevelDesc
     std::vector<std::pair<int, std::string>> sn;
     for (const CarpEntry& e : carp_->entries())
         if (e.tag == "sn" && !e.is_head) sn.emplace_back(e.index, std::string(load_cstr(carp_->payload(e, e.size ? e.size : 0x10), 0)));
-    std::sort(sn.begin(), sn.end());
     auto add = [&](const std::string& path) {
         if (has_file(path)) shapes_.push_back(parse_ssh(read_file(path)));
     };
+    std::sort(sn.begin(), sn.end());
     for (const auto& [slot, name] : sn) add("data\\track\\" + name);
     add("data\\render\\common.ssh");
     add("data\\render\\ext.ssh");
-}
 
+    // Render tuning (see docs/driving.md "Fog and lighting"): linear fog
+    // (`data\tuning\Render\Fog\<track>.tun`: fogSTART/fogEND in metres,
+    // FogColour as four byte values A,R,G,B) and the sky ambient light
+    // (`Lighting\<track>.tun`: AmbientSky{World} 0..1 RGB). The snow tracks'
+    // FogColour carries the red channel packed (e.g. -13488856 = 0xFF322D28),
+    // so every channel is masked to its low byte [INFERENCE].
+    const std::string fog_path = "data\\tuning\\Render\\Fog\\" + std::string(desc.track) + ".tun";
+    if (has_file(fog_path)) {
+        const Attributes fog = Attributes::parse_flat(read_text(fog_path));
+        fog_start_ = fog.get_float("fogstart", fog_start_);
+        fog_end_ = fog.get_float("fogend", fog_end_);
+        const std::string colour = fog.get_string("fogcolour", "");
+        if (!colour.empty()) {
+            long channel[4] = {255, 255, 255, 255};
+            const char* p = colour.c_str();
+            for (int i = 0; i < 4 && *p; ++i) {
+                char* end = nullptr;
+                channel[i] = std::strtol(p, &end, 10);
+                p = *end == ',' ? end + 1 : end;
+            }
+            for (int i = 0; i < 3; ++i)
+                fog_colour_[i] = float(channel[i + 1] & 0xFF) * (1.0f / 255.0f);
+        }
+    }
+    const std::string light_path = "data\\tuning\\Render\\Lighting\\" + std::string(desc.track) + ".tun";
+    if (has_file(light_path)) {
+        const Attributes light = Attributes::parse_flat(read_text(light_path));
+        const std::array<float, 4> sky = light.get_vec4("ambientsky{world}", {1, 1, 1, 0});
+        ambient_ = {sky[0], sky[1], sky[2]};
+    }
+}
 std::vector<std::uint8_t> DrivingLevel::read_file(std::string_view path) {
     const BigEntry* e = archive_.find(path);
     if (!e) throw FormatError("archive " + std::string(desc_.viv) + " has no " + std::string(path));

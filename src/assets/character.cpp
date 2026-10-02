@@ -1117,6 +1117,7 @@ void CharacterInstance::sample_root(Layer& l, float previous_frame) {
     if (!wrapped) {
         Vec3 delta = root - l.prev_root;
         if (l.mask_root_xz) delta[0] = delta[2] = 0;
+        if (l.mask_root_y) delta[1] = 0;
         l.root_delta = delta;
     }
     l.prev_root = root;
@@ -1175,6 +1176,18 @@ std::vector<CharacterInstance::LayerInfo> CharacterInstance::layer_infos() const
 
 void CharacterInstance::set_root_motion_axes(bool x, bool y, bool z) { root_axes_ = {x, y, z}; }
 
+bool CharacterInstance::set_layer_root_y_mask(std::uint32_t script, bool mask) {
+    bool found = false;
+    for (auto& l : layers_) {
+        const std::uint32_t id = l.script ? l.script->hash : l.seq->hash;
+        if (id != script) continue;
+        l.mask_root_y = mask;
+        found = true;
+    }
+    dirty_ = true;
+    return found;
+}
+
 float CharacterInstance::foot_height(float model_min_y, bool flag_400) const {
     // AnimObjectNew: sAnimObject+0xD0 = (-1.160398 [flag 0x400] or -0.995208) - model bbox min y / scale + 0.02;
     // measured against the game: sAnimObject+0xCC = the primary layer's root y + that offset (no x0.8627 with the flag).
@@ -1231,6 +1244,13 @@ void CharacterInstance::tick(float mul) {
     std::erase_if(layers_, [&](const Layer& l) {
         return std::find(dead.begin(), dead.end(), l.id) != dead.end() || std::find(dead.begin(), dead.end(), l.primary) != dead.end();
     });
+    // Datum entity lives count down (the original counts render draws; ticks are the available clock here).
+    // 255 is the permanent marker and is never decremented (draw loop shows it unchanged); only lanes set
+    // through this API with an explicit lifetime count down.
+    for (auto it = datum_slots_.begin(); it != datum_slots_.end();) {
+        if (it->second.life > 0 && it->second.life < 255 && --it->second.life == 0) it = datum_slots_.erase(it);
+        else ++it;
+    }
     dirty_ = true;
 }
 
@@ -1382,6 +1402,19 @@ const Palette& CharacterInstance::palette() const {
 
 Mat4 CharacterInstance::bone_world(std::size_t bone) const { return nf::bone_world(palette(), bone); }
 Mat4 CharacterInstance::datum_world(std::int32_t datum) const { return nf::datum_world(skin_, palette(), datum); }
+
+bool CharacterInstance::set_datum_entity(std::int32_t id, std::uint32_t entity, int life) {
+    if (!skin_.find_datum(id)) return false;
+    if (entity == 0 || life == 0) datum_slots_.erase(id);   // cleared = hidden
+    else datum_slots_[id] = DatumSlot{entity, life};
+    dirty_ = true;
+    return true;
+}
+
+std::uint32_t CharacterInstance::datum_entity(std::int32_t id) const {
+    const auto it = datum_slots_.find(id);
+    return it == datum_slots_.end() ? 0 : it->second.entity;
+}
 
 std::unique_ptr<CharacterBank> open_character_bank(GameFiles& files, const std::string& world_bin) {
     const GameFile* world = files.find(world_bin);

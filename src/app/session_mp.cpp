@@ -26,6 +26,7 @@
 #include "render/gl.hpp"
 #include "ui/mp_setup.hpp"
 #include "render/level_renderer.hpp"
+#include "render/weather_renderer.hpp"
 
 namespace nf::app {
 
@@ -114,6 +115,7 @@ struct MpSession::Impl {
     SpriteLibrary fx_sprites;
     std::unique_ptr<WeaponEffects> effects;
     std::unique_ptr<LevelRenderer> renderer;
+    std::unique_ptr<WeatherRenderer> weather;
     std::unique_ptr<CharacterRenderer> chars;
     std::unique_ptr<WeaponView> weapon_view;
     std::unique_ptr<drone::DroneRenderer> drone_renderer;
@@ -171,8 +173,15 @@ struct MpSession::Impl {
                 if (bot_match) bot_match->install(s);
             });
         if (bot_match) bot_match->start();
-
-        if (level->map()) fx_sprites.add(level->map()->chunk);
+        // Weapon viewmodels/animations need the level's bank (as in SP); without it
+        // viewmodel skins are null and the gun never draws.
+        session->weapons().set_bank(bank);
+        if (bot_match) session->weapons().set_drone_system(&bot_match->drones());   // idle-fidget threat gate
+        if (direct.give >= 0) {  // --give ID: debug equip for scoped-capture verification
+            session->weapons().give_weapon(0, direct.give, 999);
+            session->weapons().select_weapon(0, direct.give);
+            std::printf("match: debug give weapon %d\n", direct.give);
+        }
         effects = std::make_unique<WeaponEffects>(session->weapons().table(), *bank, &fx_sprites);
         effects->set_map_lights(bank->lights());
 
@@ -189,6 +198,8 @@ struct MpSession::Impl {
 
         renderer = std::make_unique<LevelRenderer>(*level);
         renderer->set_level(level_id);
+        weather = std::make_unique<WeatherRenderer>(*level);
+        weather->set_level(level_id);
         chars = std::make_unique<CharacterRenderer>(*bank);
         weapon_view = std::make_unique<WeaponView>(*bank, *chars);
         if (bot_match) drone_renderer = std::make_unique<drone::DroneRenderer>(*bank);
@@ -258,7 +269,7 @@ struct MpSession::Impl {
         audio->update();
     }
 
-    HudState hud_state(int slot) {
+    HudState hud_state(int slot, const Camera& cam, float vw, float vh) {
         HudState hs;
         session->weapons().fill_hud(slot, hs);
         const ArenaHud ah = session->hud(slot);
@@ -277,9 +288,27 @@ struct MpSession::Impl {
         hs.mp.team_has_golden_gun = ah.team_has_golden_gun;
         for (int i = 0; i < 3 && i < ah.uplink_count; ++i) hs.mp.uplink[std::size_t(i)] = ah.uplink[std::size_t(i)];
         hs.mp.health_bonus = ah.health_bonus;
-        for (const ArenaHud::Blip& b : ah.blips) {
+        for (const ArenaHud::Blip& b : ah.blips)
             hs.mp.blips.push_back(HudBlip{b.x, b.y, b.z, b.color, b.kind});
-            if (!b.name.empty()) hs.mp.name_tags.push_back(HudNameTag{b.name, b.x, b.y, b.same_team});
+        // Name tags float over heads in screen space (projected, y up). The raw
+        // camera-space blip coords feed the radar, never the labels: unprojected
+        // tags land anywhere on the canvas (e.g. over the health bar).
+        const Mat4 vp = renderer->view_projection(cam, vw / std::max(1.0f, vh));
+        for (const ArenaHud::Blip& b : ah.blips) {
+            if (b.name.empty()) continue;
+            const Vec3 hp{b.world[0], b.world[1] + 1.8f, b.world[2]};
+            const float cx = vp[0] * hp[0] + vp[4] * hp[1] + vp[8] * hp[2] + vp[12];
+            const float cy = vp[1] * hp[0] + vp[5] * hp[1] + vp[9] * hp[2] + vp[13];
+            const float cw = vp[3] * hp[0] + vp[7] * hp[1] + vp[11] * hp[2] + vp[15];
+            if (cw <= 0) continue;  // behind the camera
+            const float nx = cx / cw, ny = cy / cw;
+            if (nx < -1.0f || nx > 1.0f || ny < -1.0f || ny > 1.0f) continue;
+            HudNameTag tag;
+            tag.name = b.name;
+            tag.x = (nx * 0.5f + 0.5f) * vw;
+            tag.y = (ny * 0.5f + 0.5f) * vh;
+            tag.same_team = b.same_team;
+            hs.mp.name_tags.push_back(tag);
         }
         return hs;
     }
@@ -303,10 +332,16 @@ struct MpSession::Impl {
         glDisable(GL_SCISSOR_TEST);
         glClearColor(0, 0, 0, 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        const auto rects = split_screen_layout(humans, width, height, session->options().side_by_side);
+        // Game viewport first (4:3 pillarbox unless widescreen; the full-window black
+        // clear above is the bar color); viewer rects subdivide the game rect, so every
+        // 3D view projects with the game aspect, not the window aspect.
+        const GameView gv = game_view(config, width, height);
+        const auto rects = split_screen_layout(humans, gv.w, gv.h, session->options().side_by_side);
         glEnable(GL_SCISSOR_TEST);
         for (int i = 0; i < humans; ++i) {
-            const ViewRect& r = rects[std::size_t(i)];
+            ViewRect r = rects[std::size_t(i)];
+            r.x += gv.x;
+            r.y += gv.y;
             const int gl_y = height - r.y - r.h;
             const Player& p = *world->player(i);
             Camera cam = camera_for_eye_yaw_pitch(p.eye(), p.yaw, p.view_pitch());
@@ -317,6 +352,7 @@ struct MpSession::Impl {
             glClearColor(clear[0], clear[1], clear[2], 1);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             renderer->draw(cam, r.aspect(), false);
+            if (weather && weather->active()) weather->draw(cam, renderer->view_projection(cam, r.aspect()));
             // Bots, remote players, then effects and the viewer's own gun.
             if (drone_renderer && bot_match) drone_renderer->draw(cam, r.aspect(), bot_match->drones());
             for (int j = 0; j < humans; ++j) {
@@ -338,7 +374,7 @@ struct MpSession::Impl {
             glEnable(GL_DEPTH_TEST);
             glDisable(GL_BLEND);
             // HUD for this viewer, clipped to its rectangle.
-            HudState hs = hud_state(i);
+            HudState hs = hud_state(i, cam, float(r.w), float(r.h));
             for (const PendingMessage& pm : pending_messages) {
                 if (pm.message.slot != -1 && pm.message.slot != i) continue;
                 huds[std::size_t(i)]->add_message(HudMessage{static_cast<HudMsgType>(int(pm.message.type)), 0xFFFFFFFF,
@@ -362,6 +398,7 @@ struct MpSession::Impl {
     // crouch, per-tick body-space velocity), plus anim-script sound events served positional.
     // Footstep SFX need the surface->sound table (Audio owns it); only Sound events play for now.
     void tick_bodies() {
+        if (weather && world->player(0)) weather->update(world->player(0)->eye());
         for (int j = 0; j < session->humans(); ++j) {
             if (!bodies[std::size_t(j)]) continue;
             PlayerAnimator& body = *bodies[std::size_t(j)];
@@ -579,7 +616,7 @@ MpResult MpSession::run_headless() {
     auto at = [&](int player, long frame) {
         for (const auto& [f, p] : scripts[std::size_t(player)])
             if (f == frame) return p;
-        return PadState{};
+        return compensate_sticks(PadState{});   // headless neutral (see session_sp.cpp)
     };
     for (long f = 0; f < frames; ++f) {
         PadInputs pads{};

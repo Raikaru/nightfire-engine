@@ -61,7 +61,10 @@ struct WeaponDef {
     std::uint32_t anim_aim_alt = 0;      // +188
     std::uint32_t anim_draw = 0;         // +192
     std::uint32_t anim_holster = 0;      // +196
-    std::uint32_t anim_misc = 0;         // +212 (idle fidget)
+    std::uint32_t unk200 = 0;            // +200 (u32 of unknown purpose)
+    std::uint32_t anim_deepidle = 0;     // +204 (long-idle one-shot fidget → phase 1)
+    std::uint32_t anim_settle = 0;       // +208 (quiet-settle hold fidget → phase 3)
+    std::uint32_t anim_misc = 0;         // +212 (disturbed one-shot fidget → phase 1)
     std::uint32_t anim_holster_alt = 0;  // +216
     std::uint32_t model_gfx = 0;         // +220 first-person weapon skin hash
     std::array<float, 3> gun_offset{};      // +224 hip offset (SP)

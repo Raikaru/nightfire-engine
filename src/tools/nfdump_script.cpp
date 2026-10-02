@@ -325,6 +325,12 @@ int dump_script(GameFiles& files, const std::filesystem::path& gamedir, const st
     SpObjects::Census census = objects.census();
     for (std::size_t c = 0; c < 256; ++c)
         if (census.per_class[c] != 0) std::printf("class %zu: %zu placements\n", c, census.per_class[c]);
+    for (const DoorObject& d : objects.doors()) {
+        const Placement& p = lvl.placements()[d.placement];
+        std::printf("door placement %zu unlock %u lock %u auto %d open_sfx %u close_sfx %u pos %.1f,%.1f,%.1f\n",
+                    d.placement, d.unlock_channel, d.lock_channel, int(d.auto_door), d.open_sound, d.close_sound,
+                    double(p.transform[12]), double(p.transform[13]), double(p.transform[14]));
+    }
     std::vector<std::uint8_t> raw = files.read(*f);
     const auto entries = parse_bin_archive(Bytes(raw));
     for (const auto& e : entries) {

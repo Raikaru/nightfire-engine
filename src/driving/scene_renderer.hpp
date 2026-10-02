@@ -25,9 +25,11 @@ public:
     Handle upload(const SceneMesh& mesh, const std::vector<const SshFile*>& extra_shapes = {});
     void draw(Handle h, const Mat4& mvp) const;
     void set_fog(const Vec3& color, float start, float end);
+    // Global diffuse tint (AmbientSky{World} of the level's Lighting tuning).
+    void set_ambient(const Vec3& color);
 
 private:
-    struct GpuBatch { GLuint vao, vbo, ebo; GLsizei count; GLuint texture; bool alpha_test, translucent; };
+    struct GpuBatch { GLuint vao, vbo, ebo; GLsizei count; GLuint texture; bool alpha_test, translucent, fogged; };
     struct GpuMesh { std::vector<GpuBatch> batches; };
 
     GLuint texture_for(const std::string& shape, const std::vector<const SshFile*>& pools);
@@ -36,7 +38,7 @@ private:
     std::vector<GpuMesh> meshes_;
     std::map<std::pair<const SshFile*, std::size_t>, GLuint> textures_;
     GLuint program_ = 0, white_ = 0;
-    GLint u_mvp_ = -1, u_fog_color_ = -1, u_fog_range_ = -1;
+    GLint u_mvp_ = -1, u_fog_color_ = -1, u_fog_range_ = -1, u_ambient_ = -1, u_fogged_ = -1;
 };
 
 }  // namespace nf::driving

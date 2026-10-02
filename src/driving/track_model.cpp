@@ -42,6 +42,13 @@ struct ChainState {
     bool alpha_test = false, translucent = false;
 };
 
+// Skydome/celestial texture shapes (`.ssh` names) are drawn without fog.
+bool is_sky_shape(const std::string& shape) {
+    if (shape == "moon") return true;
+    return shape.size() >= 3 && (shape[0] == 's' || shape[0] == 'S') && (shape[1] == 'k' || shape[1] == 'K') &&
+           (shape[2] == 'y' || shape[2] == 'Y');
+}
+
 struct Decoder {
     const ElfImage& elf;
     const std::unordered_map<std::uint32_t, ChainState>& state_of;   // chain object -> bound material state
@@ -318,6 +325,7 @@ SceneMesh build_track_scene(const CarpFile& carp, const ElfImage& elf) {
                     scene.batches.back().shape = cd.shape;
                     scene.batches.back().alpha_test = cd.alpha_test;
                     scene.batches.back().translucent = cd.translucent;
+                    scene.batches.back().fogged = !is_sky_shape(cd.shape);
                 }
                 MeshBatch& b = scene.batches[it->second];
                 const std::uint32_t first = static_cast<std::uint32_t>(b.vertices.size());

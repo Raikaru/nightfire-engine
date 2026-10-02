@@ -50,6 +50,7 @@ add_library(nf_assets STATIC
   src/assets/sp_menu.cpp
   src/assets/tweak_data.cpp
   src/assets/profile.cpp
+  src/assets/card_save.cpp
   src/assets/credit_data.cpp
   src/assets/mission_data.cpp
   src/assets/cutscene.cpp
@@ -71,6 +72,7 @@ add_library(nf_render STATIC
   src/render/gl.cpp
   src/render/window.cpp
   src/render/level_renderer.cpp
+  src/render/weather_renderer.cpp
   src/render/character_renderer.cpp)
 target_link_libraries(nf_render PUBLIC nf_assets SDL3::SDL3-static OpenGL::GL)
 target_compile_options(nf_render PRIVATE -Wall -Wextra)

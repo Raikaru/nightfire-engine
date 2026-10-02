@@ -100,11 +100,19 @@ bool MovieScreen::play(std::uint32_t id, const std::string& shot, long max_frame
 
     media::MovieFrame frame, pending;
     bool pending_valid = false, video_eof = false, done = false;
-    double clock = 0;
     long shown = 0;
+    // Playback clock: the movie position everything shows up to. The old
+    // shown/30 self-gate stalls forever on files whose first pts is not ~0
+    // (07380048 starts at 0.0465s): pending stays valid, shown never advances,
+    // EOF is never reached. Pace by wall time instead, tracking the fetched
+    // audio position while the sink is live and fresh (A/V stay together);
+    // muted, device-less, audio-finished or stalled-audio runs use the wall.
+    const Uint64 t0 = SDL_GetTicksNS();
     PadHistory hist;
     while (!done) {
-        // Keep ~0.25 s of PCM queued ahead of the sink.
+        // Keep ~0.25 s of PCM queued ahead of the sink, throttled to realtime so the
+        // fetched audio position is a usable clock (unthrottled it races at loop speed).
+        const double wall = double(SDL_GetTicksNS() - t0) * 1e-9;
         if (sink && !s.audio_eof) {
             std::size_t queued = 0;
             {
@@ -112,7 +120,7 @@ bool MovieScreen::play(std::uint32_t id, const std::string& shot, long max_frame
                 queued = s.pcm_queue.size() / 2;
             }
             const std::size_t want = std::size_t(player.audio().sample_rate / 4);
-            if (queued < want) {
+            if (queued < want && player.audio_position() < wall + 0.25) {
                 std::vector<std::int16_t> pcm;
                 if (player.next_audio(pcm, 0.25)) {
                     std::lock_guard<std::mutex> lock(s.pcm_mutex);
@@ -132,7 +140,13 @@ bool MovieScreen::play(std::uint32_t id, const std::string& shot, long max_frame
                 done = true;
             }
         } else {
-            clock = double(shown) / 30.0;
+            // Interactive: show everything due up to the clock. The fetched audio
+            // position paces the video while the sink is live and fresh; otherwise
+            // (muted, no device, audio finished, or audio stalled > 2 s behind the
+            // wall) the wall clock paces, so playback always advances.
+            double clock = wall;
+            if (sink && !s.audio_eof && wall - player.audio_position() < 2.0)
+                clock = player.audio_position();
             for (;;) {
                 if (!pending_valid) {
                     if (!player.next_video(pending)) {
@@ -149,6 +163,7 @@ bool MovieScreen::play(std::uint32_t id, const std::string& shot, long max_frame
                     break;
                 }
             }
+            if (max_frames >= 0 && shown >= max_frames) done = true;
         }
         if (!shot.empty()) {
             if (video_eof || (max_frames >= 0 && shown >= max_frames)) done = true;
@@ -172,9 +187,6 @@ bool MovieScreen::play(std::uint32_t id, const std::string& shot, long max_frame
         s.ui.end();
         s.window.swap();
         if (shot.empty()) SDL_Delay(5);
-        // Audio clock follows the sink when present.
-        if (sink) clock = player.audio_position();
-        else if (shot.empty()) clock = double(shown) / 30.0;
     }
     if (!shot.empty()) {
         const bool ok = s.window.save_bmp(shot);

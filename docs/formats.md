@@ -78,7 +78,7 @@ Block ids (`parsemap_handle_block_id`); ids seen on the PS2 disc are marked *:
 | 2B* | `morph_data` | |
 | 2C* | `hashlist` | |
 | 2D* | `PS2_GFX` | geometry, paired with the following `entity_params` |
-| 30* | `particles` | |
+| 30* | `particles` | emitter defs (`Emitter_LoadDefs`); see Weather below |
 
 ### Textures
 
@@ -172,11 +172,15 @@ geometry are told apart only by texel/vertex alpha. `TEST_1`: `0x5001B` (alpha >
 `0x507FD` (alpha > 0x7F, i.e. only fully opaque texels: cut-out foliage/fences, 658), `0x5000B` (always, 6);
 `ZTE = 1`, `ZTST = GEQUAL` throughout. `ZMSK = 1` on 10,063 batches (glass, sky, effects).
 
-Colour: vertex colours are `0x80 = 1.0` (up to ~2.0), and the GS computes `Cs = Ct * Cf >> 7`,
-`As = At * Af >> 7` clamped to 0..255; alpha 0x80 = 1.0. Texel alpha is the palette alpha (`0x80` max).
-World vertices are prelit; the VU1 program only adds up to two dynamic point lights
-(`psiLight_SetLights`, from `Light` objects) and an object tint (`psiSetTweakARGB`), neither of which exists
-for static level geometry, so the viewer applies the vertex colour alone.
+Colour: file vertex colours run `0x00..0xFF` with `0xFF` = full brightness (a disc-wide census finds 30%
+of all 5.67M level vertices at pure white and almost none at `0x80`; foliage gradients use the full
+`0x00..0xFF` range, e.g. tree billboards fade black to pure green). The GS computes
+`Cs = Ct * Cf >> 7`, `As = At * Af >> 7` clamped to 0..255 with alpha `0x80` = 1.0, so on the wire
+`0x80` = 1.0; the file bytes are halved upstream (by the VU1 program, which also adds up to two dynamic
+point lights from `Light` objects and the `psiSetTweakARGB` object tint) [INFERENCE: the halving is
+unseen in the files; what matters is that file `0xFF` renders as texture unchanged]. Texel alpha is the
+palette alpha (`0x80` max). World vertices are prelit for static level geometry, so the viewer applies
+the file vertex colour alone as `byte / 255` (alpha stays in GS units).
 
 `decode_ps2_gfx` returns per batch `GsRegs` (raw) and `Material` (blend factors, alpha test, depth write).
 `nfdump validate` prints the histograms above.
@@ -189,6 +193,13 @@ for static level geometry, so the viewer applies the vertex colour alone.
 4. Alpha list (`DrawObjList(1)` after `psiSetUpColourBlend(1)`): flag `0x1` objects, key `-distance^2`
    (farthest first), then shards and drops.
 5. Weapon layer: `psiClearZ`, `DrawObjList(2)` (flag `0x2000`).
+
+Object-class instances whose `parsemap_create_dynamic_objects` case builds only gameplay, trigger,
+volume, light or weather state (spawns `0x24/0x25/0x26/0x2D`, drones `0x0F`, script players `0xD9`,
+triggers/volumes/AI nodes, rainboxes `0x32`, env `0xDF`, emitters `0xF2`, lights `0x4E`, … — see
+`is_non_drawable_class`) never reach a draw list in the original, so the viewer skips their editor
+marker meshes entirely (spawn markers otherwise render as neon slabs: grey texels × overbright green
+vertices). Visible object classes (doors, trees, pickups, coronas, lamps, vehicles) still draw.
 
 Blending is per batch (state above), not per list. Frame clear colour is black (`sceGsSetDefDBuff` clear rgb 0).
 
@@ -212,6 +223,36 @@ lights, uses the blend/test/depth state carried by the model's own batches, and 
 buffer (so sky layer 0 only shows where the world left the depth buffer empty). Level `0x0700001B` (space)
 additionally rotates all sky objects about X by `tick / 1440` radians. 74 sky instances on the disc
 (51 layer 0, 23 layer 1).
+
+### Weather: rain/snow drops (`Env_Create`, `RainBox_Create`, `InitDrops`, `UpdateDrops`, `DrawDrops`)
+
+`parsemap_create_dynamic_objects` case `0xDF` (`Env_Create`) reads its level tag (param key `k` lives at
+tag word `11 + k`, since the tag buffer starts with 11 housekeeping words) and allocates the level's
+drop system: param 0 is the drop type (`InitDrops`: 1 = rain with `0x80` drops, 2 = slow snow with `0x800`,
+anything else = snow with `0x1000` for type 0 else `0x800`). Case `0x32` (`RainBox_Create`) links the
+`Rainbox_*` / `Effect_Snow_*` models as volumes; their boxes come from the entity params
+(`centre + radius + min corner`, max = `2 * centre - min`), not from the `PS2_GFX` (most are stubs).
+`UpdateDrops` respawns up to `0x15` drops per tick around the camera (`+-15` x/z, `+7.5..+15.5` y, `-15..+15`
+for type 2); `AddDrop` only lights drops inside a RainBox volume. Falling drops die at the higher of the
+box bottom and the camera `- 7.5`; rising type-2 drops die at the lower of the box top and the camera
+`+ 7.5`. Drop motion cycles 32 `InitDrops` velocity presets (`frand(0.04) - 0.02` x/z,
+`-(frand(0.075) + 0.025)` y; levels `07-09` use a tighter `0.0056/0.002` spread; type 2 scales by
+`(0.25, -0.25, 0.25)`) plus a snow-only gust random walk clamped to `+-0.01`. `DrawDrops` draws rain
+(type 1) as one `Raindrop` streak mesh (`0x2000290`) per live drop at identity rotation (levels `09-0B`
+add a dark `smoke_1_dust` `0x2000039` sprite each), and snow as camera-facing billboards
+(`psiDrawParticleList`, size `0.2`, colour `0x808080`, texture `0x3000045` for type 0 else `0x3000087`,
+both 32x32 HUD-style sprites). Rain levels: `01-04`, `09-0B`, `41`; snow: `05-08`.
+
+Placed emitters (case `0xF2`, `Emitter_CreatePlist`: `param 0` = def id, `param 1` = duration code,
+`params 2/3` = switch channels gating emission, `param 4` = clear-channel) instantiate one `0x30`
+particles-block def (`u32` id `0x0C0000xx`, `u32` sprite hash `0x03xxxxxx` or `-1`, `u32` mesh-model hash or
+`-1`, `u16` particle count, `u16` per-tick respawn budget, 10 motion floats, `u32` keyframe count, then
+5-float colour keys: rgb, alpha, size factor). Motion (`Emitter_Update`): life `F1 + F2 * rand`, gravity
+`F0 * -9.8`, cone angles `F3 + F4 * rand` / `F5 + F6 * rand` around the placement up, speed `F6`
+(which doubles as the polar range, matching the spawn code), size `F7 * key-size`, colour from the key
+ramp. `Emitter_Draw` billboards textured defs (additive soft blobs) and instances mesh defs per particle.
+Switch-gated emitters run only while their A channel is on / B channel off; the viewer reads live
+mission channels. Emitter levels: `02`, `14`, `15`, `46`.
 
 ### Collision (`parsemap_block_Coll_Data_New`, `Intersect_RayGeom`, `Intersect_CylGeom`)
 
@@ -461,13 +502,24 @@ and ELF addresses; per-row font variants stay script-default).
 
 ### Profiles (memory-card codename save, `LS_Make*`/`LS_Load*`)
 
-The card save is bit-packed per-section blobs (`BIN_PushBits`): Mission (level id, `Menu_GetNightfireStatus`
-word, `PlrStats_GetScoreTable` rows, `GameState[0x52]`), Bonus (`Menu_GetBonus` u64 reward mask),
-GlobalSettings (volumes, `DrawInfo` bits, screen position), MPSettings (per-slot radar/health),
-PlrSettings (`PlayerSetting[0..12]` bits + style), Cheats (`CheatInfo` words), plus the codename and
-difficulty. This engine stores the same fields as versioned binary files (`NFPR`, `assets/profile.*`)
-under `XDG_CONFIG_HOME/nightfire` (one `<codename>.nfprof`), because reproducing the bit layout buys
-nothing: corrupt files fail load and the menus fall back to a fresh profile. MP handicap/radar globals
+The card blob (1026 bytes per codename) is six IFF chunks, each `u32 tag + u32 total size
+(header included)` and a 4-byte file trailer: `PLRS`(11) PlrSettings bits, `MSSN`(68) Mission
+bits, `MPSG`(13) MP-settings bits, `GSET`(905) GlobalSettings bits, `CHET`(9) cheat bits,
+`BNUS`(16) u64 reward mask. Bit streams are LSB-first from the chunk byte 8 (`BIN_PushBits`
+order, cursor starts 0x40). Field order mirrors the `LS_Make*` writers: MSSN = status u32
+(`Menu_GetNightfireStatus`, 12 sp_level bits), row count u8 (always 12; row i is sp_level[i]),
+rows of score u32 + medal u4, one flag bit; BNUS = hi word then lo; CHET = three 1-bit
+`CheatInfo` words; PLRS = `PlayerSetting` bits `+0,+0xe,+0x10,+1,+2,+3,+10,+4,+9,+8,+0xc(2b),+0xb`;
+MPSG = radar bit + handicap u32 of the single saved slot; GSET = music/sfx/language 7b,
+subtitles, speaker u32, widescreen, split-screen u32, screen x/y u32, 219 reserved u32s, u16 tail.
+This engine stores the same fields as versioned binary files (`NFPR`, `assets/profile.*`)
+under `XDG_CONFIG_HOME/nightfire` (one `<codename>.nfprof`); corrupt files fail load and the
+menus fall back to a fresh profile. `nfui <gamedir> import-save <BASLUS-20579*.bin> [--name NAME]`
+(`assets/card_save.*`) decodes a real blob into NFPR: status/levels/scores/medals, bonus mask,
+cheats, volumes/options/screen pos, PlrSettings bytes, MP radar/handicap (replicated to all 8
+slots — the card stores one), controller style from the `+0xe` nibble [INFERENCE]. Gaps vs card:
+difficulty and Txt language have no card source (default Operative/English), `+0x10` and the GSET
+reserved words are not carried, tweak levels stay session-only. MP handicap/radar globals
 (`MPSettings+0x40/+0x44`) and the live damage globals behind the TWEAKS scrolls are session state the
 game owns (`Frontend::tweak_vars` documents the targets).
 
@@ -509,6 +561,14 @@ then, each list 4-byte aligned:
              {f32 translation[3]; f32 quat[4]} x bone_count      inverse bind (only present when n_skinned != 0)
   n_datums:  36-byte records {i32 id; i32 bone; f32 translation[3]; f32 quat[4]}   attachment points
 ```
+The datum entity is purely runtime (stride proven by the +36 scan in `AnimDatumSetEntity`/`AnimDatumGetIndex`;
+no file entity field): per-datum-ordinal celglist* + flag byte tables sized by datum count, both zeroed at
+creation (all hidden until per-frame code sets them, e.g. `Player_WeaponFiring` datum 0); nonzero hashes resolve
+through `hashtable_hashcode_to_celglist`. `CharacterInstance::set_datum_entity()`/`datum_entity()` model the
+slots (lives count ticks here, render draws there). `CharacterRenderer::draw()` takes matching overrides
+(`hidden_part` skips one rigid part by model hash, `attached_hash`/`attached_matrix` draw one model instead —
+0 in both disables; used for the datum-0 suppressor swap, never both paths for the same model).
+
 The file is padded to 32 bytes. The inverse-bind translations are the negated joint positions in bind pose
 (e.g. the wrist bone stores about -0.8 in x); their quaternions are identity for all but six bones on the disc and
 `psiBuildMatrixPalette` ignores them. The 158 skins reference 115 distinct skinned meshes.
@@ -535,7 +595,9 @@ segments; segment *k* covers frames up to and including the cumulative sum of `f
 stored, else 0). The channel ends once the sum reaches `frame_count - 1`; the next channel starts `byte_length` bytes after
 the header. Per bone the channels are, in order, `tx ty tz` (only when the skeleton mask bit is set; else the
 translation is `skeleton.offset * scale`), `qx qy qz`: `qz` carries the sign of `w` (`qz + 4` when `w < 0`),
-`w = +-sqrt(1 - x^2 - y^2 - z^2)`. Bones the skin marks inactive are skipped. Frames are integers; `AnimFrameSet`
+`w = +-sqrt(1 - x^2 - y^2 - z^2)`. Bones the skin marks inactive keep their bind pose (`AnimFrameCopy` advances
+the channel pointers without writing, so the output buffer keeps bind); channels are still consumed to keep
+alignment, and the palette composes the full chain so subtrees attach. Frames are integers; `AnimFrameSet`
 blends frame `f` and `f + 1` (translation lerp, `Quat_Slerp_Acc` for rotation).
 Rig interchange: `AnimFrameCopy` sizes everything by the *sequence's* skeleton id (no rig check anywhere on the
 play path), so a clip plays on any skin whose rig decodes it identically: no more bones, same translation mask
@@ -637,7 +699,11 @@ above 4 do nothing. `CharacterInstance::take_events()` returns these as `AnimEve
 Root motion (`AnimSeqTick`, `AnimFrameResolve`): per tick the root bone's translation change (current sampled translation minus the
 previous one; a fresh layer's previous frame is seeded to its start frame, so the first tick emits the full span, and the
 previous delta is reused after a loop wrap) is masked per axis (`AnimSetUpdate` ORs 0x8d000000 onto walk/strafe layers, and list flags
-0x1000000/0x4000000 zero x/z while 0x2000000 zeroes y — locomotion root is Y-only), then the pose's root translation is zeroed. Across layers the deltas are blended
+0x1000000/0x4000000 zero x/z while 0x2000000 zeroes y — locomotion root is Y-only). The Y-zero path is verified
+dormant: layers are always fresh-zeroed, no append path, script opcode, or drone/bot/cutscene writer in the ACTION.ELF
+corpus sets layer bit 25 (DRIVING.ELF has no layer system either), and all 18,231 disc scripts carry header flags
+0x3C/0x7C only (`nfdump validate` asserts exactly those two values); `CharacterInstance::set_layer_root_y_mask()`
+exposes the mechanism for NPC/drone/cutscene opt-in, exercised synthetically against an unmasked twin. Then the pose's root translation is zeroed. Across layers the deltas are blended
 exactly like the pose. `AnimFrameResolve` rotates the delta by the object's orientation and adds it to the object position, and
 stores the blended root translation y plus the object's `+0x60` offset in sAnimObject `+0x5C` (root height; x0.8627 with the
 MP strafe setting unless flag 0x400). `CharacterInstance::root_motion()`, `root_translation()`, `root_height()`.

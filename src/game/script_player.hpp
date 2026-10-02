@@ -128,6 +128,8 @@ private:
         float entity_start = 0;  // stream time of EntityStart
         bool spline = false;     // +34 == 2
         int obj_ref = -1;        // +37: entity index other streams address (-1 none)
+        std::array<float, 3> epos{};              // interpolated pose (`Script_GetInterp`)
+        std::array<float, 4> equat{0, 0, 0, 1};  // (identity = rest pose before first tick)
         // Camera state.
         bool has_camera = false;
         std::size_t key_begin = 0, key_end = 0;

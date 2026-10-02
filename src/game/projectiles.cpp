@@ -129,8 +129,8 @@ void WeaponSystem::spawn_projectile(const Shooter& shooter, const WeaponDef& def
     const float shots = std::trunc(float(shooter.shots_in_burst) * def.spread_growth);
     const float k = def.has(wf1::kAccurateAiming) && shooter.owner_aiming ? 0.0f : 1.0f;
     const float A = (def.spread + shots) * k;
-    const float r = (2.0f * A * frand() - A) * 0.0014f;   // Rand_FRand_MVar2(2A, A)
-    const float theta = frand() * 2.0f * kPi, phi = frand() * kPi;
+    const float r = game_rng().mvar2(2.0f * A, A) * 0.0014f;   // Rand_FRand_MVar2(2A, A), U1 in [0,1)
+    const float theta = game_rng().frand(2.0f * kPi), phi = game_rng().frand(kPi);   // Rand_FRand(2pi), Rand_FRand(pi)
     // Vec_Spherical_2_Cartesian: polar axis is Y (a1[1] = r * cos phi).
     const Vec3 offset = {r * std::sin(phi) * std::cos(theta), r * std::cos(phi), r * std::sin(phi) * std::sin(theta)};
     b.dir = normalized(shooter.direction + offset);
@@ -342,7 +342,7 @@ bool WeaponSystem::step_projectile(Projectile& b, World& world, FrameTiming timi
 
     float step_speed = b.speed;
     if (b.state == Projectile::State::Spawn) {
-        step_speed = (frand() + 0.5f) * b.speed;   // first frame: (Rand_FRand + 0.5) * speed
+        step_speed = (game_rng().frand(1.0f) + 0.5f) * b.speed;   // first frame: (Rand_FRand(1) + 0.5) * speed
         b.state = Projectile::State::Flying;
     } else if (def.range < b.travelled) {
         return false;                               // state 4: out of range

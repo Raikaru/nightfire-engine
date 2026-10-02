@@ -5,6 +5,7 @@
 
 #include "game/arena_body.hpp"
 #include "game/collision_world.hpp"
+#include "core/rng.hpp"
 
 namespace nf {
 
@@ -198,13 +199,13 @@ void PickupField::update(const CollisionWorld& collision, const std::vector<Pick
     }
 }
 
-void PickupField::make_random_weapon_set(WeaponSets& sets, std::mt19937& rng) {
+void PickupField::make_random_weapon_set(WeaponSets& sets) {
     auto& row = sets.matrix[WeaponSets::kRandomRow];
     for (int k = 0; k < WeaponSets::kSlots; ++k) {
         // slot 0: UseableGuns[Rand(26)] (never the last entry, weapon 82); other slots Rand(27); no duplicates in the row.
         const unsigned span = k == 0 ? WeaponSets::kUseableGuns - 1 : WeaponSets::kUseableGuns;
         for (;;) {
-            const std::int16_t id = sets.useable[rng() % span];
+            const std::int16_t id = sets.useable[game_rng().rand_int(span)];
             if (std::find(row.begin(), row.begin() + k, id) == row.begin() + k) {
                 row[std::size_t(k)] = id;
                 break;

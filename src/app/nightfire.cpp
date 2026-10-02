@@ -260,10 +260,19 @@ struct Args {
     std::string inputs;
     std::string press;
     bool mute = false;
+    int give = -1;  // debug equip: give + select this weapon id at session start
 };
 
 bool parse_args(int argc, char** argv, Args& a) {
     if (argc < 2) return false;
+    // --help anywhere (including argv[1]) prints usage without a gamedir.
+    for (int i = 1; i < argc; ++i) {
+        const std::string v = argv[i];
+        if (v == "--help" || v == "-h") {
+            a.help = true;
+            return true;
+        }
+    }
     a.gamedir = argv[1];
     for (int i = 2; i < argc; ++i) {
         const std::string v = argv[i];
@@ -289,6 +298,7 @@ bool parse_args(int argc, char** argv, Args& a) {
         else if (v == "--inputs") need(a.inputs);
         else if (v == "--press") need(a.press);
         else if (v == "--mute") a.mute = true;
+        else if (v == "--give" && i + 1 < argc) a.give = std::atoi(argv[++i]);  // debug equip
         else if (a.mp && v.rfind("--", 0) == 0) {
             // Match options (nfgame --mp set: --mode/--players/--bots/...): forwarded with values.
             a.mp_args.push_back(v);
@@ -319,9 +329,10 @@ void usage(const char* prog) {
     std::fprintf(stderr,
                  "usage: %s <gamedir> [--mission level.bin [--difficulty 0|1|2] [--channel CH=VAL]] [--mp MAP_OPTS] "
                  "[--drive name [--car name]] [--movie hexid] [--frames N] [--shot out.bmp] [--inputs file] "
-                 "[--press a,b,...] [--mute]\n"
+                 "[--press a,b,...] [--mute] [--give ID]\n"
                  "  no session flags: boot to the frontend (title -> main menu -> mission / arena / driving).\n"
-                 "  --mp options: nfgame set (--mode/--players/--bots/--frag-limit/--time-limit/--weapons/...).\n",
+                 "  --mp options: nfgame set (--mode/--players/--bots/--frag-limit/--time-limit/--weapons/...).\n"
+                 "  --give ID: debug equip (scoped-capture hook): give + select the weapon at session start.\n",
                  prog);
 }
 
@@ -370,7 +381,8 @@ int run(int argc, char** argv) {
         return 0;
     }
     if (!args.mission.empty()) {
-        SpLaunch launch{args.mission, args.difficulty >= 0 ? args.difficulty : cfg.difficulty + 1, args.channels};
+        SpLaunch launch{args.mission, args.difficulty >= 0 ? args.difficulty : cfg.difficulty + 1, args.channels,
+                        args.give};
         SpSession session(*ctx, window, ui, text, launch, cfg);
         if (!session.ready()) return 1;
         if (args.frames >= 0 || !args.shot.empty() || !args.inputs.empty()) {
@@ -413,6 +425,7 @@ int run(int argc, char** argv) {
         if (!args.shot.empty() && direct_mp.shot.empty()) direct_mp.shot = args.shot;
         if (args.frames >= 0 && direct_mp.frames < 0) direct_mp.frames = args.frames;
         if (!args.inputs.empty() && direct_mp.inputs[0].empty()) direct_mp.inputs[0] = args.inputs;
+        direct_mp.give = args.give;
         MpSession session(*ctx, window, ui, text, direct_mp, cfg);
         if (!session.ready()) return 1;
         if (direct_mp.frames >= 0 || !direct_mp.shot.empty()) {

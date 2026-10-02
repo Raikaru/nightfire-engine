@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
-#include <random>
 #include <string>
 #include <vector>
 
@@ -106,7 +105,7 @@ public:
                 float dt, std::vector<PickupEvent>& events);
 
     // Pickup_MakeRandomWeaponSet: fills `sets.matrix[10]` (slot 0 never the last UseableGuns entry).
-    static void make_random_weapon_set(WeaponSets& sets, std::mt19937& rng);
+    static void make_random_weapon_set(WeaponSets& sets);
 
 private:
     struct ModelRef {

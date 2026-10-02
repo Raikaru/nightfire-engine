@@ -15,13 +15,17 @@ Vec3 WeaponView::draw(const Camera& cam, float aspect, const ViewModel& vm, cons
                       cam.eye[1] + r[1] * vm.offset[0] + u[1] * vm.offset[1] + f[1] * vm.offset[2],
                       cam.eye[2] + r[2] * vm.offset[0] + u[2] * vm.offset[1] + f[2] * vm.offset[2]};
     // Instance +z runs shoulder -> muzzle (arm bones 0..5, gun datums at the +z end): local z down-range.
+    // Mirrored basis (x = camera left): instance +x (the rig's +x side) renders screen-left, matching the
+    // original's object-frame placement (PINE: gun root lands left of the camera axis by gun_offset.x).
     const Vec3 z = {f[0], f[1], f[2]};
     Vec3 x = cross(Vec3{0, 1, 0}, z);
     if (length(x) < 1e-4f) x = cam.right();
     x = x * (1.0f / length(x));
     const Vec3 y = cross(z, x);
     const Mat4 model = {x[0], x[1], x[2], 0, y[0], y[1], y[2], 0, z[0], z[1], z[2], 0, gun[0], gun[1], gun[2], 1};
-    chars_.draw(cam, aspect, *vm.skin, vm.anim->palette(), model, vm.sleeve, vm.anim->facial(), light);
+    chars_.draw(cam, aspect, *vm.skin, vm.anim->palette(), model, vm.sleeve, vm.anim->facial(), light,
+                vm.datum0_part, vm.datum0_entity,
+                vm.datum0_entity ? vm.anim->datum_world(0) : identity());
 
     if (vm.muzzle_flash <= 0.0f) return {0, 0, 0};
     // Player_MuzzleFlash lights bone 0 (4 for alternating-hand weapons), but the visible flash sits at the

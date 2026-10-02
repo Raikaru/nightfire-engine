@@ -37,6 +37,7 @@ struct MpDirect {
     long frames = -1;  // headless ticks (< 0 = interactive)
     std::string shot;
     std::array<std::string, 4> inputs;
+    int give = -1;  // debug equip (nightfire --give ID): give + select slot 0 at start
 };
 
 class MpSession {

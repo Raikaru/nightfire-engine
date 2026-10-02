@@ -1,6 +1,8 @@
 #include "driving/drive_session.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace nf::driving {
 
@@ -71,17 +73,44 @@ void DriveSession::floor_start(Vec3& pos) const {
     }
 }
 
-// The first record of the road network (`rs` members of the RNgp group, sub_220C28): segment start (+0x00),
-// end (+0x10). The mission start places the player on it, driving towards the end.
+// Mission start from the road network (`rs` members of the RNgp group, sub_220C28): each record
+// holds segment start (+0x00) and end (+0x10), but in most tracks only the +0x10 end is a valid
+// position — the first two floats of +0x00 hold lane counts there (e.g. MIS3 rs#0 (2,2,...),
+// UW (16,16,...)/(4,4,...), jungle (1,1,...)/(3,3,...); Paris/MIS4/RACE carry real coords in
+// +0x00. Reading +0x00 blindly starts sleds/subs/flyers (which skip Mission's start-line
+// search) at junk coords or at the floor centroid fallback. Prefer a same-record segment whose
+// ends are close together; else consecutive valid ends; else fail (caller falls back).
 static bool road_start(const CarpFile& carp, Vec3& pos, float& yaw) {
+    struct Rec {
+        int idx;
+        Vec3 p0, p1;
+    };
+    std::vector<Rec> recs;
     for (const CarpEntry& e : carp.entries())
-        if (!e.is_head && e.tag == "rs" && e.index == 0 && e.size >= 0x24) {
+        if (!e.is_head && e.tag == "rs" && e.size >= 0x24) {
             const Bytes b = carp.payload(e);
-            pos = {load<float>(b, 0), load<float>(b, 4), load<float>(b, 8)};
-            const Vec3 end{load<float>(b, 16), load<float>(b, 20), load<float>(b, 24)};
-            yaw = std::atan2(end[0] - pos[0], end[2] - pos[2]);
-            return true;
+            recs.push_back({e.index, {load<float>(b, 0), load<float>(b, 4), load<float>(b, 8)},
+                            {load<float>(b, 16), load<float>(b, 20), load<float>(b, 24)}});
         }
+    if (recs.empty()) return false;
+    std::sort(recs.begin(), recs.end(), [](const Rec& a, const Rec& b) { return a.idx < b.idx; });
+    auto valid = [](const Vec3& v) { return length(v) > 1.0f; };  // skips (0,0,0) placeholder ends
+    for (const Rec& r : recs) {
+        if (!valid(r.p0) || !valid(r.p1) || r.p0[0] == r.p0[1]) continue;  // lane-count junk has x == y
+        const Vec3 d = r.p1 - r.p0;
+        if (length(d) < 0.5f || length(d) > 200.0f) continue;
+        pos = r.p0;
+        yaw = std::atan2(d[0], d[2]);
+        return true;
+    }
+    for (std::size_t i = 0; i + 1 < recs.size(); ++i) {
+        if (!valid(recs[i].p1) || !valid(recs[i + 1].p1)) continue;
+        const Vec3 d = recs[i + 1].p1 - recs[i].p1;
+        if (length(d) < 0.5f || length(d) > 200.0f) continue;
+        pos = recs[i].p1;
+        yaw = std::atan2(d[0], d[2]);
+        return true;
+    }
     return false;
 }
 

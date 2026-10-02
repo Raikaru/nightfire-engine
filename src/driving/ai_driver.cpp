@@ -2,7 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>  // rand (AI MG accuracy rolls; deterministic sequence)
+#include "core/rng.hpp"  // process-global game Rand stream (AI MG accuracy rolls)
 
 namespace nf::driving {
 namespace {
@@ -265,7 +265,7 @@ AiEvents AiDriver::step(const Vec3& player_pos, const Vec3& player_vel, const Ro
             if (weapons_.spec().machine_guns) {
                 if (weapons_.fire_primary(now, muzzle, dir, 1.0f - accuracy_, sfx)) ++ev.shots_fired;
                 // Accuracy roll: some bursts chip the player (mission applies 2 hp).
-                if (dist < 45.0f && std::rand() < RAND_MAX * accuracy_ * 0.5) ev.mg_hit = true;
+                if (dist < 45.0f && nf::game_rng().frand(1.0f) < accuracy_ * 0.5f) ev.mg_hit = true;
             }
             if (!weapons_.secondaries().empty() && dist < 50.0f && dist > 10.0f) {
                 if (weapons_.fire_secondary(now, muzzle, dir, false, projectiles, sfx)) ++ev.shots_fired;

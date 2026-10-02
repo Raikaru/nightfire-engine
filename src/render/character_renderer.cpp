@@ -250,7 +250,9 @@ void CharacterRenderer::draw_mesh(const GpuMesh& mesh, bool fade) {
 }
 
 void CharacterRenderer::draw(const Camera& cam, float aspect, const SkinDef& skin, const Palette& palette,
-                             const Mat4& model, unsigned sleeve, const std::vector<float>& facial, const CharacterLighting& lighting) {
+                             const Mat4& model, unsigned sleeve, const std::vector<float>& facial,
+                             const CharacterLighting& lighting, std::uint32_t hidden_part, std::uint32_t attached_hash,
+                             const Mat4& attached_matrix) {
     if (palette.skin.size() > std::size_t(kMaxBones)) throw std::runtime_error("skeleton exceeds the shader palette");
     const Mat4 view = cam.view();
     const Mat4 mv = mul(view, model);
@@ -290,8 +292,14 @@ void CharacterRenderer::draw(const Camera& cam, float aspect, const SkinDef& ski
     // Rigid parts are modelled in their bone's space and ride its world matrix.
     glUniformMatrix4fv(u_bones_, GLsizei(palette.world.size()), GL_FALSE, palette.world[0].data());
     for (const auto& ref : skin.parts)
-        if (ref.hash != 0xFFFFFFFFu)
+        if (ref.hash != 0xFFFFFFFFu && ref.hash != hidden_part)
             if (auto m = bank_.find_model(ref.hash)) draw_mesh(part_mesh(*m, ref.bone), fade);
+    // Attached datum model (silenced muzzle suppressor): single bone matrix, same object/world setup.
+    if (attached_hash != 0)
+        if (auto m = bank_.find_model(attached_hash)) {
+            glUniformMatrix4fv(u_bones_, 1, GL_FALSE, attached_matrix.data());
+            draw_mesh(part_mesh(*m, 0), fade);
+        }
 }
 
 void CharacterRenderer::bounds(const SkinDef& skin, unsigned sleeve, Vec3& lo, Vec3& hi) {

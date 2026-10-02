@@ -223,9 +223,9 @@ void next_bullet_time(Drone& d, bool new_burst, bool bot) {
         int size = def ? int(def->fire_count[2]) : 3;   // weapon_data +0x2c
         if (!multiplayer(d)) {
             if (w == 6 || w == 10) {
-                if (size < 2) size = 2 + int(d.sys->rand() % 3);
+                if (size < 2) size = 2 + int(d.sys->rand_int(3));
             } else if (w >= 0xe && w <= 0x10) {
-                size = 1 + int(d.sys->rand() % 2);
+                size = 1 + int(d.sys->rand_int(2));
             }
         }
         d.burst_left = std::max(size, 1);
@@ -238,7 +238,7 @@ void next_bullet_time(Drone& d, bool new_burst, bool bot) {
             last = d.last_shot_time;
         } else {
             const float mul = aggression_mul(d);
-            extra = d.sys->rand() % 15 + std::uint32_t(60.0f / std::max(mul, 0.01f));
+            extra = d.sys->rand_int(15) + std::uint32_t(60.0f / std::max(mul, 0.01f));
             d.burst_left = std::max(1, int(float(d.burst_left) * mul));
             last = d.last_shot_time;
         }

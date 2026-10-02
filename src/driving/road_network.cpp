@@ -196,6 +196,12 @@ std::vector<int> RoadNetwork::walk_from(int start, const std::vector<RoadSeg>& l
                     if (score < best_score) best_score = score, nx = static_cast<int>(j);
                 }
             }
+            // District seams: index order continues across unbridged gaps (600 m+ between
+            // districts). Data order, not proximity, links sections.
+            if (nx < 0) {
+                for (std::size_t j = std::size_t(n) + 1; j < nodes_.size(); ++j)
+                    if (!seen[j]) { nx = static_cast<int>(j); break; }
+            }
         }
         if (nx >= 0) {
             const Vec3 d = nodes_[std::size_t(nx)].pos - here;

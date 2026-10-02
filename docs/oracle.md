@@ -97,18 +97,18 @@ its column is the per-frame model error and the free column the error after the 
 floats and flags computed from the recorded pad are compared against the game's own (`max_act`, `flag_mismatch`).
 
 Skyrail (`07000024.bin`), positions in centimetres, all from `tools/oracle/run_scenarios.sh`
-(re-recorded 2026-10-01; traces under `~/.cache/movement-2-tmp/oracle-run/`, walk re-recorded once to
-dodge a missed tracer frame — walk2 below):
+ (re-recorded 2026-10-02 after the motion-fit gap-rate fix below; traces under
+ `~/.cache/movement-2-tmp/m2work/oracle/`, every synced run has zero frames above 1 cm):
 
 | Scenario | Input | Frames | Free max / end | `--sync` max | Free, constant foot height (max) |
 |----------|-------|--------|----------------|--------------|----------------------------------|
-| stand | idle | 60 | 0.000 / 0.000 | 0.000 | 0.000 |
-| turn | left stick X both ways, right stick Y | 148 | 0.000 / 0.000 (yaw 5e-6 rad) | 0.000 | 0.000 |
-| walk | left stick forward up a ramp | 128 | 3.6 / 2.9 | 0.87 (3) | 5.6 |
-| strafe | right stick X, off a ledge, land | 100 | 1.2 / 0.8 | 0.37 | 2.0 |
-| wall | forward into a wall | 270 | 3.6 / 3.2 | 0.45 | 5.6 |
-| slide | forward, turn into the wall, slide along it | 270 | 4.7 / 4.7 | 0.53 | 6.2 |
-| jump | jump on the spot, walk, jump while walking | 168 | 4.8 / 0.2 | 0.84 (1) | 13.0 |
+| stand | idle | 56 | 0.000 / 0.000 | 0.000 | 0.000 |
+| turn | left stick X both ways, right stick Y | 150 | 0.000 / 0.000 (yaw 5e-6 rad) | 0.000 | 0.000 |
+| walk | left stick forward up a ramp | 129 | 3.6 / 2.9 | 0.87 (3) | 5.6 |
+| strafe | right stick X, off a ledge, land | 92 | 1.2 / 0.8 | 0.37 | 2.0 |
+| wall | forward into a wall | 269 | 23.9 / 21.3 | 0.59 (3) | 5.6 |
+| slide | forward, turn into the wall, slide along it | 254 | 4.3 / 4.2 | 0.45 | 6.2 |
+| jump | jump on the spot, walk, jump while walking | 153 | 3.6 / 0.5 | 0.83 (1) | 13.0 |
 | crouch | crouch, crouch-walk, stand | 180 | 3.8 / 3.8 | 0.14 (2) | 41.9 |
 
  (1) jump is clean: the old 10.5 cm was the single frame after a frame the tracer missed; a clean
@@ -119,16 +119,28 @@ dodge a missed tracer frame — walk2 below):
  crouch ends the frame airborne (now 0.00 on those frames, verified). The remaining 2.88 (4
  stair-climbing frames f8754-57) was first stair-nosing contact lifting the capsule off marginal
  support; freezing rises lets penetration depth self-correct via pushes instead (now 0.14 max,
- no synced frame above 1 cm). (3) walk was 8.63 synced at f8666: the tracer missed frame 8665
- where the rate flips 60→30, and make-inputs kept the previous 60 Hz for it. Attributing the flip
- to the first missing frame (motion fits mul=2 there) brings synced to 0.87 with no frame above
- 1 cm; free returns to the 3.6 baseline. Dist2Tri and the triangle geometry were verified
- per-triangle against the EE under nfmips (identical to sub-ulp on identical inputs; the game
- tests every triangle we test plus far harmless ones; see docs/gameplay.md "Animated foot
- height"). The constant-foot-height column is prior-wave values (that mechanism is unchanged).
+ no synced frame above 1 cm). The constant-foot-height column is prior-wave values (that mechanism is unchanged).
+ (3) missed tracer frames straddling a 60/30 rate flip: make-inputs places the flip by motion
+ fit (per-frame displacements into and out of the gap predict the far record under each candidate
+ flip frame; closest wins). The walk-8665 gap flips inside its missing frame, the wall-8696 gap
+ after it — the old fixed rule (flip at the first missing frame) got wall wrong by 9.9 cm over 4
+ contact frames; motion fit keeps both below 1 cm (walk 0.87, wall 0.59, zero frames above 1 cm).
+ Dist2Tri and the triangle geometry were verified per-triangle against the EE under nfmips
+ (identical to sub-ulp on identical inputs; the game tests every triangle we test plus far harmless
+ ones; see docs/gameplay.md "Animated foot height").
 
-Yaw is exact in every scenario (max 5e-6 rad over 148 frames of stick-driven turning at both frame rates),
+Yaw is exact in every scenario (max 5e-6 rad over 150 frames of stick-driven turning at both frame rates),
 action floats match to 1.2e-7 and the flag bytes match except around frames the tracer missed.
+
+### Substate scenario reachability (Skyrail MP arena)
+
+ Swim, climb, creep, wire, grapple, zipline, zero-G and scan have no reachable trigger in Skyrail:
+ a loader probe over `07000024.bin` finds 49 rooms, all dry (`water_level` -500), 0 ladders and 0
+ creep walls, and the MP loadout offers no rope/scan gadgets. Death/respawn is reachable in principle
+ but not recordable in practice: arena bots fight each other and ignore a live player (an idle player
+ takes no damage for minutes; gunfire does not attract them), and no fatal fall was found near the
+ spawn. SP-side coverage (swim/climb/scan/death in story missions) is pending a reliable SP
+ recording path — the Paris Prelude sniper seat is the current candidate (see the Driving slice).
 
 ### Residual differences
 

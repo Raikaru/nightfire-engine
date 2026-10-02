@@ -658,7 +658,7 @@ int state_ninja_backflip(Drone& d, const Msg& m) {
 int state_ninja_sideflip(Drone& d, const Msg& m) {
     if (m.id == kMsgNone) return 1;
     if (m.id == kMsgEnter || m.id == kMsgTick) {
-        d.set_state(d.sys->rand() % 2 ? kStNinjaSideflipLeft : kStNinjaSideflipRight);
+        d.set_state(d.sys->rand_int(2) ? kStNinjaSideflipLeft : kStNinjaSideflipRight);
         return 1;
     }
     return skeleton(d, m);

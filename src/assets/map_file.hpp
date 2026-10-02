@@ -96,6 +96,50 @@ struct Model {
 // StaticInstance::flags low 16 bits: 0x8000 = world cel (built by parsemap_block_map_data_static);
 // otherwise the object class dispatched by parsemap_create_dynamic_objects.
 constexpr std::uint32_t kClassSky = 0x2A;  // View_AddSkyObj; params 0 slot, 1 flash, 2/3 timers, 4 layer
+// Object classes (parsemap_create_dynamic_objects) whose Create handlers build gameplay, trigger,
+// volume, light or weather state and never attach the placement's marker mesh to a draw list, so the
+// static world pass must not draw them. Visible classes (doors 0xDB, trees 0xF3, pickups 0xF0, coronas
+// 0xFC, lamps/RB 0xD8, glass, vehicles, ...) are NOT in this set. Spawns (0x24/0x2D) carry a green
+// editor box mesh that otherwise renders as a neon slab at every spawn.
+inline bool is_non_drawable_class(std::uint32_t cls) {
+    switch (cls) {
+        case 0x0F:  // oDrone (Drone_Create): NPCs draw via the character renderer
+        case 0x21:  // RIPPLE_GEN (Ripples_Create): water-ripple effect state
+        case 0x24:  // Player1 (Player_AddNewStartPos, SP spawn marker)
+        case 0x25:  // MP spawn (MP_RegisterSpawnPoint)
+        case 0x26:  // MP object (MP_RegisterMPObject)
+        case 0x2B:  // Leaf_emmit (LeafGen_Create): falling-leaf emitter
+        case 0x2D:  // PlayerStart (Player_AddNewStartPos, SP spawn marker)
+        case 0x32:  // RainBox (RainBox_Create): rain/snow volume, not geometry
+        case 0x33:  // Message (Hint_Create): hint trigger
+        case 0x41:  // InverterTrigger_Create: logic, no drawable
+        case 0x4E:  // oLightPoint (Light_Create): light position marker
+        case 0xD9:  // Script Player Wedge (SP_CreateScriptPlayer): invisible
+        case 0xDC:  // Trigger_Create: trigger volume
+        case 0xDF:  // Rain/SNOW_gen (Env_Create): weather generator
+        case 0xE5:  // Cover corner node (Drone_CoverCornerNode)
+        case 0xE6:  // Cover low node (Drone_CoverLowNode)
+        case 0xE7:  // ThirdCam_Create: camera marker
+        case 0xE8:  // Trigger_LoadLevelCreate: level-change volume
+        case 0xE9:  // Drone_AIPoint: AI marker
+        case 0xEA:  // Trigger_TouchOnce: trigger volume
+        case 0xEB:  // Trigger_Touch: trigger volume
+        case 0xEC:  // Trigger_MultiplexIn: logic
+        case 0xED:  // Trigger_MultiplexSIn: logic
+        case 0xEE:  // MultiplexOut: logic
+        case 0xEF:  // Trigger_MultiplexOrIn: logic
+        case 0xF1:  // DroneSpawner_Create: AI spawner
+        case 0xF2:  // Emitter_CreatePlist: particle emitter (drawn by the weather/emitter pass)
+        case 0xF4:  // Trigger_MoviePlayer: movie volume
+        case 0xF8:  // Drone_AIVolume_Create: AI volume
+        case 0xF9:  // SoundTrigger_Create: sound volume
+        case 0xFA:  // ThirdIcon_Create: icon marker
+        case 0xFB:  // MusicTrigger_Create: music volume
+        case 0xFD:  // CamSubject_Create: camera marker
+            return true;
+        default: return false;
+    }
+}
 
 // map_data_static record (0x4C bytes + n * 8 params).
 struct StaticInstance {

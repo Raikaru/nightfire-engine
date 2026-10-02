@@ -117,4 +117,20 @@ Camera camera_for_eye_yaw_pitch(const Vec3& eye, float yaw, float pitch) {
 
 float camera_aspect(int width, int height) { return float(width) / float(std::max(height, 1)); }
 
+float game_aspect(const AppConfig& cfg) { return cfg.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f; }
+
+GameView game_view(const AppConfig& cfg, int width, int height) {
+    const float ga = game_aspect(cfg);
+    int gw = width, gh = height;
+    if (float(width) / float(std::max(height, 1)) > ga) gw = int(float(height) * ga + 0.5f);  // pillarbox
+    else gh = int(float(width) / ga + 0.5f);                                                 // letterbox
+    GameView gv;
+    gv.x = (width - gw) / 2;
+    gv.y = (height - gh) / 2;
+    gv.w = gw;
+    gv.h = gh;
+    gv.aspect = ga;
+    return gv;
+}
+
 }  // namespace nf::app

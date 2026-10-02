@@ -45,16 +45,18 @@ u32 parse_u32(const std::string& s) {
 }
 
 struct GlobalOpts {
-    std::string state, ram;
+    std::string state, ram, sym_file, fs_root;
     u64 steps = 0;  // 0 = default
     bool no_hooks = false;
 };
 
 Machine open_machine(const std::string& elf, const GlobalOpts& g) {
     Machine m(elf);
+    if (!g.sym_file.empty()) m.load_sym_file(g.sym_file);
     if (!g.state.empty()) m.load_p2s(g.state);
     if (!g.ram.empty()) m.load_ram_dump(g.ram);
     if (!g.no_hooks) m.install_libc_hooks();
+    if (!g.fs_root.empty()) m.set_fs_root(g.fs_root);
     return m;
 }
 
@@ -1093,8 +1095,9 @@ void usage() {
                  "       nfmips <elf> diff-sin (PS2Sinf__Ff truth table, Bots poly replica)\n"
                  "       nfmips <elf> diff-refind (NDrone2_ReFindMissionPath truth table, Bots diff)\n"
                  "       nfmips <elf> diff-combat (DroneFunc_CombatState truth table, Bots diff)\n"
-                 "args: i:<int> | f:<float> | f:0x<bits> | bare numbers (int, or float with ./e/)\n"
+                 "       nfmips <elf> rand <fn> <i:int|f:float> [--count N] [--seed x,y] [--state p2s]\n"
                  "call/trace writes: --poke addr:hexbytes | --vf32 addr:v0,v1,.. (scratch: 0x1E00000)\n"
+                 "call/trace files: --sym-file <linker-.SYM> [--fs-root <extracted-disc-dir>]\n"
                  "stubs: --noop <sym> (repeatable, v0 = 0) | --stub-sound (Sound_Play/Play3D no-ops)\n"
                  "       --hook-copy (psiCopyToSP/FromSP as plain RAM<->scratchpad copies)\n");
 }
@@ -1133,6 +1136,8 @@ int main(int argc, char** argv) {
                 else if (rest[j] == "--trace-first") trace_first = std::stoull(rest.at(++j));
                 else if (rest[j] == "--state") g.state = rest.at(++j);
                 else if (rest[j] == "--ram") g.ram = rest.at(++j);
+                else if (rest[j] == "--sym-file") g.sym_file = rest.at(++j);
+                else if (rest[j] == "--fs-root") g.fs_root = rest.at(++j);
                 else if (rest[j] == "--steps") g.steps = std::stoull(rest.at(++j));
                 else if (rest[j] == "--no-hooks") g.no_hooks = true;
                 else throw std::runtime_error("unknown flag: " + rest[j]);
@@ -1179,6 +1184,8 @@ int main(int argc, char** argv) {
                 else if (rest[j] == "--hook-copy") hook_copy = true;
                 else if (rest[j] == "--state") g.state = rest.at(++j);
                 else if (rest[j] == "--ram") g.ram = rest.at(++j);
+                else if (rest[j] == "--sym-file") g.sym_file = rest.at(++j);
+                else if (rest[j] == "--fs-root") g.fs_root = rest.at(++j);
                 else if (rest[j] == "--steps") g.steps = std::stoull(rest.at(++j));
                 else throw std::runtime_error("unknown flag: " + rest[j]);
             }
@@ -1201,7 +1208,12 @@ int main(int argc, char** argv) {
         }
         if (cmd == "symbols") {
             Machine m(elf);
-            const std::string sub = av.size() > 2 ? av[2] : "";
+            std::string sub;
+            for (size_t j = 2; j < av.size(); j++) {
+                if (av[j] == "--sym-file") m.load_sym_file(av.at(++j));
+                else if (sub.empty()) sub = av[j];
+                else throw std::runtime_error("unknown flag: " + av[j]);
+            }
             for (const auto& s : m.symbols())
                 if (sub.empty() || s.name.find(sub) != std::string::npos)
                     std::printf("%08x %6u %s\n", s.value, s.size, s.name.c_str());
@@ -1223,6 +1235,51 @@ int main(int argc, char** argv) {
         if (cmd == "diff-sin") return cmd_diff_sin(elf);
         if (cmd == "diff-refind") return cmd_diff_refind(elf);
         if (cmd == "diff-combat") return cmd_diff_combat(elf);
+        if (cmd == "rand") {
+            // Sequential draws on ONE machine (state advances): the shared-RNG oracle.
+            // nfmips <elf> rand <fn> <i:int|f:float> [--count N] [--seed x,y] [--state p2s]
+            if (av.size() < 4) {
+                usage();
+                return 2;
+            }
+            size_t k = 3;
+            CallArgs args;
+            std::vector<std::string> rest;
+            parse_call_args(av, k, args, rest);
+            GlobalOpts g;
+            int count = 1;
+            bool seeded = false;
+            u32 sx = 0, sy = 0;
+            for (size_t j = 0; j < rest.size(); j++) {
+                if (rest[j] == "--count") count = std::stoi(rest.at(++j));
+                else if (rest[j] == "--seed") {
+                    const std::string s = rest.at(++j);
+                    const auto c = s.find(',');
+                    if (c == std::string::npos) throw std::runtime_error("bad --seed (want x,y)");
+                    sx = parse_u32(s.substr(0, c));
+                    sy = parse_u32(s.substr(c + 1));
+                    seeded = true;
+                } else if (rest[j] == "--state") g.state = rest.at(++j);
+                else throw std::runtime_error("unknown flag: " + rest[j]);
+            }
+            if (int(args.ints.size()) + int(args.floats.size()) != 1 || count < 1)
+                throw std::runtime_error("rand takes exactly one draw arg plus --count N");
+            Machine m = open_machine(elf, g);
+            m.install_libc_hooks();
+            const u32 entry = resolve(m, av[2]);
+            if (seeded) {
+                m.mem.write<u32>(0x30D0A0u, sx);
+                m.mem.write<u32>(0x30D0A4u, sy);
+            }
+            for (int i = 0; i < count; i++) {
+                const auto r = m.call_keep(entry, args, 10'000'000);
+                float f;
+                std::memcpy(&f, &r.f0, 4);
+                std::printf("%d v0=%llu f0=%g f0h=0x%08x\n", i, (unsigned long long)r.v0, (double)f,
+                            r.f0);
+            }
+            return 0;
+        }
         usage();
         return 2;
     } catch (const std::exception& e) {

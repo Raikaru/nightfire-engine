@@ -47,7 +47,6 @@ std::uint32_t buf_u(const std::uint8_t* buf, std::size_t word) {
     std::memcpy(&v, buf + word * 4, 4);
     return v;
 }
-void set_buf_u(std::uint8_t* buf, std::size_t word, std::uint32_t v) { std::memcpy(buf + word * 4, &v, 4); }
 
 // Per-category weight tail (the common LABEL_56/104 path): ratio of scaled to
 // denom, rounded to a 0..1 weight. Returns the weight; scaled is already stored.

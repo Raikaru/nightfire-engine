@@ -255,7 +255,7 @@ public:
         }
         return false;
     }
-    std::uint32_t rand(std::uint32_t n) override { return n ? drones().rand() % n : 0; }
+    std::uint32_t rand(std::uint32_t n) override { return drones().rand_int(n); }
 
 private:
     World& world() const { return *sys_.impl_->cfg.world; }

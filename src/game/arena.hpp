@@ -4,13 +4,13 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <random>
 #include <string>
 #include <vector>
 
 #include "assets/mp_data.hpp"
 #include "assets/strings.hpp"
 #include "core/math.hpp"
+#include "core/rng.hpp"
 #include "game/arena_body.hpp"
 #include "game/arena_data.hpp"
 #include "game/damage.hpp"
@@ -170,7 +170,7 @@ class ArenaSystem : public System, public MatchRules {
 public:
     // `weapon` resolves weapon ids for the pickups; `strings` (optional) turns message labels into text.
     ArenaSystem(World& world, ArenaSettings settings, const WeaponSets& sets, PickupWeaponFn weapon,
-                const StringTable* strings = nullptr, std::uint32_t seed = 0x4E46);
+                const StringTable* strings = nullptr);
 
     // ---- MP_Init / MP_Start ----
     // Registers the body of participant `slot` (humans 0..3, bots 4..7); the slot must be `present` in the settings.
@@ -314,7 +314,6 @@ private:
     WeaponSets sets_;
     PickupWeaponFn weapon_info_;
     const StringTable* strings_;
-    std::mt19937 rng_;
     ArenaLevelData data_;
     std::vector<SpawnRT> spawns_;
     std::array<SlotState, kMpSlots> slots_{};

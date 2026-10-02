@@ -471,8 +471,13 @@ vehicle-side state (its own substate, sounds, gun flags, `GT_LoseControl`) is th
 `ObjectWorld::set_movers()` installs the frame's script-driven solids (lifts, doors, platforms; AABB
 plus the frame's displacement, with a script id). `collide()` pushes the capsule's end spheres and
 midpoint out of them (hits carry `placement == SIZE_MAX`) and a grounded player standing on one's top
-face is carried by `ride_displacement()`. [INFERENCE: the carry path is a reimplementation; no
-ACTION.ELF lift trace pins down the original's frame order.] Scripting/Driving own the per-tick update.
+ face is carried by `ride_displacement()`. [INFERENCE: the carry path is a reimplementation; no
+ ACTION.ELF lift trace pins down the original's frame order.] Scripting/Driving own the per-tick update.
+ Script-entity solids (`SP_SetPosRot` poses) publish one mover per collision-BVH leaf, not one
+ merged box: stacked shaft segments would otherwise merge into a solid column and push the rider
+ out (seen on 0700004a's lift collision, whose merged bounds span the whole shaft). Leaves whose
+ tris are all pass-through (`Collide_Filter` 0xC0, like the original) contribute no mover.
+ Per-leaf maxima persist across frames for the displacement.
 
 ## Single-player missions (`src/game/mission.*`, `objects.*`, `script_player.*`)
 
@@ -512,10 +517,10 @@ lets `SpSystem::on_mission_fail` fail the level through the same path as drone m
 
 `SpObjects` builds doors, triggers (+ Touch/TouchOnce/Multiplex/LoadLevel/MoviePlayer), switches,
 SS gates, breakables/destroyables, sensors/searchlights, turrets (copter/gun/shooter/creature),
-hurt volumes, mines, locks/monitors/fuseboxes, hints, sound/music triggers, pickups, thirdcams and
-script-player anchors from the map statics; everything else stays static. Doors open on proximity
-(flag 2), their unlock channel, or Cross (`activate_at`, shared with Movement's `Player_Activate`
-lock edges freeze them with the "locked" line (`0x02000003`). Closed poses publish solid
+ hurt volumes, mines, locks/monitors/fuseboxes, hints, sound/music triggers, pickups, thirdcams and
+ script-player anchors from the map statics; everything else stays static. Doors open on proximity
+ (flag 2), their unlock channel, or Cross (`activate_at`, shared with Movement's `Player_Activate`);
+ lock edges freeze them with the "locked" line (`0x02000003`). Closed poses publish solid
 `Mover` AABBs and open poses move with the panel: framelist doors evaluate their path track
 at open progress (linear `KeyFrame_Interp` or spline `Spline_Interp` per param 4, rotation by
 `Quat_Slerp_Acc`, all ported op-for-op and differential-checked against the originals);
@@ -526,8 +531,9 @@ statics and draws the panels via `draw_objects`. Touch volumes latch channels, m
 AND/OR/fan-out/sequence logic, sensors trip alarm channels in their cones (searchlights pan
 theirs sinusoidally per `Searchlight_Update`: param 4/5 degree range, 480-frame cycle),
 breakables fall to bullets/blasts from the weapon events, pickups grant through `WeaponSystem`,
-turrets and mines hurt on range/proximity. Sounds, HUD texts, music events, drone spawns and
-level/movie requests queue out of the tick for the frontend.
+ turrets and mines hurt on range/proximity. Sounds, HUD texts, music events, drone spawns and
+ level/movie requests queue out of the tick for the frontend. `nfdump <gamedir> script <level.bin>`
+ lists every door (placement, unlock/lock channels, auto flag, position) after the class census.
 
 ### Cutscenes (`Script_Run`, `Script_Update`, `Script_EventHandler`)
 

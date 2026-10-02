@@ -21,6 +21,7 @@ struct MeshBatch {
     std::string shape;       // 4-character `.ssh` shape name of the bound TAR texture; empty = untextured
     bool alpha_test = false; // GeoPrimState "alphatest=on"
     bool translucent = false;// GeoPrimState texalpha != noA
+    bool fogged = true;      // false for sky dome/celestial shapes (drawn unfogged)
     std::vector<MeshVertex> vertices;
     std::vector<std::uint32_t> indices;  // triangle list
 };

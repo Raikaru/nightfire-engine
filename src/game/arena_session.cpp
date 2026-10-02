@@ -147,10 +147,13 @@ ArenaSession::ArenaSession(World& world, WeaponTable table, const MatchOptions& 
         return PickupWeaponInfo{d.base, d.clip_size, d.ammo_type, d.pickup_celglist, d.mp_name_label, table_ptr->ammo(d.ammo_type).name_label};
     };
 
-    auto weapons = std::make_unique<WeaponSystem>(std::move(table), tuning, options.seed);
+    auto weapons = std::make_unique<WeaponSystem>(std::move(table), tuning);
+    weapons->seed_match(options.seed);   // seeds the global Rand stream for the whole match (weapons and arena)
     weapons_ = weapons.get();
     world_.add_system(std::move(weapons));
-    auto arena = std::make_unique<ArenaSystem>(world_, options.settings(), WeaponSets::builtin(), info, strings, options.seed);
+    // Match randomness comes from the global Rand stream (seeded above); the arena draws spawn picks, target
+    // choices and objective sites from it like every other system.
+    auto arena = std::make_unique<ArenaSystem>(world_, options.settings(), WeaponSets::builtin(), info, strings);
     arena_ = arena.get();
     world_.add_system(std::move(arena));
     weapons_->set_match_rules(arena_);

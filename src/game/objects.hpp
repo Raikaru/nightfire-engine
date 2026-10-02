@@ -23,6 +23,7 @@
 #include <unordered_map>
 #include <vector>
 #include "assets/nav_data.hpp"
+#include "core/rng.hpp"
 #include "game/object_world.hpp"
 
 namespace nf {
@@ -177,6 +178,17 @@ public:
         std::uint16_t trigger_channel = 0;  // param 6: play on rising edge
         bool started = false;
     };
+    // One live script entity (`Script_CreateEntity`): model hash + interpolated key pose.
+    // Entity hashes name models (`SP_SetPosRot` drives the object); poses are key offsets
+    // composed with the placement transform.
+    struct ScriptEntity {
+        std::uint32_t hash = 0;
+        Vec3 pos{};
+        std::array<float, 4> quat{0, 0, 0, 1};
+    };
+    // Publish movers (+ draw overrides / hides) for script entities whose model hash matches
+    // a placement with collision. Called after tick(), before the movers are read.
+    void update_script_entities(const std::vector<ScriptEntity>& ents);
     struct Rotor {  // `rotor_init` (113): spins for the renderer
         std::size_t placement = 0;
         float angle = 0;
@@ -206,6 +218,7 @@ public:
     void set_link_byte(const std::array<float, 3>& pos, std::uint8_t value);  // event 11 (door lock)
     std::size_t door_count() const;
     bool any_door_open() const;
+    const std::vector<DoorObject>& doors() const { return doors_; }
     // Live panel transform for the renderer/movers (`Door_Interp` pose).
     void door_pose(DoorObject& d, std::array<float, 16>& out) const;
     // LoadLevel/MoviePlayer requests (level id / script hash, 0 = none).
@@ -314,6 +327,14 @@ private:
     std::vector<Text> texts_;
     // World-space bounds per placement with collision (touch tests + movers).
     std::unordered_map<std::size_t, std::pair<std::array<float, 3>, std::array<float, 3>>> bounds_;
+    // Model-space solid leaves per script-driven placement (parsed once from the model's
+    // collision BVH, pass-through tris skipped) and the last published world max per leaf
+    // (for the mover displacement).
+    struct ScriptSolid {
+        std::vector<std::pair<std::array<float, 3>, std::array<float, 3>>> leaves;
+        std::vector<std::array<float, 3>> last_max;
+    };
+    std::unordered_map<std::size_t, ScriptSolid> script_solids_;
     std::uint32_t load_level_ = 0, movie_ = 0;
     std::array<std::uint8_t, 256> prev_{};  // channel snapshot for rising edges
     std::uint64_t tick_ = 0;

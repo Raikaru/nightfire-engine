@@ -8,8 +8,8 @@
 Workflow (docs/oracle.md): record scenario -> make-inputs -> `nfgame <gamedir> 07000024.bin
 --inputs x.inputs --trace x.replay.jsonl` -> diff (add --sync to re-seat the player on the recorded
 position before every frame: a per-frame model error instead of an accumulated one). The replay starts from the oracle's first record
-(standing still) and is fed the pad the game saw on every following frame; frames the tracer missed
-take the pad of the next recorded frame and the rate of the previous one. Units are game units (metres); the target is ~1 cm.
+ (standing still) and is fed the pad the game saw on every following frame; frames the tracer missed
+ take the pad of the next recorded frame and a motion-fit rate (see make-inputs). Units are game units (metres); the target is ~1 cm.
 """
 import argparse
 import json
@@ -45,17 +45,37 @@ def make_inputs(trace_path, out_path):
             lines.append((frame, following))
         lines.reverse()
         rate = first.get("rate", 30.0)
-        # A frame-rate flip straddling a tracer gap is attributed to the first missing frame: the
-        # tracer drops the record at the hitch, and the motion fits the new rate there (walk-8665
-        # runs at 30 Hz: synced max 0.47 cm vs 8.63 cm when it keeps the previous 60 Hz).
+        # A frame-rate flip straddling a tracer gap is placed by motion fit: the per-frame
+        # displacements into (d_old, at the previous rate) and out of (d_new, at the next rate)
+        # the gap predict the far record under each candidate flip frame, and the candidate
+        # landing closest wins (walk-8665 flips inside its gap frame, wall-8696 after it: a
+        # fixed rule gets one of them wrong by ~10 cm). Falls back to the new rate when a
+        # neighbour record is missing.
         flip_rate = {}
         present = sorted(by_frame)
         for i in range(len(present) - 1):
             a, b = present[i], present[i + 1]
+            ra = by_frame[a].get("rate", rate)
             rb = by_frame[b].get("rate", rate)
-            if b - a > 1 and rb != by_frame[a].get("rate", rate):
+            if b - a > 1 and rb != ra:
+                prev_rec = by_frame.get(a - 1)
+                next_rec = by_frame.get(b + 1)
+                if prev_rec is None or next_rec is None:
+                    for m in range(a + 1, b):
+                        flip_rate[m] = rb
+                    continue
+                pa = by_frame[a]["pos"]
+                d_old = [pa[k] - prev_rec["pos"][k] for k in range(3)]
+                pb = by_frame[b]["pos"]
+                d_new = [next_rec["pos"][k] - pb[k] for k in range(3)]
+                best, best_err = a + 1, float("inf")
+                for k in range(a + 1, b + 1):
+                    err = math.dist(pb, [pa[j] + (k - a - 1) * d_old[j] + (b - k + 1) * d_new[j]
+                                         for j in range(3)])
+                    if err < best_err:
+                        best, best_err = k, err
                 for m in range(a + 1, b):
-                    flip_rate[m] = rb
+                    flip_rate[m] = rb if m >= best else ra
         for frame, rec in lines:
             if frame in flip_rate:
                 rate = flip_rate[frame]

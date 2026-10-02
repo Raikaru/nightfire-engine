@@ -76,5 +76,13 @@ std::unique_ptr<AppContext> load_context(const std::string& gamedir);
 // player down +Z, so the camera yaw is the player yaw + pi).
 Camera camera_for_eye_yaw_pitch(const Vec3& eye, float yaw, float pitch);
 float camera_aspect(int width, int height);
+// Game viewport (Camera_CalcViewAngles decomp): widescreen (AppConfig.widescreen,
+// dword_2A37C4) renders 16:9, otherwise 4:3 pillarboxed into the window.
+float game_aspect(const AppConfig& cfg);
+struct GameView {
+    int x = 0, y = 0, w = 0, h = 0;  // window pixels, origin top left
+    float aspect = 4.0f / 3.0f;
+};
+GameView game_view(const AppConfig& cfg, int width, int height);
 
 }  // namespace nf::app

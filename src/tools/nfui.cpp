@@ -104,6 +104,10 @@ int run(int argc, char** argv) {
         SceneArgs text_args{files, assets, gamedir, extra};
         return run_mp_text(text_args);
     }
+    if (mode == "import-save") {  // headless text mode: decodes a card blob into an NFPR profile
+        SceneArgs text_args{files, assets, gamedir, extra};
+        return run_import_save(text_args);
+    }
     if (mode == "movie") {  // --stats decodes headless (no window, no audio device)
         for (const std::string& a : extra)
             if (a == "--stats") return run_movie_stats(gamedir, extra);

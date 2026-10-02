@@ -84,8 +84,8 @@ std::unique_ptr<Harness> make_harness(nf::GameFiles& gf, const std::string& game
     h->world->spawn_player(0, spawns.front());
     if (need_bank) {
         h->bank = nf::open_character_bank(gf, level_bin);
-        auto ws = std::make_unique<nf::WeaponSystem>(nf::WeaponTable::from_elf(elf), params.health.damage,
-                                                    1u);
+        auto ws = std::make_unique<nf::WeaponSystem>(nf::WeaponTable::from_elf(elf), params.health.damage);
+        ws->seed_match(1u);   // the global Rand stream
         ws->set_bank(h->bank.get());
         h->weapons = ws.get();
         h->world->add_system(std::move(ws));

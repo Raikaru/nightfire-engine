@@ -175,6 +175,31 @@ not needed: pass the mangled name (`AccelFunc0__FfPffffff`). Duplicate local
 names (five `__static_initialization_and_destruction_0`s) resolve by address:
 `run_static_init` picks the one at `0x1B3488`.
 
+## DRIVING.ELF: symbols and files
+
+`DRIVING.ELF` (disc) is stripped; use `build/driving.elf` (decomp link, same
+code bytes, own 83k-entry symtab — load that ELF directly) for exact names,
+sizes and addresses. `DRIVING/DRIVING.SYM` also loads (`--sym-file`,
+`Machine::load_sym_file`: `u32 value, u32 name` records + string table) for
+demangled signatures, but its addresses are stale (only ~28% land on exact
+entries — measured against the decomp symtab), so entries without an exact
+ELF symbol beneath them are flagged approximate: verify with `disasm` before
+calling or hooking. ELF symtab always wins ties.
+
+Host files (`--fs-root <dir>`, `Machine::set_fs_root`) serve disc files
+through the sync boundary both games share: `open/read/write/lseek/close`
+plus `sceOpen/sceRead/sceLseek/sceLseek64/sceClose` (one fd table, fd ≥ 3,
+read-only — writes to fds 1/2 go to host stdout, anything else traps;
+missing files return -1 with a loud log; `sceDopen/Dread/Dclose` trap as
+unimplemented). Verified bit-exact: 9 241 758 bytes of `DRIVING/MIS01.VIV`
+through real newlib `open/read/lseek/close`. Limits, all measured: neither
+game calls this layer directly (zero direct callers — all file I/O goes
+through indirect/async EA `FILESYS/CDVD` paths needing IOP), and full world
+setup additionally needs mounted BIG archives, menu state and GS. What runs
+today: leaf parsing/query/math on poked or file-served bytes; for world-state
+queries use seeded RAM or the suppliers' serialized structs (e.g. Driving-2's
+collision strips via `--poke` + the exact query address).
+
 ## Savestate seeding
 
 A PCSX2 `.p2s` is a zip. Only three members are used:
@@ -330,6 +355,11 @@ auto st = m.call("Rand_FRand__Ff", CallArgs{}.f(1.0f));            // step facto
 `out xyz` (e.g. `(0.5, 2.0)` -> `(-1.86399, ~-1.5, -1.79492)` from the fixed
 seed; `f0` echoes `z`). Scalar `Rand_FRand_MVar2(0.5, 2.0)` from the same seed
 is `-1.86399`, i.e. the Vec `x` lane — the lanes consume state in order.
+CLI shortcut: `nfmips <elf> rand <fn> <i:int|f:float> [--count N] [--seed x,y]`
+runs sequential draws on one machine (boot seed `X0=0x1F123BB5 Y0=0x159A55E5`
+from the image; `W2/W3` are constant multipliers, never rewritten, and the
+`RandTable1/2` blobs are shipped data with no init function). The shared port
+lives at `src/core/rng.hpp` (Scripting slice).
 
 ## For other slices
 

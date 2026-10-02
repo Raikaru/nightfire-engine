@@ -269,10 +269,14 @@ Pose sample_seq(const AnimSeq& seq, const Skeleton& skeleton, const SkinDef* ski
     };
     for (std::size_t bone = 0; bone < skeleton.bone_count; ++bone) {
         const bool active = !skin || skin->bone_active(bone);
+        // Inactive bones keep their bind pose (AnimFrameCopy advances the channel pointers without
+        // writing, so the output buffer keeps bind); channels are still consumed to keep alignment.
+        const bool reads_trans = skeleton.translation_animated[bone] && active;
         Vec3 t{0, 0, 0};
         if (skeleton.translation_animated[bone]) {
             for (int k = 0; k < 3; ++k) t[k] = value(active) * scale[k];
-        } else if (active) {
+        }
+        if (!reads_trans) {
             for (int k = 0; k < 3; ++k) t[k] = skeleton.offset[bone][k] * scale[k];
         }
         // Rotation channels: x, y, and z with the sign of w folded in (z + 4 when w < 0).
@@ -352,7 +356,7 @@ Palette build_palette(const SkinDef& skin, const Pose& pose) {
     pal.world.assign(bones, identity());
     pal.skin.assign(bones, identity());
     for (std::size_t i = 0; i < bones; ++i) {
-        if (!skin.bone_active(i)) continue;
+        // Inactive bones hold their bind pose (see sample_seq); the chain still composes so subtrees attach.
         const Mat4 local = quat_trans_to_mat(pose.rotation[i], pose.translation[i]);
         pal.world[i] = skin.bone_parent(i) == 0x7F ? local : mul(pal.world[skin.bone_parent(i)], local);
         // Rotation of the world matrix, translation R * inverse-bind + world translation.
