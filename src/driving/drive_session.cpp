@@ -258,9 +258,25 @@ void DriveSession::place_at_start(const Vec3& position, float yaw) {
     } else {
         GroundHit ground;
         if (collision_.ground_below({p[0], p[1] + 3.0f, p[2]}, ground)) p[1] = ground.point[1];
-        p[1] += half_[1] + vehicle_->params().spring_rest_length + 0.2f;
+        // Grounded placement (rest height + margin): starts and routine resets land ready
+        // to drive. Guarantees 0.3 m of droop so stiff suspensions (race cobra, rest 0.03)
+        // still reach the ground instead of hovering 2 cm up with spinning wheels.
+        // Recovery from beaching uses the drop variant below instead.
+        p[1] += half_[1] + std::max(vehicle_->params().spring_rest_length, 0.3f) + 0.2f;
         vehicle_->reset(p, yaw);
     }
+    camera_->reset(player_camera_target());
+    camera_pose_ = camera_->update(player_camera_target(), rays_.get());
+}
+
+void DriveSession::place_dropped(const Vec3& position, float yaw) {
+    if (kind_ != PlayerKind::Car) {
+        place_at_start(position, yaw);
+        return;
+    }
+    Vec3 p = position;
+    p[1] += 2.0f;  // above the walk node; gravity settles it (no grounding snap)
+    vehicle_->reset(p, yaw);
     camera_->reset(player_camera_target());
     camera_pose_ = camera_->update(player_camera_target(), rays_.get());
 }

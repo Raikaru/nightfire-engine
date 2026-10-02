@@ -286,7 +286,7 @@ Static params are `{i32 key; u32 value}` pairs; `Create` functions read `level_t
 |-------|--------|
 | 219 door | 0 flags (2 = proximity auto), 1 group, 2 unlock ch, 3 lock ch, 5/6/7 open/close/locked SFX (-1 silent), 8/9 mode bits; spline track from the static's path ref when present, else swing |
 | 220 trigger | 0 type, 1 out ch, 2..9 inputs, 10 gate; Touch (235) / TouchOnce (234) force type 2/1 with out = param 0 |
-| 232 load-level | 0 destination (`0x300000` bit = end-of-mission exit for the base id, like fail `LevelToEndTo`; else the next bin), 3 blocker ch ("can't leave" while clear) |
+| 232 load-level | 0 destination (else the next bin), 1 required ch ("can't leave" while clear), 2 branch (set: write 4, else write 3), no exit while failing; exit snapshots the RamSave |
 | 244 movie | 0 script hash (0x06... type-7 entry) |
 | 236-239 multiplex | 0 out, 1.. inputs (AND / sequence / fan-out / OR) |
 | 41 switch | 0 channel, 1 lever script hash (type-7), 3 init value, 5 gate; use toggles |
@@ -601,11 +601,13 @@ sequences (flag 8) hold those 22 weights as channels.
 ### Layered playback and blending (`AnimScriptInit`, `AnimScriptTick`, `AnimScriptEnd`, `AnimScriptAppendBlend`, `AnimFrameResolve`, `AnimSetUpdate`)
 
 An object owns up to 32 scripts (layers), oldest first. `AnimScriptInit` starts a layer at frame 1 with speed 1 and
-blend state `blend_time = blend_duration = 1` (full weight at once). Every tick advances the frame by speed (30 Hz);
+blend state `blend_time = blend_duration = 1` (full weight at once). Every tick advances the frame by speed times
+`FRAME_RATE_MUL` (1 at 60 fps, 2 at 30 fps; `AnimScriptTick` mode 0) and fades by the same step;
 `AnimScriptEnd` keeps frames in `1..length`, otherwise loops by subtracting the length (loop is chosen by the caller: AnimSet
-scripts get `0x80000000`) or holds the last frame. `AnimScriptAppendBlend(script)` marks every running layer not already
+scripts get `0x80000000`) or holds the last frame. A fresh layer holds frame 1 through its first tick (the 0x20000000
+one-shot; `AnimScriptTick` mode 2 phase-follow is exempt). `AnimScriptAppendBlend(script)` marks every running layer not already
 fading as fading out (`blend_time = blend_duration = 8.0`) and appends the new one; `AnimFrameResolve` steps
-`blend_time` by -1 per tick for fading layers (removed at 0; their `+0x4c` partners with them) and computes
+`blend_time` by ∓`FRAME_RATE_MUL` per tick for fading layers (removed at 0; their `+0x4c` partners with them) and computes
 `weight = blend_time / blend_duration`. The pose is the oldest layer, then each newer layer blended in with
 `AnimFrameBlend(t = 1 - weight of the layer before it)`. `AnimListDelete` + `AnimScriptAppend` is a hard cut.
 
@@ -615,9 +617,13 @@ ladder (idle, then loops of increasing speed) and four strafe scripts. With `s =
 pair `ladder[i + 1]` (primary) / `ladder[i + 2]` (secondary) and blend fraction `x - i`. A change of pair waits for a
 4-tick cooldown; to or from idle the set's layers fade out over 8 frames, between pairs the old pair is deleted at once. The
 primary is *distance driven* (`AnimDistanceTableGet` = `AnimDistanceTableCreate(seq, 4, 0)`: cumulative |dz| of the root bone per
-frame step, minimum step 0.01; `AnimDistanceTableDistanceToFrame2` maps the travelled distance to a fractional frame); the
+frame step, minimum step 0.01; `AnimDistanceTableDistanceToFrame2` maps the travelled distance to a fractional frame, minus the
+layer's start frame). The effective distance is the set's phase base (`AnimSet+0x24` = 0.37 from `AnimSetAppend`, copied to
+sAnimObject+0x6C every update) plus the layer's own travelled distance, so fresh walk layers start mid-cycle (frame ~22 for
+Handgun); the table wraps modulo its total. The
 secondary follows the primary's phase (`AnimScriptTick` mode 2) and the pair is blended with the fraction before joining the
-layer stack. Root-motion extraction, footstep events and the strafe layer of `AnimObjectUpdate` are not implemented.
+layer stack. On a segment change `AnimSetUpdate` ticks once inside (trailing `AnimObjectUpdate`), so append frames advance
+twice.
 
 Script commands (`AnimProcessScriptCmds`, entry frames counted in script frames): an op with a single frame fires once when the
 layer's frame moves across it (`(previous, current]`, mirrored when playing backwards, either side of the wrap on a loop). Op 1
@@ -629,8 +635,9 @@ alternating foot toggled, 4 / 5 footstep of the left / right foot (the footstep 
 above 4 do nothing. `CharacterInstance::take_events()` returns these as `AnimEvent`s; the game systems act on them.
 
 Root motion (`AnimSeqTick`, `AnimFrameResolve`): per tick the root bone's translation change (current sampled translation minus the
-previous one; the previous delta is reused on the first tick and after a loop wrap) is masked per axis (list flags
-0x1000000/0x2000000/0x4000000 zero x/y/z), then the pose's root translation is zeroed. Across layers the deltas are blended
+previous one; a fresh layer's previous frame is seeded to its start frame, so the first tick emits the full span, and the
+previous delta is reused after a loop wrap) is masked per axis (`AnimSetUpdate` ORs 0x8d000000 onto walk/strafe layers, and list flags
+0x1000000/0x4000000 zero x/z while 0x2000000 zeroes y — locomotion root is Y-only), then the pose's root translation is zeroed. Across layers the deltas are blended
 exactly like the pose. `AnimFrameResolve` rotates the delta by the object's orientation and adds it to the object position, and
 stores the blended root translation y plus the object's `+0x60` offset in sAnimObject `+0x5C` (root height; x0.8627 with the
 MP strafe setting unless flag 0x400). `CharacterInstance::root_motion()`, `root_translation()`, `root_height()`.

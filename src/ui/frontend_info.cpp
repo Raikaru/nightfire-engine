@@ -225,9 +225,11 @@ bool Frontend::Impl::p_mp_debriefing(ui::Control&, const ui::Msg& m) {
                 } else {
                     send_ex(kDShort, i, kSetText, r.name);
                 }
-                send_ex(kDNum0, i, kSetText, std::to_string(r.kills));
-                send_ex(kDNum1, i, kSetText, std::to_string(r.deaths));
-                send_ex(kDNum2, i, kSetText, std::to_string(int(r.points)));
+                // Column order per P_MPDEBRIEFING_Handler: Num0 is the +0x18 float (Points), Num1 the
+                // +0x04 frag count (Victories), Num2 the +0x08 death count (Deaths); score is TOTAL.
+                send_ex(kDNum0, i, kSetText, std::to_string(int(r.points)));
+                send_ex(kDNum1, i, kSetText, std::to_string(r.kills));
+                send_ex(kDNum2, i, kSetText, std::to_string(r.deaths));
                 send_ex(kDScore, i, kSetText, std::to_string(r.score));
             } else {
                 // Hide the row's labels (the original's 0x2b hide pass; kSetFlags bit 0 hides).

@@ -91,6 +91,14 @@ public:
     Vec3 next_checkpoint() const;
     // Route progress 0..1 along the spine (for HUD progress + probing).
     float route_progress() const;
+    // Live autopilot telemetry (probing/debugging stalls).
+    struct PlayerDebug {
+        Vec3 pos{}, target{};
+        float speed = 0, yaw = 0, d0 = 0;
+        int walk = -1;
+        bool kturn = false, rolling = false, braking = false;
+    };
+    PlayerDebug player_debug() const;
     // Vehicle-side of Movement-2's board/leave API (GT_LoseControl equivalent): autopilot drives
     // the player vehicle (engine idles through the normal audio path).
     void set_autodrive(bool on) { autodrive_ = on; }
@@ -103,6 +111,7 @@ public:
 
 private:
     void update_walk();  // monotonic route progress for autopilot/checkpoints/AI
+    void tick_districts();  // district-seam loading cuts (driver-agnostic respawn)
     void spawn_ai();
     void spawn_traffic();
     void spawn_pickups();
@@ -117,7 +126,7 @@ private:
     // Route lookahead: nearest walk node to p, then `ahead` further along the walk. Returns
     // -1 when the walk is empty; callers must guard the target distance (walk teleports at
     // section boundaries must not steer cars across the map).
-    int route_ahead(const Vec3& p, int ahead) const;
+    int route_ahead(const Vec3& p, int ahead, float speed) const;
 
     DrivingLevel& level_;
     MissionData data_;
@@ -154,21 +163,22 @@ private:
     float clock_ = 0;
     int ticks_ = 0;
     float ram_cooldown_ = 0;  // shared ram-damage cooldown (seconds)
-    float stuck_clock_ = 0;   // autopilot reverse-out timer
     float recover_cool_ = 0;  // out-of-world reset throttle
     float lost_clock_ = 0;    // autopilot wrong-way timer (resets onto the walk)
     float gun_clock_ = 0;     // demo-gunner cycle timer
-    int wedge_walk_ = -1;         // walk index of the last wedge reset (run-up counting)
-    int wedge_reps_ = 0;
     int prog_walk_ = -1;          // walk index at the last progress (backstop tripwire)
     float prog_clock_ = 0;
-    float beach_clock_ = 0;       // wheels-dangling timer (fast beached recovery)
-    bool kturning_ = false;   // latched K-turn (reverse with lock until nose comes around)
-    std::uint8_t kturn_lock_ = 0;  // latched K-turn lock side
-    bool braking_ = false;        // latched slow-down (starves turn/gas limit cycles)
     float yaw_rate_ = 0;          // smoothed player yaw rate (spin detection)
     float last_yaw_ = 0;
     bool yaw_init_ = false;
+    bool rolling_ = false;        // launch/rolling hysteresis (kills 3 m/s boundary chatter)
+    bool braking_ = false;        // latched slow-down (starves turn/gas limit cycles)
+    bool kturning_ = false;       // latched K-turn (reverse with lock until nose comes around)
+    std::uint8_t kturn_lock_ = 0;  // latched K-turn lock side
+    Vec3 last_target_{};           // autopilot steering target (telemetry)
+    float kturn_clock_ = 0;        // sustained-reversal timer (yaw-snap tripwire)
+    float beach_clock_ = 0;        // wheels-dangling timer (fast beached recovery)
+    bool nudge_side_ = false;     // alternating lateral nudge side on recovery teleports
     PadState auto_gun();      // synthetic fire inputs for the demo driver (R1 gunner + L1 gadgets)
     int player_walk_ = -1;    // player position inside spine_ (monotonic progress)
 };

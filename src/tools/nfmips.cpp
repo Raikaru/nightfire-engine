@@ -809,6 +809,10 @@ int cmd_diff_combat(const std::string& elf_path) {
         {"c2mv2p3", 1, 10.0f, 8.0f, 0x5a, 0, 0, 16, 0, 1, 0, 1, 0, 0, 0x7000005u, 0x02000000u, 3.0f, 0,
          2, 0},
         {"animblk", 1, 10.0f, 25.0f, 0x70, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000100u, 0.0f, 0, 0, 0},
+        {"mask68pass", 1, 10.0f, 25.0f, 0x68, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x000A0002u, 0.0f, 0, 0, 0},
+        {"mask68fail", 1, 10.0f, 25.0f, 0x68, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 0, 0, 0},
+        {"mask68noammo", 1, 10.0f, 8.0f, 0x68, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0x000A0002u, 0.0f, 0, 0, 0},
+        {"mask70pass", 1, 10.0f, 25.0f, 0x70, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x000A0002u, 0.0f, 0, 0, 0},
         {"d8-9", 1, 10.0f, 25.0f, 0x58, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0x02000000u, 0.0f, 9, 0, 0},
         {"level5", 1, 10.0f, 25.0f, 0x58, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0x7000005u, 0x02000000u, 0.0f, 0, 0,
          0},
@@ -841,6 +845,8 @@ int cmd_diff_combat(const std::string& elf_path) {
         m.write_f32(drone + 0x1a0, r.dist);
         m.mem.write<u16>(drone + 0xbcc, u16(r.ammo));
         m.mem.write<u16>(drone + 0xbce, u16(r.ammo));
+        // +0xBBC gates the 0x68 path (bgtz): SpExt.ammo low half in the port tree.
+        m.mem.write<u16>(drone + 0xbbc, u16(r.ammo));
         m.write_f32(params + 0x88, r.p88);
         m.write_vec3(obj + 0x30, 0, 0, 0);
         m.write_vec3(opp + 0x30, 5, 0, 5);

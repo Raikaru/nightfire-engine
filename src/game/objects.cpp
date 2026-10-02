@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "assets/nav_data.hpp"
+#include "assets/cutscene.hpp"  // spline_eval3d / slerp_acc (framelist eval)
 #include "game/damage.hpp"
 #include "game/sp_common.hpp"  // SwitchChannels
 #include "game/weapons.hpp"
@@ -23,15 +24,22 @@ float dist2(const std::array<float, 3>& a, const std::array<float, 3>& b) {
     return dx * dx + dy * dy + dz * dz;
 }
 
+// Volume classes for the touch tests (model collision at the static transform; exits
+// (232) and movies (244) carry authored box volumes like the other triggers).
+constexpr std::uint32_t kVolumeClasses[] = {32, 40, 41, 46, 48, 49, 51, 219, 220, 225,
+                                            226, 228, 232, 234, 235, 240, 244, 249, 251, 254};
+bool is_volume_class(std::uint32_t cls) {
+    for (std::uint32_t c : kVolumeClasses)
+        if (c == cls) return true;
+    return false;
+}
+
 }  // namespace
 
 SpObjects::SpObjects(Level& level, std::uint32_t level_id, sp::SwitchChannels& channels)
     : level_(level), level_id_(level_id), channels_(channels), trigger_volumes_(make_volumes(level)) {}
 
 CollisionWorld SpObjects::make_volumes(Level& level) {
-    // Volume classes for the touch tests below (model collision at the static transform).
-    static constexpr std::uint32_t kVolumeClasses[] = {32,  40,  41,  46,  48,  49,  51,  219, 220, 225,
-                                                       226, 228, 234, 235, 240, 249, 251, 254};
     return CollisionWorld::of_objects(level, std::span<const std::uint32_t>(kVolumeClasses, std::size(kVolumeClasses)));
 }
 
@@ -70,8 +78,8 @@ void SpObjects::build() {
             if (d.open_sound == 0xFFFF) d.open_sound = 0;  // -1 = silent
             if (d.close_sound == 0xFFFF) d.close_sound = 0;
             if (d.locked_sound == 0xFFFF) d.locked_sound = 0;
-            d.rate = 1.0f / 60.0f;  // full swing in ~1 s at 30 Hz [INFERENCE: param 4 is a header field]
-            d.swing = ((uparam(s, 8) | uparam(s, 9)) >> 2 & 1) == 0;
+            d.rate = 1.0f / 60.0f;  // full swing in ~1 s at 30 Hz (see `Door_Interp` advance)
+            d.spline = uparam(s, 4) != 0;  // `+112 & 1`: spline vs keyframe framelist eval
             d.auto_door = (d.flags & 2) != 0;  // `obj+244 & 2`: proximity doors (data: p0 = 2)
             doors_.push_back(d);
             break;
@@ -95,7 +103,7 @@ void SpObjects::build() {
             TriggerObject t;
             t.placement = i;
             t.type = 10;
-            t.level_id = uparam(s, 0);  // editor's first param [INFERENCE: verify against .bins]
+            t.level_id = uparam(s, 0);  // destination bin hash (verified: all placed exits)
             t.out_channel = uparam(s, 1);
             for (int k = 0; k < 8; ++k) t.inputs[std::size_t(k)] = uparam16(s, 2 + k);
             t.gate_channel = uparam16(s, 10);
@@ -106,7 +114,7 @@ void SpObjects::build() {
             TriggerObject t;
             t.placement = i;
             t.type = 13;
-            t.script_hash = uparam(s, 0);  // [INFERENCE: verify against .bins]
+            t.script_hash = uparam(s, 0);  // type-7 script hash (verified: resolves on-disc)
             t.gate_channel = uparam16(s, 10);
             triggers_.push_back(t);
             break;
@@ -172,12 +180,35 @@ void SpObjects::build() {
             sensors_.push_back(se);
             break;
         }
-        case 222: {  // Searchlight_Create: alarm = p1 (long cone, sweep static v1 [INFERENCE])
+        case 222: {  // Searchlight_Create: alarm = p1, sweep range = p4/p5 degrees
             Sensor se;
             se.placement = i;
             se.alarm_channel = uparam16(s, 1);
             se.range = 60.0f;
             se.half_sin = 0.05f;
+            // Sweep (`Searchlight_Update` case 0): center/half of the p4/p5 degree range.
+            // `fix(v)` transcribes the original's int handling bit-for-bit (round-half-to-even
+            // for v >= 0; unspecified garbage for v < 0, replicated as written).
+            const auto fix = [](std::int32_t v) -> float {
+                const std::uint32_t h = (std::uint32_t(v) & 1u) | (std::uint32_t(v) >> 1);
+                return float(h) + float(h);
+            };
+            const float lo = fix(std::min(std::int32_t(uparam(s, 4)), std::int32_t(uparam(s, 5))));
+            const float hi = fix(std::max(std::int32_t(uparam(s, 4)), std::int32_t(uparam(s, 5))));
+            if (lo != hi) {
+                se.sweep = true;
+                se.amp = (hi - lo) * 0.5f * 0.017453294f;
+                se.base_yaw = (hi + lo) * 0.5f * 0.017453294f;
+                // Pitch center from the placement aim (`+20` source unknown).
+                const Placement& pl = level_.placements()[i];
+                const float py = pl.transform[9] /
+                                 std::sqrt(std::max(1e-12f, pl.transform[8] * pl.transform[8] +
+                                                                pl.transform[9] * pl.transform[9] +
+                                                                pl.transform[10] * pl.transform[10]));
+                se.base_pitch = std::asin(std::clamp(py, -1.0f, 1.0f));
+                // Desynced start phases (`Rand(480)` in the original; hashed for determinism).
+                se.phase = float((i * 2654435761u) % 480u);
+            }
             sensors_.push_back(se);
             break;
         }
@@ -311,6 +342,7 @@ void SpObjects::build() {
             if (dp.instance == ref.static_index && tracks[ref.path_index].keys.size() >= 2) {
                 d.path = tracks[ref.path_index].keys;
                 d.has_path = true;
+                d.swing = false;
             }
         }
     }
@@ -337,13 +369,48 @@ void SpObjects::build() {
             }
         }
     }
+    // Fallback for volume classes whose model carries no collision (`Control_BuildWorldSph`
+    // builds the original's volume from the render bounds): mesh bbox to world. Only when the
+    // mesh itself is missing does the touch test fall back to its 2 m box (`object_bounds`).
+    for (std::size_t i = 0; i < level_.placements().size(); ++i) {
+        if (bounds_.count(i) != 0) continue;
+        const Placement& pl = level_.placements()[i];
+        const StaticInstance* st = statics(i);
+        if (!st || !is_volume_class(st->object_class())) continue;
+        try {
+            const GfxMesh& mesh = level_.mesh(pl.chunk, pl.model);
+            const Placement& plc = level_.placements()[i];
+            auto& slot = bounds_[i];
+            bool init = true;
+            for (int corner = 0; corner < 8; ++corner) {
+                const Vec3 q = {corner & 1 ? mesh.bbox_max[0] : mesh.bbox_min[0],
+                                corner & 2 ? mesh.bbox_max[1] : mesh.bbox_min[1],
+                                corner & 4 ? mesh.bbox_max[2] : mesh.bbox_min[2]};
+                // Placement transform is column-major model -> world (`instance_transform`).
+                const std::array<float, 16>& m = plc.transform;
+                const Vec3 w = {m[0] * q[0] + m[4] * q[1] + m[8] * q[2] + m[12],
+                                m[1] * q[0] + m[5] * q[1] + m[9] * q[2] + m[13],
+                                m[2] * q[0] + m[6] * q[1] + m[10] * q[2] + m[14]};
+                if (init) {
+                    slot.first = w;
+                    slot.second = w;
+                    init = false;
+                } else {
+                    for (int k = 0; k < 3; ++k) {
+                        slot.first[std::size_t(k)] = std::min(slot.first[std::size_t(k)], w[std::size_t(k)]);
+                        slot.second[std::size_t(k)] = std::max(slot.second[std::size_t(k)], w[std::size_t(k)]);
+                    }
+                }
+            }
+        } catch (const std::exception&) {
+        }
+    }
     for (Breakable& b : breakables_) {
         std::array<float, 3> mn{}, mx{};
         object_bounds(b.placement, mn, mx);
         b.center = {(mn[0] + mx[0]) * 0.5f, (mn[1] + mx[1]) * 0.5f, (mn[2] + mx[2]) * 0.5f};
         const float dx = mx[0] - mn[0], dy = mx[1] - mn[1], dz = mx[2] - mn[2];
         b.radius = 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
-        if (!(b.radius > 0.01f)) b.radius = 1.0f;
     }
     // Model-space door bounds (rotated by the live pose each tick for correct swing AABBs).
     for (std::size_t i = 0; i < trigger_volumes_.solid_count(); ++i) {
@@ -376,7 +443,7 @@ void SpObjects::object_bounds(std::size_t placement, std::array<float, 3>& mn,
         mx = it->second.second;
         return;
     }
-    mn = placement_pos(placement);  // no collision model: a 2 m box at the marker [INFERENCE]
+    mn = placement_pos(placement);  // no model at all: a 2 m box at the marker
     mx = mn;
     for (int k = 0; k < 3; ++k) {
         mn[std::size_t(k)] -= 1.0f;
@@ -400,40 +467,47 @@ bool SpObjects::touch_test(std::size_t placement, const Toucher& t) const {
 void SpObjects::door_pose(DoorObject& d, std::array<float, 16>& out) const {
     const StaticInstance* s = statics(d.placement);
     const Placement& p = level_.placements()[d.placement];
-    if (d.swing || !d.has_path) {
-        // `Door_SetupSwing`: yaw about the placement origin ([INFERENCE]: hinge approximated).
+    if (!d.has_path || d.path.size() < 2) {
+        // No framelist: procedural yaw about the model's hinge edge (`Door_SetupSwing`
+        // doors). The slab spans x wider than z, so the hinge is a vertical (y) edge and
+        // the opening side picks it; the swing angle scale is authored per door.
         const float ang = d.progress * 1.75f * d.direction;
         const float c = std::cos(ang), sn = std::sin(ang);
+        float px = 0;
+        if (d.has_local) px = d.direction > 0 ? d.local_mn[0] : d.local_mx[0];
         Mat4 rot = identity();
         rot[0] = c;
         rot[2] = -sn;
         rot[8] = sn;
         rot[10] = c;
+        rot[12] = px - c * px;
+        rot[14] = sn * px;
         std::array<float, 16> base{};
         if (s) base = instance_transform(*s);
         else base = p.transform;
         out = mul(base, rot);
-        (void)p;
         return;
     }
-    // Spline doors (`Door_Interp`): sample the static's path track by open progress.
-    const float fi = std::clamp(d.progress, 0.0f, 1.0f) * float(d.path.size() - 1);
-    const std::size_t i = std::min(d.path.size() - 2, std::size_t(fi));
+    // Framelist doors (`Door_Interp`): linear (`KeyFrame_Interp`) or spline (`Spline_Interp`)
+    // over the path keys by open progress; rotation slerps (`Quat_Slerp_Acc`).
+    const std::size_t n = d.path.size();
+    const float fi = std::clamp(d.progress, 0.0f, 1.0f) * float(n - 1);
+    const std::size_t i = std::min(n - 2, std::size_t(fi));
     const float f = fi - float(i);
     const PathKey& a = d.path[i];
     const PathKey& b = d.path[i + 1];
     std::array<float, 3> pos;
     std::array<float, 4> q;
-    for (int k = 0; k < 3; ++k) pos[std::size_t(k)] = a.pos[std::size_t(k)] + (b.pos[std::size_t(k)] - a.pos[std::size_t(k)]) * f;
-    float dot = 0;
-    for (int k = 0; k < 4; ++k) dot += a.quat[std::size_t(k)] * b.quat[std::size_t(k)];
-    const float sgn = dot < 0 ? -1.0f : 1.0f;
-    for (int k = 0; k < 4; ++k) q[std::size_t(k)] = a.quat[std::size_t(k)] * (1 - f) + sgn * b.quat[std::size_t(k)] * f;
-    // Normalised lerp (keys are near-identity rotations; [INFERENCE] on quat order x,y,z,w).
-    float len = 0;
-    for (int k = 0; k < 4; ++k) len += q[std::size_t(k)] * q[std::size_t(k)];
-    len = std::sqrt(std::max(1e-12f, len));
-    for (int k = 0; k < 4; ++k) q[std::size_t(k)] /= len;
+    if (d.spline && i > 0 && i + 2 < n) {
+        const PathKey& p0 = d.path[i - 1];
+        const PathKey& p3 = d.path[i + 2];
+        pos = spline_eval3d(p0.pos, a.pos, b.pos, p3.pos, f);
+        q = slerp_acc(a.quat, b.quat, f);
+    } else {
+        const float w0 = 1.0f - f;
+        for (int k = 0; k < 3; ++k) pos[std::size_t(k)] = a.pos[std::size_t(k)] * w0 + b.pos[std::size_t(k)] * f;
+        q = slerp_acc(a.quat, b.quat, f);
+    }
     const float x = q[0], y = q[1], z = q[2], w = q[3];
     Mat4 m = identity();
     m[0] = 1 - 2 * (y * y + z * z);
@@ -746,21 +820,25 @@ void SpObjects::tick(const std::vector<Toucher>& touchers, const std::vector<boo
             }
             break;
         }
-        case 10: {  // LoadLevel: full gate logic (`Trigger_Activate`), then exit
+        case 10: {  // LoadLevel (`Trigger_Activate`): A = p1 required, B = p2 picks D = p4 else C = p3
             if (t.cooldown > 0) {
                 t.cooldown--;
                 break;
             }
             if (!touch) break;
-            const std::uint16_t blocker = t.inputs[1];  // editor param 3 [INFERENCE]
-            if (blocker != 0 && !channels_.on(int(blocker))) {
+            const std::uint16_t need = t.out_channel;  // editor param 1 (blocker A)
+            if (need != 0 && !channels_.on(int(need))) {
                 texts_.push_back({0x0200021, 180, 1});  // "you can't leave yet"
                 t.cooldown = 90;
                 break;
             }
-            for (int k : {0, 2}) {  // completion channels (editor params 2/4) [INFERENCE]
-                const std::uint16_t ch = t.inputs[std::size_t(k)];
-                if (ch != 0) channels_.set(int(ch), true);
+            const std::uint16_t cond = t.inputs[0];  // editor param 2 (branch B)
+            if (cond != 0 && channels_.on(int(cond))) {
+                const std::uint16_t done = t.inputs[2];  // editor param 4 (D)
+                if (done != 0) channels_.set(int(done), true);
+            } else {
+                const std::uint16_t out = t.inputs[1];  // editor param 3 (C)
+                if (out != 0) channels_.set(int(out), true);
             }
             load_level_ = t.level_id;
             break;
@@ -923,6 +1001,16 @@ void SpObjects::tick_damage(const std::vector<Toucher>& touchers, const WeaponEv
             dir[0] /= dl;
             dir[1] /= dl;
             dir[2] /= dl;
+        }
+        if (se.sweep) {
+            // `Searchlight_Update` case 0: sinusoidal pan (cos via sin(+pi/2), same assoc).
+            se.phase += 1.0f;  // `FRAME_RATE_MUL`; the discarded `fmodf` is not replicated
+            const float a = se.phase * 0.013089971f;
+            const float yaw = std::sin(a) * se.amp + se.base_yaw;
+            const float pitch = std::sin(a + 1.5707964f) * se.amp + se.base_pitch;
+            const float cy = std::cos(yaw), sy = std::sin(yaw);
+            const float cp = std::cos(pitch), sp = std::sin(pitch);
+            dir = {sy * cp, sp, cy * cp};  // `Vec_Spherical_2_Cartesian` convention
         }
         const auto origin = placement_pos(se.placement);
         bool trip = false;

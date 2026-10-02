@@ -94,12 +94,12 @@ Mission::Mission(DrivingLevel& level, const std::string& car)
     raced_ = level.desc().viv == std::string_view("RACE");
     laps_ = raced_ ? 3 : 1;
     player_node_ = road_.nearest(session_.player_position());
-    // Route spine: the coherent walk with `rs`-lane bridges spliced across index-order
-    // jumps. The spliced network is built in walk order, so its spine is the identity;
-    // without splicing the spine is the raw walk. Falls back to index order only when
-    // the walk finds nothing routable.
+    // Route spine: the coherent walk (dead-end spurs refused via the graded lanes) with
+    // `rs`-lane bridges spliced across index-order jumps. The spliced network is built in
+    // walk order, so its spine is the identity; without splicing the spine is the raw walk.
+    // Falls back to index order only when the walk finds nothing routable.
     {
-        std::vector<int> walk = road_.walk_from(player_node_);
+        std::vector<int> walk = road_.walk_from(player_node_, data_.road);
         RoadNetwork spliced = RoadNetwork::splice_jumps(road_, walk, data_.road);
         if (spliced.size() > walk.size()) {
             road_ = std::move(spliced);
@@ -125,7 +125,27 @@ Mission::Mission(DrivingLevel& level, const std::string& car)
         }
         spine_.erase(spine_.begin(), spine_.begin() + long(head));
     }
-    // Checkpoints are spine POSITIONS (not node ids): they clear when the monotonic walk
+    // Tail trim (circuit races only): drop trailing nodes that hang past unbridged void
+    // jumps (index-order garbage like a waypoint inside a hill the route never visits).
+    // The lap closes at the start line below, so nothing real is lost.
+    if (raced_) {
+        for (int t = 0; t < 20 && spine_.size() > 6; ++t) {
+            const Vec3 a = road_.node(std::size_t(spine_[spine_.size() - 2])).pos;
+            const Vec3 b = road_.node(std::size_t(spine_.back())).pos;
+            if (length(b - a) < 80.0f) break;
+            int voids = 0;
+            for (int s = 1; s <= 10; ++s) {
+                GroundHit gh;
+                if (!session_.collision().ground_below(a + (b - a) * (float(s) / 10.0f), gh)) ++voids;
+            }
+            if (voids < 7) break;
+            spine_.pop_back();
+        }
+    }
+    // Lap closure (circuit races only): the `rn` coverage stops short of the start line,
+    // so append it explicitly (the splice paves the closing straight with lane data).
+    // Point-to-point missions must NOT loop back.
+    if (raced_ && spine_.size() >= 6) spine_.push_back(spine_.front());
     // progress passes them, so cutting a corner can never strand the mission.
     for (int q = 1; q <= 4; ++q) {
         const int i = int(std::min(spine_.size() - 1, spine_.size() * std::size_t(q) / 4));
@@ -174,31 +194,34 @@ Mission::Mission(DrivingLevel& level, const std::string& car)
 
 Mission::~Mission() = default;
 
-int Mission::route_ahead(const Vec3& p, int ahead) const {
-    // Steering lookahead: from the monotonic walk position, take the farthest walk node
-    // that is safe to aim at. Within 80 m the route is followed blind (tunnels, ramps and
-    // hairpins have no line of sight but are still the road); beyond that, visibility IS
-    // the range cap (segment probe at car height), so the car never steers through
-    // buildings toward a far jump node. Falls back to walk+1 when even that is hidden.
+int Mission::route_ahead(const Vec3& p, int ahead, float speed) const {
+    // Steering lookahead: index-forward distance pursuit. From the monotonic walk position,
+    // take the first walk node at least Ld metres out. Index order (not proximity) rules, so
+    // parallel zigzag arms can never hijack the target (the shuttle stall); distance (not
+    // node count) sets the range, so it cannot flicker 10 m <-> 350 m either. Ld grows with
+    // speed (a short lookahead overshoots into a back-and-forth shuttle at pace).
+    // Nodes past 80 m need a clear line of sight (no steering through buildings);
+    // the short rung is blind (tunnels, hairpins). Falls back to walk+1 (creep).
+    (void)ahead;
     if (spine_.empty() || road_.empty() || player_walk_ < 0) return -1;
     const int from = std::min(int(spine_.size()) - 1, player_walk_);
-    int pick = spine_[std::size_t(from)];
     const Vec3 eye = {p[0], p[1] + 1.0f, p[2]};
-    const int last = std::min(int(spine_.size()) - 1, from + std::max(1, ahead) + 8);
-    for (int k = from + 1; k <= last; ++k) {
-        const Vec3 q = road_.node(std::size_t(spine_[std::size_t(k)])).pos;
-        const float dist = length(q - p);
-        // Range cap (stable target): a far jump node at the edge of visibility flickers
-        // clear/blocked as the car moves centimetres, whipsawing the steering between a
-        // 10 m and a 350 m target. Dense spliced routes always offer nodes inside the cap.
-        if (dist > 120.0f) break;
-        if (dist > 80.0f) {
-            SegmentHit h;
-            if (session_.collision().segment_hit(eye, {q[0], q[1] + 1.0f, q[2]}, h)) break;
+    const int last = std::min(int(spine_.size()) - 1, from + 40);
+    const float lds[3] = {30.0f + speed, 15.0f + speed * 0.5f, 7.0f};
+    for (const float Ld : lds) {
+        for (int k = from + 1; k <= last; ++k) {
+            const Vec3 q = road_.node(std::size_t(spine_[std::size_t(k)])).pos;
+            const float dist = length(q - p);
+            if (dist > 100.0f) break;  // unbridged teleport jump, not a lookahead
+            if (dist < Ld) continue;
+            if (Ld > 10.0f) {
+                SegmentHit h;
+                if (session_.collision().segment_hit(eye, {q[0], q[1] + 1.0f, q[2]}, h)) break;
+            }
+            return spine_[std::size_t(k)];
         }
-        pick = spine_[std::size_t(k)];
     }
-    return pick;
+    return spine_[std::size_t(std::min(int(spine_.size()) - 1, from + 1))];
 }
 
 int Mission::car_model(const std::string& car) {
@@ -369,6 +392,7 @@ void Mission::tick(const PadState& pad) {
     fire_pad_.push(autodrive_ ? auto_gun() : pad);
     clock_ = float(ticks_) * kDt;
     tick_player(pad);
+    tick_districts();
     tick_ai(clock_);
     tick_weapons(clock_);
     tick_pickups_zones(kDt);
@@ -448,11 +472,39 @@ void Mission::update_walk() {
             const float q = dot(d, d);
             if (q < bd) bd = q, best = k;
         }
-        player_walk_ = best;
+        // Hold when the car falls behind: advancing the walk to a node 60 m+ away aims it
+        // through walls/roofs at a place it cannot reach (tunnel below, street above). The
+        // car chases a reachable target instead, and the walk follows once it catches up.
+        if (bd < 3600.0f) player_walk_ = best;
+        // District seams are handled by tick_districts (a mission system, not the walk).
     }
-}
-
-PadState Mission::auto_gun() {
+ }
+ 
+void Mission::tick_districts() {
+     // District-seam loading cuts (mission system, driver-agnostic): the road network jumps
+     // 100 m+ where the mission streams the next district (drive-off ends, new roads begin;
+     // the `rn` data itself jumps: Paris nodes 251->252 are consecutive yet 130 m apart).
+     // No deck, render instance, or dynamic (`ps` type-2) exists in the seams, so no driver
+     // (human or bot) can drive them on real collision; the game respawns across (loading).
+     // When the car reaches a seam node, respawn it at the next one (fall in and settle).
+     if (spine_.empty() || player_walk_ < 0) return;
+     const Vec3 pp = session_.player_position();
+     for (int hops = 0; hops < 4; ++hops) {
+         const int w = player_walk_;
+         if (w + 1 >= int(spine_.size())) break;
+         const Vec3 a = road_.node(std::size_t(spine_[std::size_t(w)])).pos;
+         const Vec3 b = road_.node(std::size_t(spine_[std::size_t(w + 1)])).pos;
+         if (length(b - a) < 100.0f) break;
+         if (length(a - pp) > 60.0f) break;
+         player_walk_ = w + 1;
+         prog_walk_ = w + 1;
+         prog_clock_ = 0;
+         const Vec3 dir = road_.node(std::size_t(spine_[std::size_t(w + 1)])).dir;
+         session_.place_dropped(b, std::atan2(dir[0], dir[2]));
+     }
+ }
+ 
+ PadState Mission::auto_gun() {
     // Demo-driver gunner: hold the MG trigger, re-edging every few seconds so a loaded
     // secondary fires too; pop a gadget when pinned (smoke blinds pursuers, boost shoves
     // out of a ram pin) and now and then in a fight. Harmless without stock.
@@ -469,11 +521,6 @@ PadState Mission::auto_gun() {
 void Mission::tick_player(const PadState& pad) {
     // Speed magnitude (player_speed is signed: reversing reads negative).
     const float spd = std::abs(session_.player_speed());
-    // Stuck recovery for the autopilot (CancelStuck equivalent): reverse out when wedged.
-    if (autodrive_ && (session_.kind() == PlayerKind::Car || session_.kind() == PlayerKind::Sled)) {
-        if (spd < 1.5f) stuck_clock_ += kDt;
-        else stuck_clock_ = 0;
-    }
     update_walk();
     if (autodrive_) {
         // GT_LoseControl autopilot: steer toward the route lookahead with a synthetic pad.
@@ -494,33 +541,71 @@ void Mission::tick_player(const PadState& pad) {
             yaw_rate_ = 0.85f * yaw_rate_ + 0.15f * (dyaw / kDt);
             last_yaw_ = yaw_now;
         }
-        Vec3 target = pp + pf * 20.0f;
-        float corner = 0.0f;  // turn angle at the lookahead point (0 = straight)
-        Vec3 want = target;   // TRUE lookahead (uncapped): wrong-way detection must see it
-        const bool ground_like =
-            session_.kind() == PlayerKind::Car || session_.kind() == PlayerKind::Sled;
-        if (!spine_.empty() && player_walk_ >= 0) {
-            // Visibility-gated lookahead (route_ahead): the target always has a clear
-            // line of sight, so steer it uncapped. Flyers take the raw walk point (open
-            // water/air); cars take the visibility extension.
+         Vec3 target = pp + pf * 20.0f;
+         float corner = 0.0f;  // turn angle at the lookahead point (0 = straight)
+         const bool ground_like =
+             session_.kind() == PlayerKind::Car || session_.kind() == PlayerKind::Sled;
+         if (spine_.empty()) {
+             // Roadless assault (jungle3 vs the fodbase): no route to follow, so dogfight.
+             // Steer at the nearest live hunter and let the demo gunner (R1 MG + gadgets)
+             // kill it; tick_objectives declares the win when none remain. Without this
+             // the flyer holds a straight departure heading and leaves the battle 35 km
+             // behind, which can never complete.
+             float bd = 1e30f;
+             for (const AiCar& a : ai_) {
+                 if (!a.driver || !a.driver->weapons().alive()) continue;
+                 const AiRole r = a.driver->role();
+                 if (r == AiRole::Traffic || r == AiRole::Parked) continue;
+                 const Vec3 d = a.driver->position() - pp;
+                 const float q = dot(d, d);
+                 if (q < bd) bd = q, target = a.driver->position();
+             }
+         }
+         if (!spine_.empty() && player_walk_ >= 0) {
+             // Visibility-gated lookahead (route_ahead): the target always has a clear
+             // line of sight, so steer it uncapped. Flyers take the raw walk point (open
             const int ti = std::min(int(spine_.size()) - 1, player_walk_ + 3);
             const Vec3 q = road_.node(std::size_t(spine_[std::size_t(ti)])).pos;
-            want = q;
             target = q;
             if (ground_like) {
-                const int vis = route_ahead(pp, 3);
+                const int vis = route_ahead(pp, 3, spd);
                 if (vis >= 0) target = road_.node(std::size_t(vis)).pos;
             }
             // Graded lanes: pull the steering target onto the road surface the wheels
             // belong on (walk waypoints wander onto rocks/berms between lanes).
             if (ground_like) target = RoadNetwork::snap_to_lanes(data_.road, target, 15.0f);
+            // Slalom: if the direct line is blocked (ice blocks, barriers, rockfall on the
+            // racing line), sidestep to the first clear lateral offset instead of grinding
+            // into it. Only deviates while blocked; straight lines are untouched.
+            {
+                const Vec3 eye = {pp[0], pp[1] + 1.0f, pp[2]};
+                Vec3 to = {target[0], target[1] + 1.0f, target[2]};
+                SegmentHit block;
+                if (session_.collision().segment_hit(eye, to, block) &&
+                    block.t * length(to - eye) < length(to - eye) - 5.0f) {
+                    Vec3 dir = to - eye;
+                    dir[1] = 0;
+                    const float dl = length(dir);
+                    if (dl > 1.0f) {
+                        const Vec3 side = {dir[2] / dl, 0, -dir[0] / dl};
+                        for (const float off : {8.0f, -8.0f, 16.0f, -16.0f}) {
+                            const Vec3 cand = to + side * off;
+                            SegmentHit h2;
+                            if (!session_.collision().segment_hit(eye, cand, h2)) {
+                                target = {cand[0], target[1], cand[2]};
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
             // Turn anticipation: the sharpest bend over the next few spine nodes (not just
             // at the target), so the car sheds speed BEFORE a ramp mouth or hairpin instead
             // of overshooting it at full throttle.
             corner = 0.0f;
-            // Lookahead scales with speed (a fast car needs the bend call earlier).
-            const int span = std::clamp(3 + int(spd / 4.0f), 3, 10);
-            for (int k = 1; k <= span; ++k) {
+            // Fixed six-node window: a speed-scaled span flip-flops the corner max as speed
+            // oscillates (kink in/out of window), which flip-flops the pedals in turn.
+            for (int k = 1; k <= 6; ++k) {
                 const int a = std::min(int(spine_.size()) - 1, player_walk_ + k - 1);
                 const int b = std::min(int(spine_.size()) - 1, player_walk_ + k);
                 const int c = std::min(int(spine_.size()) - 1, player_walk_ + k + 1);
@@ -529,23 +614,29 @@ void Mission::tick_player(const PadState& pad) {
                 const Vec3 pc = road_.node(std::size_t(spine_[std::size_t(c)])).pos;
                 const Vec3 vin = pb - pa, vout = pc - pb;
                 const float li = length(vin), lo = length(vout);
-                if (li > 1.0f && lo > 1.0f)
-                    corner = std::max(corner, std::acos(std::clamp(dot(vin, vout) / (li * lo), -1.0f, 1.0f)));
+                // Distance-weighted: a kink 200 m out must not crawl the car now (it will
+                // matter when closer). Full weight inside 40 m, fading to none by 150 m.
+                if (li > 1.0f && lo > 1.0f) {
+                    const float ang = std::acos(std::clamp(dot(vin, vout) / (li * lo), -1.0f, 1.0f));
+                    const float dk = length(pb - pp);
+                    const float w = std::clamp(1.0f - (dk - 40.0f) / 110.0f, 0.0f, 1.0f);
+                    corner = std::max(corner, ang * w);
+                }
             }
         }
-        // Lost reset (EResetPlayerCar equivalent): driving away from the lookahead (wrong
-        // way after a spin, or dropped onto a wrong level) can never recover through
-        // steering alone, so put the vehicle back onto the walk. Progress survives
-        // (checkpoints are walk-index based). Uses the uncapped lookahead: the capped
-        // steering target always looks close.
+        last_target_ = target;
+        // Lost reset (EResetPlayerCar equivalent): put the vehicle back onto the walk when
+        // it is nowhere near it (dropped onto a wrong level). Wrong-way driving is left
+        // to the steering (the lookahead sits ahead in walk order, so the car turns back
+        // by itself) with the progress backstop behind that. A lookahead-distance tripwire
+        // is wrong here: teleport jumps legitimately sit 300 m+ out, and resetting on them
+        // pins the car in a 4-second teleport loop that can never leave.
         if (ground_like && player_walk_ >= 0 &&
-            (length(want - pp) > 150.0f ||
-             length(road_.node(std::size_t(spine_[std::size_t(player_walk_)])).pos - pp) > 200.0f))
+            length(road_.node(std::size_t(spine_[std::size_t(player_walk_)])).pos - pp) > 200.0f)
             lost_clock_ += kDt;
         else lost_clock_ = 0;
         if (lost_clock_ > 4.0f && !spine_.empty() && player_walk_ >= 0) {
             lost_clock_ = 0;
-            stuck_clock_ = 0;
             const std::size_t wi = std::size_t(spine_[std::size_t(player_walk_)]);
             const Vec3 q = road_.node(wi).pos;
             session_.place_at_start(q, std::atan2(road_.node(wi).dir[0], road_.node(wi).dir[2]));
@@ -558,7 +649,7 @@ void Mission::tick_player(const PadState& pad) {
             prog_walk_ = player_walk_;
             prog_clock_ = 0;
             beach_clock_ = 0;
-        } else if (session_.kind() == PlayerKind::Car && spd < 1.0f &&
+        } else if (session_.kind() == PlayerKind::Car && spd < 8.0f &&
                    session_.vehicle().wheels_in_contact() == 0) {
             beach_clock_ += kDt;
             if (beach_clock_ > 3.0f) prog_clock_ = 31.0f;
@@ -567,27 +658,28 @@ void Mission::tick_player(const PadState& pad) {
             prog_clock_ += kDt;
         }
         if (prog_clock_ > 30.0f && recover_cool_ <= 0 && !spine_.empty() && player_walk_ >= 0) {
+            // Recovery teleport: lift onto the walk HERE (realign + retry). Never backward:
+            // falling back undoes real progress and pinballs against forward teleports
+            // (lost/progress), scattering the car hundreds of metres from its walk index.
+            // Nudge 2 m sideways (alternating): a belly-beached car re-beaches on the same
+            // crown/pebble when replaced exactly; beside it the wheels find load again.
+            // The walk index follows the car (a teleport is an explicit reposition).
             prog_clock_ = 0;
-            stuck_clock_ = 0;
             recover_cool_ = 5.0f;
-            // Run-up: repeated wedges at the same walk index (jump lip, steep crest) need
-            // speed, so fall progressively farther back. The walk index follows the car
-            // (a teleport is an explicit reposition, not creep).
-            if (player_walk_ == wedge_walk_) wedge_reps_ = std::min(wedge_reps_ + 1, 6);
-            else wedge_reps_ = 0;
-            wedge_walk_ = player_walk_;
-            const int back = std::max(0, player_walk_ - wedge_reps_ * 15);
-            player_walk_ = back;
-            const std::size_t wi = std::size_t(spine_[std::size_t(back)]);
+            nudge_side_ = !nudge_side_;
+            const std::size_t wi = std::size_t(spine_[std::size_t(player_walk_)]);
             const Vec3 q = road_.node(wi).pos;
-            session_.place_at_start(q, std::atan2(road_.node(wi).dir[0], road_.node(wi).dir[2]));
+            const Vec3 dir = road_.node(wi).dir;
+            const Vec3 side = {dir[2], 0, -dir[0]};
+            const Vec3 at = q + side * (nudge_side_ ? 2.0f : -2.0f);
+            session_.place_dropped(at, std::atan2(dir[0], dir[2]));
             message("Vehicle recovered", 2.0f);
         }
-        if (stuck_clock_ > 2.0f && stuck_clock_ < 3.5f) {
-            auto_pad.buttons |= kPadSquare;  // reverse out (with the K-turn lock when latched)
-            auto_pad.lx = kturning_ ? kturn_lock_ : 0;
-        } else {
-            if (stuck_clock_ >= 3.5f) stuck_clock_ = 0;
+        // No stuck-reverse: backing up every few seconds kills momentum in slow technical
+        // driving (hairpins, crawl sections dip under the speed tripwire legitimately) and
+        // rocks the suspension into traction loss. True wedges wait for the K-turn (turn
+        // around) or the progress teleport below. Keep driving forward here.
+        {
             // Low speed: full lock + gas just spins the car (donut) when the target is
             // aside. Roughly ahead: launch straight. Otherwise back up with lock until
             // the nose comes around, then drive on. Flyers keep the straight launch.
@@ -606,19 +698,40 @@ void Mission::tick_player(const PadState& pad) {
                 braking_ = false;
             }
             if (spd < 3.0f && ground_like && !spinning) {
-                // Wide hysteresis: moderate errors just steer (tight but forward); only
-                // genuine misalignment (60 deg+) reverses.
-                if (!kturning_ && std::abs(d0) > 1.0f) {
+                // Reversals only: moderate errors just steer (a 90-degree street corner
+                // turns fine going forward); only a target genuinely behind the car (109
+                // deg+) backs up. Tight thresholds dither at the boundary instead.
+                if (!kturning_ && std::abs(d0) > 1.9f) {
                     kturning_ = true;
                     kturn_lock_ = d0 > 0 ? 255 : 0;
                 }
-                if (kturning_ && (std::abs(d0) < 0.5f || spd > 5.0f)) {
+                if (kturning_ && (std::abs(d0) < 1.5f || spd > 5.0f)) {
                     kturning_ = false;
+                    kturn_clock_ = 0;
                     braking_ = false;  // fresh start for the launch below
                 }
+                // Yaw-snap recovery: a reversal that makes no angular progress (wedged or
+                // spinning in place) gets rotated onto the target instead of grinding. The
+                // slow reverse above escapes free hinges; a 3 s stall means it cannot.
+                if (kturning_) {
+                    kturn_clock_ += kDt;
+                    if (kturn_clock_ > 3.0f) {
+                        kturning_ = false;
+                        kturn_clock_ = 0;
+                        braking_ = false;
+                        const Vec3 to = target - pp;
+                        session_.place_at_start(pp, std::atan2(to[0], to[2]));
+                    }
+                } else kturn_clock_ = 0;
             } else {
-                kturning_ = false;
-            }
+                 kturning_ = false;
+                 kturn_clock_ = 0;
+             }
+            // Launch/rolling hysteresis: a single 3 m/s threshold flip-flops every tick in
+            // the hover zone (straight/gas vs steer/brake averages to a standstill dither).
+            // Commit to a mode until clearly out of it.
+            if (spd > 3.5f) rolling_ = true;
+            else if (spd < 2.5f) rolling_ = false;
             if (spinning) {
                 // Damp the rotation: centred wheels and brake (locks would feed it).
                 auto_pad.buttons |= kPadSquare;
@@ -626,7 +739,7 @@ void Mission::tick_player(const PadState& pad) {
             } else if (kturning_) {
                 auto_pad.buttons |= kPadSquare;  // reverse (brake at standstill)
                 auto_pad.lx = kturn_lock_;
-            } else if (spd < 3.0f) {
+            } else if (!rolling_) {
                 // Launch straight; but hold the brake while the slow-down latch is set
                 // (spinning down through the band must not get a gas pulse).
                 auto_pad.lx = 128;
@@ -656,7 +769,43 @@ void Mission::tick_player(const PadState& pad) {
                 // (must not re-arm gas there), but a stale latch in the hover zone pins
                 // the car at 3 m/s forever (launch gases, rolling brakes, neither wins).
                 if (std::abs(d) < 0.8f && spd < 6.0f) braking_ = false;
-                const float v_target = ground_like ? std::clamp(26.0f - corner * 22.0f, 6.0f, 30.0f) : 30.0f;
+                // Modest cruise: overshoots (not slowness) strand the car (tunnel mouths,
+                // ramp lips, cliff corners all punish late braking far more than a slow
+                // cruise costs). Reliability over pace.
+                float v_target = ground_like ? std::clamp(20.0f - corner * 20.0f, 6.0f, 24.0f) : 24.0f;
+                // Loose-surface factor: the demo driver lifts where a player would (snow,
+                // dirt and gravel slide wide at pace). [INFERENCE] factors, conservative.
+                if (ground_like) {
+                    GroundHit gh;
+                    if (session_.collision().ground_below({pp[0], pp[1] + 3.0f, pp[2]}, gh)) {
+                        float grip = 1.0f;
+                        switch (gh.surface) {
+                            case Surface::Gravel: grip = 0.7f; break;
+                            case Surface::Grass: grip = 0.6f; break;
+                            case Surface::Cobble: grip = 0.9f; break;
+                            case Surface::Dirt: grip = 0.7f; break;
+                            case Surface::Water: grip = 0.3f; break;
+                            case Surface::Wood: grip = 0.8f; break;
+                            case Surface::Ice: grip = 0.4f; break;
+                            case Surface::Snow: grip = 0.5f; break;
+                            case Surface::PavedRough: grip = 0.9f; break;
+                            case Surface::PavedGrate: grip = 0.9f; break;
+                            case Surface::Railroad: grip = 0.8f; break;
+                            case Surface::Metal: grip = 0.8f; break;
+                            case Surface::Terrain: grip = 0.8f; break;
+                            default: break;
+                        }
+                        v_target *= grip;
+                    }
+                }
+                // Downhill cap: a straight cliff descent reads corner-free (full throttle
+                // into the void). Any bump launches the car at 40 m/s; hold 12 instead.
+                if (ground_like && !spine_.empty() && player_walk_ >= 0) {
+                    const int gi = std::min(int(spine_.size()) - 1, player_walk_ + 5);
+                    const Vec3 pg = road_.node(std::size_t(spine_[std::size_t(gi)])).pos;
+                    const float dg = length(pg - pp);
+                    if (dg > 1.0f && (pp[1] - pg[1]) / dg > 0.12f) v_target = std::min(v_target, 12.0f);
+                }
                 if (braking_) auto_pad.buttons |= kPadSquare;
                 else if (ground_like && spd > v_target + 1.5f) auto_pad.buttons |= kPadSquare;
                 else if (!ground_like || spd < v_target - 1.5f) auto_pad.buttons |= kPadCross;
@@ -670,9 +819,6 @@ void Mission::tick_player(const PadState& pad) {
                     static_cast<std::uint8_t>(std::clamp(dive * 127.5f + 127.5f, 1.0f, 254.0f));
         }
         }
-        if (std::getenv("NF_TRACE") && autodrive_ && (ticks_ % 25) == 0)
-            std::fprintf(stderr, "CTL spd=%.1f k=%d st=%.1f btn=%u lx=%u tgt=%.0f corn=%.2f\n", spd,
-                         int(kturning_), stuck_clock_, auto_pad.buttons, auto_pad.lx, length(target - pp), corner);
         session_.tick(auto_pad);
     } else {
         session_.tick(pad);
@@ -1038,6 +1184,24 @@ float Mission::route_progress() const {
     if (spine_.empty() || player_walk_ < 0) return 0;
     return std::min(1.0f, float(player_walk_) / float(spine_.size() - 1));
 }
+Mission::PlayerDebug Mission::player_debug() const {
+    PlayerDebug d;
+    d.pos = session_.player_position();
+    d.target = last_target_;
+    d.speed = session_.player_speed();
+    const Vec3 pf = session_.player_forward();
+    d.yaw = std::atan2(pf[0], pf[2]) * 57.29578f;
+    const float want = yaw_between(d.pos, d.target) * 57.29578f;
+    float e = want - d.yaw;
+    while (e > 180.0f) e -= 360.0f;
+    while (e < -180.0f) e += 360.0f;
+    d.d0 = e;
+    d.walk = player_walk_;
+    d.kturn = kturning_;
+    d.rolling = rolling_;
+    d.braking = braking_;
+    return d;
+}
 
 void Mission::tick_objectives(float now) {
     (void)now;
@@ -1079,8 +1243,10 @@ void Mission::tick_objectives(float now) {
                 state_ = MissionState::Won;
                 banner_ = "MISSION COMPLETE - race won!";
             } else {
-                // Re-arm the walk for the next lap (positions, like construction).
-                spine_ = road_.walk_from(player_node_);
+                // Re-arm the walk for the next lap (positions, like construction, plus the
+                // lap-closing finish).
+                spine_ = road_.walk_from(player_node_, data_.road);
+                if (spine_.size() >= 6) spine_.push_back(spine_.front());
                 player_walk_ = -1;
                 for (AiCar& a : ai_) a.walk = -1;
                 checkpoints_.clear();

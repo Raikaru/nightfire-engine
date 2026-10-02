@@ -287,6 +287,17 @@ MoveToGoal switch fires SetState(99,0) exactly for verdicts 0-3 and falls
 through for 4+ (mg 13-14 behave like 4-12). MoveToGoal takes DCVars in a0,
 the +0x710 CelPos in a1, and float(+0x704) in f12.
 
+`nfmips <elf> diff-combat` runs the EE side of the Bots combat-state
+differential (`DroneFunc_CombatState`, 41 rows): base case reaching the
+grenade leg plus one-factor variations, level-gated +0x88 combos, and a 0x68
+mask pass/fail/noammo trio, with CoverAvailable / Rand_Rand coin /
+CanDoAnimState / MoveToObject verdict / CallAnim / SetCombatMoveAnim scripted
++ logged and everything else real (InTransition, getProperty, SetAngleToObj,
+ChooseCombatMove, fptoui). Rand state is reset per row; the rand column logs
+every draw with its arg so the port side can align sequences. Covers returns
+0x59/0x5a/0x5b/0x5c/0x5f/0x60/0x69/0x7f/0x8c/0x2d/0x0 with zero traps; the
+mask-equal path runs grenade+choose, mask-unequal skips to CallAnim(10).
+
 ## Cross-platform disambiguation
 
 When a differential shows systematic (non-noise) differences on a VU0/MMI-heavy

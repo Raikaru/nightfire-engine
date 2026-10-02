@@ -111,6 +111,7 @@ private:
     std::array<float, 3> key_pos(std::size_t i) const;
     std::array<float, 4> key_quat(std::size_t i) const;
     float key_time(std::size_t i) const;
+    float key_aux(std::size_t i) const;  // +32 float (fov / aux channel)
     std::size_t key_count() const;
 
     const CutsceneBin* bin_;

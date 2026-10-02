@@ -355,10 +355,12 @@ void ArenaSystem::check_end_condition(float dt) {
 }
 
 void ArenaSystem::sort_out_who_won() {
+    // MP_SortOutWhoWon only writes the overlay banner; the scores stay live until the players are paused at Over
+    // entry, which is when this snapshot is taken (P_MPDEBRIEFING reads the live slots, so it sees the same rows).
     MatchResult r;
     r.team_score = team_score_;
-    r.score_limit = state_code_ == 1;
-    r.time_up = state_code_ == 2;
+    r.score_limit = ended_by_ == 1;
+    r.time_up = ended_by_ == 2;
     const auto mode = settings_.mode;
     std::optional<int> overlay_winner;
     if (mode == mp_mode::kTopAgent) {
@@ -448,7 +450,7 @@ void ArenaSystem::tick(World& world, FrameTiming timing) {
             break;
         case 1:
         case 2:
-            sort_out_who_won();
+            ended_by_ = state_code_;
             if (state_code_ == 2 && settings_.mode != mp_mode::kTopAgent) {
                 note_message(-1, MatchMessage::Type::Objective, label_text(kLabelTimeUp), kMessageFrames);
             }
@@ -461,6 +463,7 @@ void ArenaSystem::tick(World& world, FrameTiming timing) {
                 hold_timer_ += dt_;
                 if (hold_timer_ < kTopAgentHold) break;
             }
+            sort_out_who_won();   // Over entry: the original pauses the players and opens the debriefing here
             state_code_ = 4;
             break;
         case 4:

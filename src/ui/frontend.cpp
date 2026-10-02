@@ -162,8 +162,10 @@ void Frontend::open(FrontendMode mode, std::optional<std::uint32_t> page) {
     std::uint32_t menu_id = 0x80000002;
     if (!s.menu.pages.empty()) menu_id = s.menu.pages.front().menu;
     const std::uint32_t first = page ? *page : mode == FrontendMode::Pause ? kPagePause : kPageStart;
+    // Manager status: Pause uses 3 (Start stays distinct so it resumes); the main menu uses 4 so
+    // Start aliases Accept (MenuInput::action's status>=4 rule) — the title advances on START.
     s.mgr = std::make_unique<ui::MenuManager>(s.menu, s.assets.strings, s.assets.fonts, s, menu_id,
-                                              mode == FrontendMode::Pause ? 3 : 0);
+                                              mode == FrontendMode::Pause ? 3 : 4);
     s.mgr->start(first);
 }
 

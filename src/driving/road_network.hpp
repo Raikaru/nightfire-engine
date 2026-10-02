@@ -41,6 +41,10 @@ public:
     // are what wheels belong on. Returns `p` unchanged when no lane is near.
     static Vec3 snap_to_lanes(const std::vector<RoadSeg>& lanes_in, const Vec3& p, float max_dist);
 
+    // Route walk from `start` over the lane points (see .cpp). The `lanes` let the walk
+    // refuse dead-end spurs: a candidate with no graded road beyond it (in the travel
+    // direction) is only taken when nothing live remains. Empty lanes = old behaviour.
+    std::vector<int> walk_from(int start, const std::vector<RoadSeg>& lanes = {}) const;
     // Nearest node to p (full scan; networks are small: 811 segments in Paris).
     int nearest(const Vec3& p) const;
     // Successor to drive from node i given heading dir (straightest continuation).
@@ -51,11 +55,6 @@ public:
     // nearest unvisited node within 150 m roughly ahead (intersection gaps, split levels).
     // Stops at `max_len` nodes or when no continuation exists.
     std::vector<int> chain_from(int start, std::size_t max_len = 4000) const;
-    // Route walk from `start` over the lane points: repeatedly goes to the nearest unvisited
-    // node (exact successors first). The `rs` records are not stored in route order on every
-    // track, so this nearest-neighbour walk is what spreads traffic/pickups/checkpoints and
-    // routes AI lanes. Returns rs indices; always terminates.
-    std::vector<int> walk_from(int start) const;
 
 private:
     std::vector<Node> nodes_;

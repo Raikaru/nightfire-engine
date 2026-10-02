@@ -331,6 +331,9 @@ private:
     float last_height_delta_ = 0.0f;          // foot-height delta applied this frame (along last_height_vec_)
     Vec3 last_height_vec_{};              // pos shift from the foot height (reverted if frozen-airborne)
     Vec3 prev_pos_{};           // BL+0x00
+    // Capsule ends for a body at `base` with foot height `h` (Player_Collision's HITTEST+0x20/+0x30).
+    void build_capsule(const Vec3& base, float h, Vec3& a, Vec3& b, float& radius, unsigned& pick,
+                       std::size_t& ignore) const;
     CylinderResult last_cylinder_;
     FrameTiming timing_;        // FRAME_RATE / _MUL / REC_FRAME_RATE as of the last update
     std::uint8_t enabled_ = 1;  // BL+0x94A: 0 disabled, 1 running, 2.. counting down after Player_Enable

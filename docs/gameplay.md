@@ -177,21 +177,23 @@ messages (`to_hud_message`), clock/results text (`format_match_clock`, `describe
 
 ## Known gaps (movement)
 
-- **Animated foot height.** `collbody+0xCC` is `sAnimObject+0x5C` (the sAnimObject starts at collbody+0x70):
-  `AnimFrameResolve` sets it to the blended root-bone translation Y of the current pose plus `sAnimObject+0x60`,
-  times 0.8627321 in multiplayer (flag `+0x58 & 0x400` clear). It moves the object by the change of the root
-  translation **while a transition script runs** (nfmips frame diffs); idle or in-air wobble of the height
-  leaves the body where it is. The port applies the height delta provisionally and reverts it
-  when the frame ends airborne outside a transition (`crouch_timer_ != 0` covers both directions across the
-  substate flip). Player_Collision builds the capsule from it and Player_FeetOnPoint probes to it, and `pos.y`
-  moves by every grounded change of it (measured: a frame's dy minus the collision push equals its change of
-  `collbody+0xCC` exactly, both signs). Values for the multiplayer skin 0x05000089: 1.0328 idle, a 1.050..1.077
-  double hump every ~13.5 frames at 60 Hz while walking, ~0.61 crouched, ~0.93 crouch-walking. `Player::stand_height`
-  is the input: replays supply the recorded value, and the port keeps the idle value otherwise because the
-  animation state machine that drives it is not wired in (`CharacterInstance::root_height()` +
-  `update_locomotion` exist; driving them with the player's speed did not reproduce the recorded phase and amplitude
-  yet: the AnimSetAppend arguments 0.37 / 0.5 and the distance-table phase would have to be matched). Effect without
-  it: walking positions differ by up to a few cm in y, crouching by up to 0.4 m during the transition.
+ - **Animated foot height.** `collbody+0xCC` is `sAnimObject+0x5C` (the sAnimObject starts at collbody+0x70):
+   `AnimFrameResolve` sets it to the blended root-bone translation Y of the current pose plus `sAnimObject+0x60`,
+   times 0.8627321 in multiplayer (flag `+0x58 & 0x400` clear), and adds the masked root delta to the object
+   position (locomotion root is Y-only: walk/strafe script flags zero root X/Z). It moves the object by the
+   change of the root translation **while a transition script runs** (nfmips frame diffs); idle or in-air
+   wobble of the height leaves the body where it is. The port applies height *drops* vertically and freezes
+   *rises*: the climb comes from pushes against the deep fresh-foot capsule, whose penetration depth
+   self-corrects to the recorded height (a lifted capsule would break marginal contact and fall).
+   Fresh transitions (crouch timer high) and non-crouch transitions still lift vertically. A
+   non-transitioning crouch that ends the frame airborne reverts the shift. Values for the multiplayer
+   skin 0x05000089: 1.0328 idle, a 1.050..1.077 double hump every ~13.5 frames at 60 Hz while walking,
+   ~0.61 crouched, ~0.93 crouch-walking. `Player::stand_height` is the input: replays supply the recorded
+   value, and the port keeps the idle value otherwise because the animation state machine that drives it
+   is not wired in (`CharacterInstance::root_height()` + `update_locomotion` exist; driving them with the
+   player's speed did not reproduce the recorded phase and amplitude yet: the AnimSetAppend arguments
+   0.37 / 0.5 and the distance-table phase would have to be matched). Effect without it: walking positions
+   differ by up to a few cm in y, crouching by up to 0.4 m during the transition.
 - Water, zero-G and scan mode (`player_water.cpp`, `player_zerog.cpp`, `player_scan.cpp`), ladders and
   creep walls (`player_climb.cpp`, `ladder.cpp`, `object_world.cpp`), grapple/wire/zip line
   (`player_rope.cpp`, `grapple.cpp`, `wire.cpp`) and vehicles/movers (below) are implemented and hooked
@@ -319,18 +321,14 @@ every object with a HITTEST and calls `control_funcs[class][1]` = `Player_Collis
 
 - Visit order across placements is unknown (depends on the cel list): descending placement index is assumed.
   It only affects capsule corners where two placements push in the same frame.
-- Cel gating (`Collide_StraddleCels`, bounding-sphere tests in `Collide_Pick`) is replaced by an exact
-  world-bounds overlap; it can only add candidates. An added candidate CAN change a result: a resting
-  capsule tangent to its floor also overlaps a second triangle of another placement, whose push lifts the
-  player while the game (which never tests that placement) stays planted. Proven case (nfmips frame diff,
-  Skyrail MP spawn 18.88,7.35,27.49, crouching): the port's capsule query hits placement 12 tri 235
-  (mat 0x0C, dist 0.4687 < 0.55, push +0.073y) with the identical capsule, HITTEST (type 0x800, pick 0,
-  hit 0) and foot height the game uses, while the game's pass records no touch (`collbody+0x60` stays
-  0x08) and `pos.y` tracks the foot height to 0.1 mm. Capsule formula, HITTEST params, jump takeoff
-  (`WldGravity * -0.4`, delay 4) and the feet-planted Y rule all match the original exactly; only the
-  candidate set differs. At the Player1 spawn the same queries match to 0.000 cm over 58 frames, so the
-  divergence is spot-specific (cel topology), not a global math error. Full cel-chain culling is the fix;
-  until then resting-contact frames can differ by centimetres where two placements' floors overlap.
+ - Cel gating (`Collide_StraddleCels`, bounding-sphere tests in `Collide_Pick`) is replaced by an exact
+   world-bounds overlap; it can only add candidates. Live-hooked nfmips comparison
+   (`ASH_vecutil_Dist2Tri` observed inside a seated `Player_Collision` on the Skyrail stairs) shows the
+   game tests every triangle we test there plus a few far ones our box walk misses (all >2.7 away, no
+   pushes): on identical inputs Dist2Tri and the triangle geometry agree to sub-ulp (face case 6.6e-7,
+   edge cases ~1e-6; flags identical), so candidate-set differences are harmless on this spot. The real
+   stair-climbing divergence was the foot-height follow direction (world-vertical vs along the tread;
+   fixed, crouch synced max 0.18 cm).
 - Object collision (`Collide_PickObj`, `Collide_Jointy`, dynamic-object matrices, `DeltaP` for moving
   platforms), the point query `Intersect_PointGeom` (type `0x101`), `Collide_SphereIntersect`, and per-cel
   flags (`cel+0x94 & 0x20/0x40`: skip / ghost) are not modelled.
@@ -517,20 +515,26 @@ SS gates, breakables/destroyables, sensors/searchlights, turrets (copter/gun/sho
 hurt volumes, mines, locks/monitors/fuseboxes, hints, sound/music triggers, pickups, thirdcams and
 script-player anchors from the map statics; everything else stays static. Doors open on proximity
 (flag 2), their unlock channel, or Cross (`activate_at`, shared with Movement's `Player_Activate`
-probe); lock edges freeze them with the "locked" line (`0x02000003`). Closed poses publish solid
-`Mover` AABBs and open poses move with the panel (spline tracks sampled by progress, swing
-otherwise [INFERENCE: hinge approximated at the placement origin]); the renderer hides the taken
+lock edges freeze them with the "locked" line (`0x02000003`). Closed poses publish solid
+`Mover` AABBs and open poses move with the panel: framelist doors evaluate their path track
+at open progress (linear `KeyFrame_Interp` or spline `Spline_Interp` per param 4, rotation by
+`Quat_Slerp_Acc`, all ported op-for-op and differential-checked against the originals);
+path-less doors yaw about the model's hinge edge instead (angle scale authored per door).
+Touch volumes use their collision-model bounds (render-mesh bounds when the model carries no
+collision, 2 m box only with no model at all); the renderer hides the taken
 statics and draws the panels via `draw_objects`. Touch volumes latch channels, multiplex nets run
-AND/OR/fan-out/sequence logic, sensors trip alarm channels in their cones, breakables fall to
-bullets/blasts from the weapon events, pickups grant through `WeaponSystem`, turrets and mines
-hurt on range/proximity. Sounds, HUD texts, music events, drone spawns and level/movie requests
-queue out of the tick for the frontend.
+AND/OR/fan-out/sequence logic, sensors trip alarm channels in their cones (searchlights pan
+theirs sinusoidally per `Searchlight_Update`: param 4/5 degree range, 480-frame cycle),
+breakables fall to bullets/blasts from the weapon events, pickups grant through `WeaponSystem`,
+turrets and mines hurt on range/proximity. Sounds, HUD texts, music events, drone spawns and
+level/movie requests queue out of the tick for the frontend.
 
 ### Cutscenes (`Script_Run`, `Script_Update`, `Script_EventHandler`)
 
 `CutscenePlayer` runs one level `.bin` type-7 entry: stream times advance in 60 Hz frames, waits
-gate commands, cameras/entities interpolate the KEYED_POSROT keys (line/spline [INFERENCE: key
-assignment and spline weights]), and text/sound/fade/music/channel/drone/level/scriptcam events
+gate commands, cameras/entities interpolate the KEYED_POSROT keys (linear blend or Catmull-Rom
+per `Script_GetInterp`/`GetSplineWeights`/`Spline_Eval3D`/`Quat_Slerp_Acc`, ported op-for-op and
+differential-checked), and text/sound/fade/music/channel/drone/level/scriptcam events
 fire through the host. Script-player anchors auto-play level-start NIS cutscenes or fire on their
 trigger channel; `MoviePlayer` volumes play theirs on touch. While a camera runs, `nfgame` renders
 from it; `Script_FadeStart` drives a fullscreen fade value. Coder-spawns queue raw

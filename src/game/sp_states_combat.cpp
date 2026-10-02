@@ -17,14 +17,16 @@ int skeleton(Drone& d, const Msg& m) { return skel_common(d, m, kStAttack) ? 1 :
 
 // ---- DroneFunc pieces used by the combat family -----------------------------------------------------------------
 // NDrone2_CoverAvailable is cover_available() (sp_civilian_util.hpp); NDrone2_ChooseCombatMove is
-// evasive_move() (drone_move.hpp).
-bool can_throw_grenade(Drone& d) {
-    // DroneWeap_CanThrowGrenade: clip loaded, coin flip, opponent at 8..20 m, grenade anim available.
+// choose_combat_move() (drone_move.hpp).
+bool can_throw_grenade(Drone& d, const CombatStubs& st = {}) {
+    // DroneWeap_CanThrowGrenade: both clip halves loaded (+0xbcc/+0xbce nonzero), Rand_Rand(2) coin,
+    // opponent at 8..20 m, CanDoAnimState(0x49). Draw order is load-bearing (diff-combat rand column).
     const SpExt& e = sx(d);
-    if (e.ammo < 1 || e.ammo_max < 1) return false;
-    if (d.sys->rand() % 2 != 0) return false;
+    if (e.clip == 0 || e.clip_max == 0) return false;
+    const std::uint32_t coin = st.rand_draw ? st.rand_draw(2) : d.sys->rand() % 2;
+    if (coin != 0) return false;
     if (!d.opponent.valid() || d.opp_dist < 8.0f || d.opp_dist > 20.0f) return false;
-    return anim_can_do(d, kGrenade);
+    return st.anim_ok ? st.anim_ok(kGrenade) : anim_can_do(d, kGrenade);
 }
 
 bool castle56(std::uint32_t level) { return level == 0x7000005 || level == 0x7000006; }   // GameState+0xc + 0xf8fffffb < 2
@@ -37,114 +39,6 @@ void aim_flag(Drone& d, int aim_dasc) {
     d.fire_requested = (d.sight_flags & sight::kSeen) != 0;
 }
 
-// DroneFunc_CombatState 0x148338: shared per-tick selector of the combat family, called from Combat,
-// CombatOutOfRange, CombatNoSight, CombatWait, AimStandFire and AimCrouchFire. Moves toward the opponent
-// (closing to min(engage, 6)), then branches by current state. Returns the next state, 0 = stay (the
-// original returns 0 after playing a stay-put anim).
-int combat_tick(Drone& d) {
-    if (!d.opponent.valid()) return kStNoOpponent;
-    if (d.anim.req_state != 0) return 0;   // DroneAnim_InTransition: hold the state
-    const int cur = d.smi.cur;
-    const bool firing_pose = cur == kStAimStandFire || cur == kStAimCrouchFire;
-    const int r = move_to_object(d, d.opponent, std::min(d.engage_dist, 6.0f), !firing_pose);
-    const bool route_ok = r < 4 || r == 10;
-    const bool seen = (d.sight_flags & sight::kSeen) != 0;
-    const bool nomove = (d.flags & flag::kStationary) != 0 || d.has_beh(beh::kNeverMovesInCombat);
-    const std::uint32_t lvl = d.sys->config().level_id;
-    // Arrival / creep-failure facing + firing while staying (shared tail of several branches).
-    const auto face_and_hold = [&](int aim_dasc) {
-        set_angle_to_obj(d, d.opponent, 0.0f);
-        d.fire_requested = seen;
-        anim_call(d, 0, aim_dasc);
-    };
-    // Move-status arrival handling shared by the OutOfRange / NoSight walkers.
-    const auto walk_status = [&](int fire_dasc) -> int {
-        switch (r) {
-        case 0: case 1: case 2:
-            if ((d.mv.boundary_flags & 2) != 0) {   // blocked ahead: stand, explaining the hold
-                anim_call(d, 0, kStandAlert);
-                return 0;
-            }
-            if (castle56(lvl)) {
-                set_combat_move_anim(d, d.mv.route_distance);
-                return 0;
-            }
-            anim_call(d, 0, kRun);
-            return 0;
-        case 3: case 9: case 0xb: case 0xc:
-            face_and_hold(fire_dasc);
-            return 0;
-        case 5:
-            return kStDroneStuck;
-        case 10:
-            return 0;
-        default:
-            return kStCombatNoRoute;
-        }
-    };
-    switch (cur) {
-    case kStCombat: {
-        if (nomove) return kStCombatNoMove;
-        if (d.opp_dist >= d.engage_dist) return kStCombatOutOfRange;
-        if (!seen) return d.lost_frames > 15 ? kStCombatNoSight : kStCombatNoRoute;
-        return kStCombatNewSighting;
-    }
-    case kStCombatOutOfRange: {
-        if (nomove) return kStCombatNoMove;
-        if (cover_available(d)) return kStRunForCover;
-        if (d.opp_dist < d.engage_dist) return kStCombat;
-        return walk_status(kAimStand);
-    }
-    case kStCombatNoSight: {
-        if (nomove) return kStCombatNoMove;
-        if (cover_available(d)) return kStRunForCover;
-        if (seen) return kStCombatNewSighting;
-        if (d.lost_frames > 15) {
-            if (r == 0 || r == 1 || r == 2) {
-                set_combat_move_anim(d, d.mv.route_distance);
-                return 0;
-            }
-            return walk_status(kAimStand);
-        }
-        face_and_hold(kAimStand);
-        return 0;
-    }
-    case kStCombatWait: {
-        set_angle_to_obj(d, d.opponent, 0.0f);
-        if (route_ok) return kStCombat;
-        if (seen) {
-            d.fire_requested = true;
-            anim_call(d, 0, kAimStand);
-        } else {
-            anim_call(d, 0, kStandAlert);
-        }
-        return 0;
-    }
-    case kStAimStandFire: case kStAimCrouchFire: {
-        SpExt& e = sx(d);
-        if (e.ammo < 1) return kStAimStandReload;   // Drone+0xbbc < 1
-        if (route_ok) {
-            if (d.engage_dist <= d.opp_dist) return kStCombatOutOfRange;
-            if (d.lost_frames > 15) return kStCombatNoSight;
-        }
-        if (cover_available(d)) return kStRunForCover;
-        if (can_throw_grenade(d)) return kStGrenadeThrow;
-        // NDrone2_ChooseCombatMove when the current anim allows it (approximated by availability), with
-        // the crouch-fire 120-frame cooldown (Drone+0x11c).
-        const bool cooled = cur != kStAimCrouchFire || d.now() >= e.last_combat_move + d.seconds(2.0f);
-        if (cooled) {
-            if (const int evade = evasive_move(d); evade != 0) {
-                e.last_combat_move = d.now();
-                return evade;
-            }
-        }
-        face_and_hold(cur == kStAimCrouchFire ? kAimCrouch : kAimStand);
-        return 0;
-    }
-    default:
-        return kStCombat;
-    }
-}
 
 // ---- DroneFunc_FirstAlertState 0x147fd0 ---------------------------------------------------------------------------
 // Alert-source dispatch of the first attack: the 0x200000 (attack-shout) source on the interrogation levels
@@ -182,14 +76,11 @@ int first_sight_state(Drone& d) {
     talk(d, Speech::Other);   // NDrone2_SeenPlayerTalk
     if (d.has_beh(beh::kChallengeNear)) {
         if (d.sys->rand() % 2 == 0) return 0;
-        if (const int evade = evasive_move(d); evade != 0) return evade;   // NDrone2_ChooseCombatMove
+        return choose_combat_move(d);
     }
     if (d.has_beh(beh::kAimStandPreferred)) return 0;
-    if (d.has_beh(beh::kCombatMoveAlt)) {
-        if (const int evade = evasive_move(d); evade != 0) return evade;
-        return kStGrenadeThrow;
-    }
-    if (const int evade = evasive_move(d); evade != 0) return evade;   // NDrone2_ChooseCombatMove
+    if (d.has_beh(beh::kCombatMoveAlt)) return choose_combat_move(d);
+    if (d.has_beh(beh::kGrenadeTosser)) return kStGrenadeThrow;
     return 0;
 }
 
@@ -555,6 +446,7 @@ int state_aim_stand_reload(Drone& d, const Msg& m) {
     case kMsgAnimResume: {
         SpExt& e = sx(d);   // Drone+0xbbc clip refill
         e.ammo = e.ammo_max;
+        e.clip = e.clip_max;
         d.set_state(kStCombat);
         return 1;
     }
@@ -693,6 +585,7 @@ int state_aim_crouch_reload(Drone& d, const Msg& m) {
     case kMsgAnimResume: {
         SpExt& e = sx(d);
         e.ammo = e.ammo_max;
+        e.clip = e.clip_max;
         d.set_state(kStAimCrouch);
         return 1;
     }
@@ -847,6 +740,139 @@ int state_sniper_reload(Drone& d, const Msg& m) {
 
 }  // namespace
 
+// DroneFunc_CombatState 0x148338: shared per-tick selector of the combat family, called from Combat,
+// CombatOutOfRange, CombatNoSight, CombatWait, AimStandFire and AimCrouchFire. Moves toward the opponent
+// (closing to min(engage, 6)), then branches by current state. Returns the next state, 0 = stay (the
+// original returns 0 after playing a stay-put anim).
+int combat_tick(Drone& d, const CombatStubs& st) {
+    // Opponent gate: a missing opponent still proceeds while recently seen (+0x238 + 30 >= frame).
+    if (!d.opponent.valid() && (d.last_seen_time == 0 || d.last_seen_time + 30 < d.now())) return kStNoOpponent;
+    if (d.anim.req_state != 0) return 0;   // DroneAnim_InTransition: hold the state
+    const int cur = d.smi.cur;
+    const bool firing_pose = cur == kStAimStandFire || cur == kStAimCrouchFire;
+    const float close_dist = std::min(d.engage_dist, 6.0f);
+    const int r = st.move_verdict ? st.move_verdict(close_dist)
+                                  : move_to_object(d, d.opponent, close_dist, !firing_pose);
+    const bool route_ok = r < 4 || r == 10;
+    const bool seen = (d.sight_flags & sight::kSeen) != 0;
+    const bool nomove = (d.flags & flag::kStationary) != 0 || d.has_beh(beh::kNeverMovesInCombat);
+    const std::uint32_t lvl = d.sys->config().level_id;
+    const auto cover = [&] { return st.cover ? st.cover() : cover_available(d); };
+    const auto call_anim = [&](int dasc) {
+        if (st.call_anim) st.call_anim(dasc);
+        else anim_call(d, 0, dasc);
+    };
+    const auto set_move_anim = [&](float dist) {
+        if (st.set_move_anim) st.set_move_anim(dist);
+        else set_combat_move_anim(d, dist);
+    };
+    // Arrival / creep-failure facing + firing while staying (shared tail of several branches).
+    const auto face_and_hold = [&](int aim_dasc) {
+        set_angle_to_obj(d, d.opponent, 0.0f);
+        d.fire_requested = seen;
+        call_anim(aim_dasc);
+    };
+    // Move-status arrival handling shared by the OutOfRange / NoSight walkers.
+    const auto walk_status = [&](int fire_dasc) -> int {
+        switch (r) {
+        case 0: case 1: case 2:
+            if ((d.mv.boundary_flags & 2) != 0) {   // blocked ahead: stand, explaining the hold
+                call_anim(kStandAlert);
+                return 0;
+            }
+            if (castle56(lvl)) {
+                // SetCombatMoveAnim(*(params+0x88)): +0x854 is &drone+0x860 (set by MoveToObject), so
+                // +0x88 is the attack route's remaining distance, i.e. route_distance here.
+                set_move_anim(d.mv.route_distance);
+                return 0;
+            }
+            call_anim(kRun);
+            return 0;
+        case 3: case 9: case 0xb: case 0xc:
+            face_and_hold(fire_dasc);
+            return 0;
+        case 5:
+            return kStDroneStuck;
+        case 10:
+            return 0;
+        default:
+            return kStCombatNoRoute;
+        }
+    };
+    switch (cur) {
+    case kStCombat: {
+        if (nomove) return kStCombatNoMove;
+        if (d.opp_dist >= d.engage_dist) return kStCombatOutOfRange;
+        if (!seen) return d.lost_frames > 15 ? kStCombatNoSight : kStCombatNoRoute;
+        return kStCombatNewSighting;
+    }
+    case kStCombatOutOfRange: {
+        if (nomove) return kStCombatNoMove;
+        if (cover()) return kStRunForCover;
+        if (d.opp_dist < d.engage_dist) return kStCombat;
+        return walk_status(kAimStand);
+    }
+    case kStCombatNoSight: {
+        if (nomove) return kStCombatNoMove;
+        if (cover()) return kStRunForCover;
+        if (seen) return kStCombatNewSighting;
+        if (d.lost_frames > 15) {
+            if (r == 0 || r == 1 || r == 2) {
+                set_move_anim(d.mv.route_distance);
+                return 0;
+            }
+            return walk_status(kAimStand);
+        }
+        face_and_hold(kAimStand);
+        return 0;
+    }
+    case kStCombatWait: {
+        set_angle_to_obj(d, d.opponent, 0.0f);
+        if (route_ok) return kStCombat;
+        if (seen) {
+            d.fire_requested = true;
+            call_anim(kAimStand);
+        } else {
+            call_anim(kStandAlert);
+        }
+        return 0;
+    }
+    case kStAimStandFire: {
+        // Case 0x10: ammo gate, engage/lost routing, cover, grenade, unconditional ChooseCombatMove.
+        SpExt& e = sx(d);
+        if (e.ammo < 1) return kStAimStandReload;   // Drone+0xbbc < 1
+        if (route_ok && d.engage_dist <= d.opp_dist) return kStCombatOutOfRange;
+        if (d.lost_frames > 15) return kStCombatNoSight;
+        if (cover()) return kStRunForCover;
+        // +0x568 anim gate (u64 bytes [0]==2, [2]==0x0a, [3]==0 with clear +0x570 flags): failing states
+        // skip grenade and ChooseCombatMove. Untested by diff-combat (no passing row yet).
+        const std::uint64_t anim_word =
+            (std::uint64_t(std::uint32_t(d.anim.cur_flags)) << 32) | std::uint64_t(std::uint32_t(d.anim.cur_type));
+        if ((anim_word & 0xffff00ffu) == 0xa0002u) {
+            if (can_throw_grenade(d, st)) return kStGrenadeThrow;
+            if (const int ev = choose_combat_move(d, st); ev != 0) return ev;
+        }
+        face_and_hold(kAimStand);   // CallAnim(10)
+        return 0;
+    }
+    case kStAimCrouchFire: {
+        // Case 0x18: like 0x10 without the ammo gate, plus the +0x11c ChooseCombatMove cooldown.
+        if (route_ok && d.engage_dist <= d.opp_dist) return kStCombatOutOfRange;
+        if (d.lost_frames > 15) return kStCombatNoSight;
+        if (cover()) return kStRunForCover;
+        if (can_throw_grenade(d, st)) return kStGrenadeThrow;
+        SpExt& e = sx(d);
+        // (float)+0x11c + FRAME_RATE_DIV*120 < frame; last_combat_move is kept in 60 Hz frames.
+        if (float(d.now()) * 2.0f > float(e.last_combat_move) + 120.0f) {
+            if (const int ev = choose_combat_move(d, st); ev != 0) return ev;
+        }
+        face_and_hold(kAimCrouch);   // CallAnim(5)
+        return 0;
+    }
+    default:
+        return 0;   // not a combat state: stay (the original's switch default returns 0 with no anim)
+    }
+}
 // DroneFunc_ConsiderExplosive 0x1431c0 (msg 0x21, arg = explosive object): drones that are not
 // hiding already fill the scary-object record (Drone+0x324..) and flee to RunAwayFromObject.
 void consider_explosive(Drone& d, const Msg& m, int default_state) {

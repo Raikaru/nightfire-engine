@@ -194,4 +194,113 @@ std::vector<std::string> check_cutscene_bin(Bytes data, const std::function<bool
     return issues;
 }
 
+// ---- key-track evaluation (`GetSplineWeights` / `Spline_Eval3D` / `Quat_Slerp_Acc`) ----
+
+SplineSegment spline_segment(const std::vector<float>& times, float t, std::size_t begin, std::size_t end) {
+    // `GetSplineWeights`: stream times are whole frames (truncated); the segment search carries
+    // a +0.001 bias and holds the end key past the range (indices clamp to [begin, end]).
+    SplineSegment s;
+    if (end <= begin || end >= times.size() || begin >= times.size()) {
+        // Degenerate range (the original walks off an empty range; hold instead).
+        const int h = int(begin);
+        s.i0 = s.i1 = s.i2 = s.i3 = h;
+        s.f = 0;
+        return s;
+    }
+    const int lo = int(begin), hi = int(end), count = hi - lo;
+    const float ti = float(int(t));
+    const float tb = ti + 0.001f;
+    // Binary search for the segment, transcribed op-for-op (relative indices offset by lo).
+    int v9 = 0, v10 = count, v12 = count, v15 = 0;
+    bool done = false;
+    while (!done) {
+        const int v13 = v12 >> 1;
+        const float v14 = times[std::size_t(lo + v13)];
+        if (tb >= v14) {
+            v9 = v13 + 1;
+            if (v14 < tb) {
+                v12 = v9 + v10;
+                if (v10 < v9) {
+                    v15 = v10;
+                    done = true;
+                }
+            } else {
+                v15 = v13;
+                done = true;
+            }
+        } else {
+            v10 = v13 - 1;
+            v12 = v9 + v10;
+            if (v10 < v9) {
+                v15 = v10;
+                done = true;
+            }
+        }
+    }
+    if (v15 >= count) {
+        s.i0 = s.i1 = s.i2 = s.i3 = hi;
+        s.f = 0;
+        return s;
+    }
+    if (v15 < 0) {
+        s.i0 = s.i1 = s.i2 = s.i3 = lo;
+        s.f = 0;
+        return s;
+    }
+    const int seg = lo + v15;
+    const int nxt = seg + 1 <= hi ? seg + 1 : hi;
+    s.i0 = seg - 1 >= lo ? seg - 1 : lo;
+    s.i1 = seg;
+    s.i2 = nxt;
+    s.i3 = seg + 2 <= hi ? seg + 2 : hi;
+    const float t0 = times[std::size_t(seg)], t1 = times[std::size_t(nxt)];
+    s.f = (ti - t0) / (t1 - t0);
+    return s;
+}
+
+std::array<float, 4> spline_weights(float f) {
+    // `GetSplineWeights` weight block, same association (u3 = u*(u*u), 2.5-term from (u*u)).
+    const float u = f;
+    const float u2 = u * u;
+    const float uh = u * 0.5f;
+    const float u3 = u * (u * u);
+    const float u25 = (u * u) * 2.5f;
+    const float us = u + u3;
+    return {u2 - us * 0.5f, (1.0f - u25) + u3 * 1.5f, (uh + (u2 + u2)) - u3 * 1.5f, (u3 - u2) * 0.5f};
+}
+
+std::array<float, 3> spline_eval3d(const std::array<float, 3>& p0, const std::array<float, 3>& p1,
+                                   const std::array<float, 3>& p2, const std::array<float, 3>& p3, float f) {
+    // `Spline_Eval3D`, same association per lane (g = f - 1).
+    std::array<float, 3> out{};
+    const float g = f - 1.0f;
+    const float gg = g * g;
+    for (int k = 0; k < 3; ++k) {
+        const float q0 = p0[std::size_t(k)], q1 = p1[std::size_t(k)], q2 = p2[std::size_t(k)],
+                    q3 = p3[std::size_t(k)];
+        out[std::size_t(k)] =
+            (q1 + q1 + f * ((q2 - gg * q0) + f * ((q1 * -5.0f + f * (q1 * 3.0f) + q2 * 4.0f) - f * (q2 * 3.0f) +
+                                                  g * q3))) *
+            0.5f;
+    }
+    return out;
+}
+
+std::array<float, 4> slerp_acc(const std::array<float, 4>& qa, const std::array<float, 4>& qb, float f) {
+    // `Quat_Slerp_Acc`: short path, linear blend when (1 - dot) <= 0.01.
+    float dot = (qa[0] * qb[0] + qa[1] * qb[1]) + (qa[2] * qb[2] + qa[3] * qb[3]);
+    const bool neg = dot < 0;
+    if (neg) dot = -dot;
+    float a = 1.0f - f, b = f;
+    if ((1.0f - dot) > 0.0099999998f) {
+        const float th = std::acos(dot);
+        const float inv = 1.0f / std::sin(th);
+        a = std::sin((1.0f - f) * th) * inv;
+        b = std::sin(f * th) * inv;
+    }
+    const float sgn = neg ? -1.0f : 1.0f;
+    const float c0 = sgn * a;
+    return {c0 * qa[0] + b * qb[0], c0 * qa[1] + b * qb[1], c0 * qa[2] + b * qb[2], c0 * qa[3] + b * qb[3]};
+}
+
 }  // namespace nf

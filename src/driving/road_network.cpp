@@ -3,6 +3,26 @@
 #include <cmath>
 #include <queue>
 namespace nf::driving {
+namespace {
+// Lane segments usable for bridging/routing (real street spans). The `rs` tag also holds
+// parameter blocks of the form a=(k,k,z) (small matching ints): lane-count headers, not
+// geometry. True segment endpoints are float world coords.
+struct Lane {
+    Vec3 a, b;
+};
+bool lane_ok(const Vec3& a, const Vec3& b) {
+    if (a[0] == a[1] && a[0] >= 0 && a[0] <= 8 && a[0] == std::floor(a[0])) return false;
+    // Short pieces (intersections split lanes into 1-5 m fragments) still chain; only
+    // padding (zero length) is cut. Long straights are single records (race lines).
+    const float L = length(b - a);
+    return L > 0.5f && L < 300.0f;
+}
+float flat_dist(const Vec3& p, const Vec3& q) {
+    const Vec3 d = p - q;
+    return std::sqrt(d[0] * d[0] + d[2] * d[2]);
+}
+}  // namespace
+
 
 RoadNetwork RoadNetwork::build_route(const std::vector<Vec3>& points) {
     RoadNetwork net;
@@ -123,10 +143,30 @@ std::vector<int> RoadNetwork::chain_from(int start, std::size_t max_len) const {
     return chain;
 }
 
-std::vector<int> RoadNetwork::walk_from(int start) const {
+
+std::vector<int> RoadNetwork::walk_from(int start, const std::vector<RoadSeg>& lanes_in) const {
     // Mission-route walk: follow the road with heading coherence (prefer the candidate most
     // ahead), bridging gaps up to 400 m (sparse submarine-level waypoints need it; in dense
     // grids nearer aligned candidates always win the score below). Always terminates (unvisited only).
+    // Dead-end spur refusal (needs `lanes`; skipped when empty): a candidate with no graded
+    // road beyond it in the travel direction ends the mission right there (cul-de-sac) or is
+    // a wrong turn off it. Take it only when nothing live remains (two passes).
+    std::vector<Lane> lanes;
+    for (const RoadSeg& s : lanes_in)
+        if (lane_ok(s.a, s.b)) lanes.push_back({s.a, s.b});
+    auto terminus = [&](const Vec3& here, const Vec3& cand) {
+        // Needs a real lane graph to mean anything (a handful of fragments cannot judge
+        // continuity; treating everything as terminus just adds noise).
+        if (lanes.size() < 20) return false;
+        Vec3 d = cand - here;
+        const float L = length(d);
+        if (L < 1.0f) return false;
+        const Vec3 beyond = cand + d * (30.0f / L);
+        for (const Lane& l : lanes) {
+            if (length(l.a - beyond) < 25.0f || length(l.b - beyond) < 25.0f) return false;
+        }
+        return true;
+    };
     std::vector<int> walk;
     if (start < 0 || std::size_t(start) >= nodes_.size()) return walk;
     std::vector<char> seen(nodes_.size(), 0);
@@ -136,26 +176,31 @@ std::vector<int> RoadNetwork::walk_from(int start) const {
         walk.push_back(n);
         seen[std::size_t(n)] = 1;
         const Vec3 here = nodes_[std::size_t(n)].pos;
+        // Chained successor wins unless it terminates the mission here (no graded road
+        // beyond it in this travel direction): a spur off the live road, not the route.
         int nx = successor(n, heading);
-        if (nx < 0 || seen[std::size_t(nx)]) {
-            float best_score = 1e30f;
-            nx = -1;
-            for (std::size_t j = 0; j < nodes_.size(); ++j) {
-                if (seen[j]) continue;
-                const Vec3 d = nodes_[j].pos - here;
-                const float dist = length(d);
-                if (dist > 400.0f) continue;
-                // Score: distance penalised by misalignment (heading coherence).
-                const float align = dist > 1.0f ? dot(d * (1.0f / dist), heading) : 1.0f;
-                const float score = dist + (1.0f - align) * 100.0f;
-                if (score < best_score) best_score = score, nx = static_cast<int>(j);
+        if (nx >= 0 && (seen[std::size_t(nx)] || terminus(here, nodes_[std::size_t(nx)].pos))) nx = -1;
+        if (nx < 0) {
+            // Two passes: live candidates first (heading-coherent nearest), terminus ones
+            // only when nothing live remains (the line truly ends here).
+            for (int pass = 0; pass < 2 && nx < 0; ++pass) {
+                float best_score = 1e30f;
+                for (std::size_t j = 0; j < nodes_.size(); ++j) {
+                    if (seen[j]) continue;
+                    const Vec3 d = nodes_[j].pos - here;
+                    const float dist = length(d);
+                    if (dist > 400.0f) continue;
+                    if (pass == 0 && terminus(here, nodes_[j].pos)) continue;
+                    const float align = dist > 1.0f ? dot(d * (1.0f / dist), heading) : 1.0f;
+                    const float score = dist + (1.0f - align) * 100.0f;
+                    if (score < best_score) best_score = score, nx = static_cast<int>(j);
+                }
             }
         }
         if (nx >= 0) {
             const Vec3 d = nodes_[std::size_t(nx)].pos - here;
             if (length(d) > 1.0f) heading = d * (1.0f / length(d));
         }
-        n = nx;
         n = nx;
     }
     // Strip out-and-back spikes (parallel-lane ping-pong where index order interleaves
@@ -184,21 +229,6 @@ std::vector<int> RoadNetwork::walk_from(int start) const {
     return walk;
 }
 namespace {
-// Lane segments usable for bridging (real street spans). The `rs` tag also holds parameter
-// blocks of the form a=(k,k,z) (small matching ints, e.g. (5,5,774), (2,2,738), (0,0,0)):
-// lane-count headers, not geometry. True segment endpoints are float world coords.
-struct Lane {
-    Vec3 a, b;
-};
-bool lane_ok(const Vec3& a, const Vec3& b) {
-    if (a[0] == a[1] && a[0] >= 0 && a[0] <= 8 && a[0] == std::floor(a[0])) return false;
-    const float L = length(b - a);
-    return L > 5.0f && L < 200.0f;
-}
-float flat_dist(const Vec3& p, const Vec3& q) {
-    const Vec3 d = p - q;
-    return std::sqrt(d[0] * d[0] + d[2] * d[2]);
-}
 // BFS lane path from `from` to near `to` (end-to-start chaining, 25 m tolerance, bidirectional
 // travel). Returns the far endpoints in order, excluding `from`. Empty when unroutable or
 // when the detour exceeds 3x the direct distance (wrong side of the map, not a corner).
@@ -211,16 +241,23 @@ std::vector<Vec3> lane_bridge(const std::vector<Lane>& lanes, const Vec3& from, 
         float cost = 1e30f;
     };
     std::vector<Visit> vis(lanes.size());
-    int start = -1;
-    float bd = 1e30f;
+    // Multi-seed starts: the single nearest lane may sit on an isolated fragment (short
+    // intersection pieces), while a slightly farther lane connects through. Seed the three
+    // nearest by endpoint distance.
+    struct Seed { float d; int i; };
+    Seed seeds[3] = {{1e30f, -1}, {1e30f, -1}, {1e30f, -1}};
     for (std::size_t i = 0; i < lanes.size(); ++i) {
-        const float d = flat_dist(lanes[i].a, from) + flat_dist(lanes[i].b, from);
-        if (d < bd) bd = d, start = int(i);
+        const float d =
+            std::min(flat_dist(lanes[i].a, from), flat_dist(lanes[i].b, from));
+        for (Seed& s : seeds) {
+            if (d < s.d) {
+                s.d = d;
+                s.i = int(i);
+                break;
+            }
+        }
     }
-    if (start < 0 || bd > 80.0f) return {};
-    vis[std::size_t(start)] = {-1, flat_dist(lanes[std::size_t(start)].a, from) <
-                                       flat_dist(lanes[std::size_t(start)].b, from),
-                               0};
+    if (seeds[0].i < 0 || seeds[0].d > 40.0f) return {};
     auto exit_of = [&](int i) {
         return vis[std::size_t(i)].enter_a ? lanes[std::size_t(i)].b : lanes[std::size_t(i)].a;
     };
@@ -228,8 +265,18 @@ std::vector<Vec3> lane_bridge(const std::vector<Lane>& lanes, const Vec3& from, 
     // taking the corner). Each lane is settled once, so no stale queue entries.
     using PQ = std::priority_queue<std::pair<float, int>>;
     PQ q;
-    q.emplace(-flat_dist(exit_of(start), to), start);
-    const float budget = 3.0f * direct + 60.0f;
+    for (const Seed& s : seeds) {
+        if (s.i < 0 || s.d > 40.0f) continue;
+        vis[std::size_t(s.i)] = {-1, flat_dist(lanes[std::size_t(s.i)].a, from) <
+                                         flat_dist(lanes[std::size_t(s.i)].b, from),
+                                 0};
+        q.emplace(-flat_dist(exit_of(s.i), to), s.i);
+    }
+    // Tight budget: a bridge much longer than the direct jump is a wrong-way detour that
+    // rediscovers the walk's own future (it passes the progress filter by metres while
+    // wasting minutes and poisoning the corner speed with its kinks). Real corners are
+    // barely longer than direct.
+    const float budget = 1.5f * direct + 60.0f;
     int found = -1;
     std::size_t expansions = 0;
     while (!q.empty() && expansions < 20000) {
@@ -264,6 +311,7 @@ std::vector<Vec3> lane_bridge(const std::vector<Lane>& lanes, const Vec3& from, 
 }
 }  // namespace
 
+
 RoadNetwork RoadNetwork::splice_jumps(const RoadNetwork& base, const std::vector<int>& walk,
                                       const std::vector<RoadSeg>& lanes_in) {
     std::vector<Lane> lanes;
@@ -274,11 +322,18 @@ RoadNetwork RoadNetwork::splice_jumps(const RoadNetwork& base, const std::vector
     std::vector<Vec3> out;
     for (std::size_t k = 0; k < pts.size(); ++k) {
         if (k > 0 && length(pts[k] - pts[k - 1]) > 60.0f && !lanes.empty()) {
+            // Only keep bridge points that make progress: a lane that leaves `from` the
+            // wrong way starts the bridge with a hook back over ground already covered
+            // (an out-and-back spike the strip pass never sees, post-splice).
+            const float from_to = length(pts[k] - pts[k - 1]);
             for (const Vec3& p : lane_bridge(lanes, pts[k - 1], pts[k])) {
-                if (out.empty() || length(p - out.back()) > 3.0f) out.push_back(p);
+                if (length(p - pts[k]) > from_to + 10.0f) continue;
+                // Exact-duplicate guard only: bridge lanes run dense (1-5 m pieces) and the
+                // density is the point (smooth corner following).
+                if (out.empty() || length(p - out.back()) > 0.5f) out.push_back(p);
             }
         }
-        if (out.empty() || length(pts[k] - out.back()) > 3.0f) out.push_back(pts[k]);
+        if (out.empty() || length(pts[k] - out.back()) > 0.5f) out.push_back(pts[k]);
     }
     if (out.size() < 2) return base;
     return build_route(out);

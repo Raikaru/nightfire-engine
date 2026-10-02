@@ -318,15 +318,21 @@ public:
     const std::vector<float>& facial() const;
 
     // AnimSetInit + AnimSetUpdate: locomotion between the set's idle and ladder loops. `distance_scale` is the
-    // AnimSet's speed scale (AnimSetInit's fourth argument); resets the body layers.
+    // AnimSet's speed scale (AnimSetInit's fourth argument); resets the body layers. `phase_base` is its third
+    // (0.37 for the player inits): AnimSetUpdate copies it to the distance accumulator every update, so a fresh
+    // Distance layer starts mid-cycle (frame ~22 for HandgunCrouch), not at frame 1.
     // `strafe` enables the side-step layer (the original only does that when the MP strafe setting is on).
-    void set_anim_set(const AnimSet* set, float distance_scale = 1.0f, bool strafe = false);
+    void set_anim_set(const AnimSet* set, float distance_scale = 1.0f, bool strafe = false, float phase_base = 0.37f);
     // Ground speed in units per tick and the speed at which the last ladder entry plays (AnimSetUpdate's
     // param_2 and param_3): picks the ladder segment, cross-fades its two loops and drives the first by distance.
     // Sideways speed and its maximum (param_4, param_5) drive the strafe layer: once the movement direction is
     // at least 45 degrees off forward (|atan2(side ratio, forward ratio)| >= pi/4) the set's strafe script for that
     // side (strafe[0] right, strafe[2] left) is blended in at playback speed |side ratio|.
-    void update_locomotion(float speed, float max_speed, float strafe_speed = 0, float max_strafe_speed = 1);
+    // When the ladder segment changes, the appended layers are ticked once inside (AnimSetUpdate's trailing
+    // AnimObjectUpdate), so callers that tick once per frame afterwards match the original's two updates on
+    // append frames. `mul` is FRAME_RATE_MUL for that trailing tick.
+    void update_locomotion(float speed, float max_speed, float strafe_speed = 0, float max_strafe_speed = 1,
+                           float mul = 1.0f);
 
     // Snapshot of the layer list for tests and debugging (oldest first; facial layers excluded).
     struct LayerInfo {
@@ -360,10 +366,18 @@ public:
     // Events crossed since the last call (frames in (previous tick, this tick], wrapping over a loop).
     std::vector<AnimEvent> take_events();
 
-    void tick();                           // one 1/30 s step of every layer
-    void advance(float seconds);           // whole ticks of accumulated real time
+    // One 1/30 s step of every layer. `mul` is FRAME_RATE_MUL (1 at 60 fps, 2 at 30 fps): Time-layer frame
+    // advance and blend fade steps scale with it (AnimScriptTick / AnimFrameResolve); Distance/Phase layers are
+    // rate-independent. Defaults preserve the old single-rate behavior.
+    void tick(float mul = 1.0f);
+    void advance(float seconds, float mul = 1.0f);   // whole ticks of accumulated real time
     // Scrubbing: puts the newest body layer at `frame` (wrapped/clamped like a tick would).
     void set_frame(float frame);
+    // EE-differential seeding: puts every body layer playing `script` at `frame` (same wrap/clamp); a Distance
+    // layer's accumulator is re-seeded through its table so the frame holds, and its Phase partner is set to the
+    // same normalized phase. Returns false when no body layer plays `script`. Pair with layer_infos() to lock to
+    // the original's layer phase.
+    bool set_layer_frame(std::uint32_t script, float frame);
     bool playing() const { return !layers_.empty(); }
     bool finished() const;                 // every body layer is a non-looping clip that reached its end
     float frame() const;                   // of the newest body layer
@@ -389,9 +403,15 @@ private:
         int direction = 1;                     // +1 fading in / steady, -1 fading out
         float distance = 0, distance_step = 0;
         float pair_weight = 0;                 // Distance layers: weight of the Phase layer blended into them
-        int prev_int = 0;                      // frame at the previous tick, for event crossing
+        int prev_int = 1;                      // frame at the previous tick, for event crossing (scripts start at 1)
         bool have_root = false;
         Vec3 prev_root{}, root_delta{};        // root translation of the last sample, and the last tick's change
+        // AnimSetUpdate ORs 0x8d000000 onto walk/strafe layers: script flags 0x1000000/0x4000000 zero the
+        // X/Z of the layer's root delta in AnimSeqTick (Y passes, so locomotion root is Y-only).
+        bool mask_root_xz = false;
+        // Fresh layers hold frame 1.0 through their first tick (the 0x20000000 one-shot; Phase follow is
+        // exempt). Distance still accumulates, blends still step, no events fire.
+        bool fresh = true;
         bool strafe = false;
         const DistanceTable* table = nullptr;
         bool anim_set = false;                 // created by update_locomotion
@@ -400,7 +420,7 @@ private:
 
     bool make_layer(std::uint32_t clip, bool loop, bool facial, Layer& out) const;
     Layer* find_layer(std::uint32_t id);
-    void tick_layer(Layer& l, bool body);
+    void tick_layer(Layer& l, float mul, bool body);
     void sample_root(Layer& l, float previous_frame);
     void emit_events(const Layer& l, int previous, int current);
     void start_strafe(int side);
@@ -419,7 +439,7 @@ private:
     std::optional<std::pair<std::uint8_t, std::uint8_t>> look_;
     std::map<std::uint32_t, DistanceTable> tables_;
     const AnimSet* set_ = nullptr;
-    float set_scale_ = 1;
+    float set_scale_ = 1, set_phase_base_ = 0;   // AnimSetInit args: speed scale, distance phase base
     int set_index_ = -1;                       // current ladder index (AnimSet+0x2e), -1 = none yet
     int set_cooldown_ = 0;
     std::uint32_t set_primary_ = 0, set_secondary_ = 0, strafe_layer_ = 0;

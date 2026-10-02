@@ -931,10 +931,11 @@ const DistanceTable* CharacterInstance::distance_table(const AnimSeq& seq) {
     return &it->second;
 }
 
-void CharacterInstance::set_anim_set(const AnimSet* set, float distance_scale, bool strafe) {
+void CharacterInstance::set_anim_set(const AnimSet* set, float distance_scale, bool strafe, float phase_base) {
     layers_.clear();
     set_ = set;
     set_scale_ = distance_scale;
+    set_phase_base_ = phase_base;
     set_index_ = -1;
     set_cooldown_ = 0;
     set_primary_ = set_secondary_ = strafe_layer_ = 0;
@@ -955,13 +956,16 @@ void CharacterInstance::start_strafe(int side) {
         old.blend_duration = old.blend_time = kBlendFrames;
     }
     l.anim_set = l.strafe = true;
+    l.mask_root_xz = true;   // strafe layers get the same 0x8d004000 OR
     l.id = next_id_++;
     strafe_layer_ = l.id;
     layers_.push_back(l);
 }
 
-void CharacterInstance::update_locomotion(float speed, float max_speed, float strafe_speed, float max_strafe_speed) {
+void CharacterInstance::update_locomotion(float speed, float max_speed, float strafe_speed, float max_strafe_speed,
+                                          float mul) {
     if (!set_) return;
+    bool appended = false;
     const auto n = int(set_->ladder.size());
     const float step = speed * set_scale_;
     for (auto& l : layers_)
@@ -980,6 +984,7 @@ void CharacterInstance::update_locomotion(float speed, float max_speed, float st
     }
     if (set_cooldown_ > 0) --set_cooldown_;
     if (index != set_index_ && set_cooldown_ == 0) {
+        appended = true;
         set_cooldown_ = 4;
         const int previous = set_index_;
         set_index_ = index;
@@ -995,6 +1000,7 @@ void CharacterInstance::update_locomotion(float speed, float max_speed, float st
             if (!make_layer(script, loop, false, l)) return 0;
             l.anim_set = true;
             l.drive = drive;
+            if (drive != Drive::Time) l.mask_root_xz = true;   // the 0x8d000000 OR on walk-pair layers
             l.id = next_id_++;
             layers_.push_back(l);
             return l.id;
@@ -1035,19 +1041,22 @@ void CharacterInstance::update_locomotion(float speed, float max_speed, float st
                 l->blend_time = turn;
             }
     }
+    if (appended) tick(mul);   // AnimSetUpdate's trailing AnimObjectUpdate on append frames
     dirty_ = true;
 }
 
-void CharacterInstance::tick_layer(Layer& l, bool body) {
+void CharacterInstance::tick_layer(Layer& l, float mul, bool body) {
     const float previous_frame = l.frame;
     float f = l.frame;
     switch (l.drive) {
         case Drive::Time:
-            f += l.speed;
+            f += l.speed * mul;   // AnimScriptTick scales Time advance by FRAME_RATE_MUL
             break;
         case Drive::Distance:
             l.distance += l.distance_step;
-            f = l.table ? l.table->frame_at(l.distance) : f + l.speed;
+            // Effective distance is the set's phase base (sAnimObject+0x6C, refreshed from AnimSet+0x24
+            // every update) plus the layer offset: fresh layers start mid-cycle, not at frame 1.
+            f = l.table ? l.table->frame_at(set_phase_base_ + l.distance) : f + l.speed;
             break;
         case Drive::Phase: {
             // Follow the primary's phase (AnimScriptTick mode 2).
@@ -1069,7 +1078,10 @@ void CharacterInstance::tick_layer(Layer& l, bool body) {
             break;
         }
     }
-    // AnimScriptEnd: inside 1..length keep; else loop by the length, or hold the last frame.
+    if (l.fresh && l.drive != Drive::Phase) {
+        f = previous_frame;   // the 0x20000000 one-shot: hold (distance already accumulated above)
+        l.fresh = false;
+    }
     if (f < 1.0f || f > l.length) {
         if (l.loop) {
             f = f < 1.0f ? f + l.length : f - l.length;
@@ -1087,16 +1099,27 @@ void CharacterInstance::tick_layer(Layer& l, bool body) {
     sample_root(l, previous_frame);
 }
 
-// AnimSeqTick: change of the root bone's translation over the tick; kept from the last tick when the layer just
-// started or wrapped around its loop.
+// AnimSeqTick: change of the root bone's translation over the tick. The original seeds a fresh layer's previous
+// frame to its start frame (Init copies +0x90 to +0x94), so the first tick emits root(current) - root(start),
+// not zero. Script flags 0x1000000/0x4000000 (ORed onto walk/strafe layers as 0x8d000000) zero the X/Z of that
+// delta, leaving locomotion root Y-only.
 void CharacterInstance::sample_root(Layer& l, float previous_frame) {
     float seq_frame;
     const AnimSeq* seq = layer_sequence(bank_, l.script, l.seq, l.frame, false, skin_.skeleton, seq_frame);
     const Vec3 root = sample_seq(*seq, decode_skeleton(bank_, *seq, skeleton_), &skin_, seq_frame).translation.at(0);
     const bool wrapped = l.speed >= 0 ? l.frame < previous_frame : l.frame > previous_frame;
-    if (l.have_root && !wrapped) l.root_delta = root - l.prev_root;
+    if (!l.have_root) {
+        float pframe;
+        layer_sequence(bank_, l.script, l.seq, previous_frame, false, skin_.skeleton, pframe);
+        l.prev_root = sample_seq(*seq, decode_skeleton(bank_, *seq, skeleton_), &skin_, pframe).translation.at(0);
+        l.have_root = true;
+    }
+    if (!wrapped) {
+        Vec3 delta = root - l.prev_root;
+        if (l.mask_root_xz) delta[0] = delta[2] = 0;
+        l.root_delta = delta;
+    }
     l.prev_root = root;
-    l.have_root = true;
 }
 
 // A command at frame f fires when the layer's frame moves across it: (previous, current] going forward, mirrored
@@ -1192,14 +1215,14 @@ Vec3 CharacterInstance::root_motion() const {
     return d;
 }
 
-void CharacterInstance::tick() {
-    for (auto& l : layers_) tick_layer(l, true);
+void CharacterInstance::tick(float mul) {
+    for (auto& l : layers_) tick_layer(l, mul, true);
     for (auto& fl : facial_layers_)
-        if (fl) tick_layer(*fl, false);
+        if (fl) tick_layer(*fl, mul, false);
     // AnimFrameResolve: fade weights, drop layers that faded out (and the partners of dropped layers).
     for (auto& l : layers_) {
         if (l.strafe) continue;   // flag 0x4000: its blend time is set by AnimSetUpdate, resolve leaves it alone
-        l.blend_time += l.direction > 0 ? 1.0f : -1.0f;
+        l.blend_time += l.direction > 0 ? mul : -mul;   // resolve steps fades by FRAME_RATE_MUL
         l.blend_time = std::clamp(l.blend_time, 0.0f, l.blend_duration);
     }
     std::vector<std::uint32_t> dead;
@@ -1211,11 +1234,11 @@ void CharacterInstance::tick() {
     dirty_ = true;
 }
 
-void CharacterInstance::advance(float seconds) {
+void CharacterInstance::advance(float seconds, float mul) {
     tick_accumulator_ += seconds * kFramesPerSecond;
     while (tick_accumulator_ >= 1.0f) {
         tick_accumulator_ -= 1.0f;
-        tick();
+        tick(mul);
     }
 }
 
@@ -1228,6 +1251,49 @@ void CharacterInstance::set_frame(float frame) {
     }
     l.frame = std::clamp(frame, 1.0f, l.length);
     dirty_ = true;
+}
+
+bool CharacterInstance::set_layer_frame(std::uint32_t script, float frame) {
+    bool found = false;
+    for (auto& l : layers_) {
+        const std::uint32_t id = l.script ? l.script->hash : l.seq->hash;
+        if (id != script) continue;
+        found = true;
+        float f = frame;
+        if (l.loop && l.length > 1) {
+            const float span = l.length - 1;
+            f = 1 + std::fmod(std::fmod(f - 1, span) + span, span);
+        }
+        f = std::clamp(f, 1.0f, l.length);
+        if (l.drive == Drive::Distance && l.table && l.table->total() > 0) {
+            // Re-seed the accumulator through the table (bisection: frame_at is strictly increasing
+            // because sub-1e-5 steps count as 0.01) so the frame holds on the next tick. The drive adds
+            // the set's phase base on top, so invert the absolute distance then subtract it with wrap.
+            const float total = l.table->total();
+            float lo = 0, hi = total;
+            for (int i = 0; i < 40; ++i) {
+                const float mid = 0.5f * (lo + hi);
+                if (l.table->frame_at(mid) < f) lo = mid;
+                else hi = mid;
+            }
+            l.distance = std::fmod(0.5f * (lo + hi) - set_phase_base_ + total, total);
+        }
+        l.frame = f;
+        l.prev_int = int(f);
+        l.have_root = false;   // next tick re-seeds prev_root instead of emitting a false delta
+        if (l.drive == Drive::Distance) {
+            // Phase partners lock to the same normalized phase (the follow rule's fixed point).
+            const float phase = l.length > 1 ? (f - 1) / (l.length - 1) : 0;
+            for (auto& o : layers_)
+                if (o.primary == l.id && o.length > 1) {
+                    o.frame = std::clamp(1 + phase * (o.length - 1), 1.0f, o.length);
+                    o.prev_int = int(o.frame);
+                    o.have_root = false;
+                }
+        }
+    }
+    dirty_ = true;
+    return found;
 }
 
 bool CharacterInstance::finished() const {
