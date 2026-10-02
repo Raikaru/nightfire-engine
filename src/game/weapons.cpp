@@ -788,6 +788,13 @@ void WeaponSystem::weapon_firing(int slot, PlayerWeapons& p, World& world, Frame
     }
 
     if (pressed && gate && p.cooldown <= 0.0f) {
+        // Guided missile in flight (F2 & 0x4, owner in substate 10): the trigger blows it up in the air
+        // (Bullet_handle_object_destruction) instead of firing a new one.
+        if (Projectile* g = find_guided(slot)) {
+            detonate_owned(slot, g->weapon);
+            p.cooldown = 30.0f;
+            return;
+        }
         p.cooldown = 1.0f;
         p.shots_left = d.fire_count[std::size_t(std::min<int>(p.weapon[std::size_t(p.current)].mode_index, 3))];
         p.cycle_start = p.shots_left;
@@ -820,7 +827,34 @@ Vec3 WeaponSystem::head_pos(int slot, const World& world) const {
 
 Vec3 WeaponSystem::aim_direction(int slot, const World& world) const {
     const Player* pl = world.player(slot);
-    return pl ? view_forward(pl->yaw, pl->view_pitch()) : Vec3{0, 0, 1};
+    if (!pl) return Vec3{0, 0, 1};
+    const Vec3 fwd = view_forward(pl->yaw, pl->view_pitch());
+    const PlayerWeapons* p = state(slot);
+    if (!p || p->aim) return fwd;   // Player_AutoAim runs only while not aiming
+    // Check_AutoAim [INFERENCE: strength, not camera]: bend the shot toward the best live victim inside the
+    // aim cone (Autoaim_Range 25.0, half-angle ~0.22 rad), weighted by the weapon's autoaim percent.
+    const WeaponDef& d = table_.weapon(p->current);
+    if (d.autoaim <= 0.0f) return fwd;
+    const Vec3 eye = pl->eye();
+    const std::vector<Victim> victims = collect_victims(world);
+    const Victim* best = nullptr;
+    float best_score = 0.0f;
+    for (const Victim& v : victims) {
+        if (v.id == slot) continue;
+        const Vec3 to = (v.a + v.b) * 0.5f - eye;
+        const float dist = length(to);
+        if (dist > 25.0f || dist < 1e-4f) continue;
+        const float cosang = dot(to * (1.0f / dist), fwd);
+        if (cosang < 0.976f) continue;   // ~12.6 deg half-angle
+        const float score = d.autoaim * 0.01f * (1.0f - dist / 25.0f) * cosang;
+        if (score > best_score) {
+            best_score = score;
+            best = &v;
+        }
+    }
+    if (!best) return fwd;
+    const Vec3 want = normalized((best->a + best->b) * 0.5f - eye);
+    return normalized(fwd + want * std::min(best_score * 0.5f, 0.5f));
 }
 
 // Player_WeaponInitBullet
@@ -896,6 +930,7 @@ void WeaponSystem::tick(World& world, FrameTiming timing) {
         if (players_[std::size_t(slot)]) tick_player(slot, world, timing);
     }
     step_projectiles(world, timing);
+    update_owner_locks(world);
 }
 
 ViewModel WeaponSystem::viewmodel(int slot) const {
@@ -913,9 +948,11 @@ ViewModel WeaponSystem::viewmodel(int slot) const {
     const bool mp = tuning_.mode == GameMode::Multiplayer;
     const auto& hip = mp ? d.gun_offset_aim : d.gun_offset;
     const float ph = p->recoil_phase;
-    // Player_WeaponRecoil sway + Player_SetWeaponAnimObj's final offset (y += 0.2, z -= 0.5).
-    v.offset = {hip[0] + std::sin(ph) * 0.01f, hip[1] + std::fabs(std::sin(ph + 1.0f)) * 0.01f + 0.2f,
-                hip[2] + std::sin(ph * 0.84328997f) * 0.02f - 0.5f};
+    // Player_WeaponRecoil sway + Player_SetWeaponAnimObj's final offset (y += 0.2, z -= 0.5). The offsets live
+    // in the screen-attached weapon frame (+x right, +y DOWN, -z forward), so y is negated into
+    // ViewModel::offset (+y up) just like the forward distance is.
+    v.offset = {hip[0] + std::sin(ph) * 0.01f, -(hip[1] + std::fabs(std::sin(ph + 1.0f)) * 0.01f + 0.2f),
+                -(hip[2] + std::sin(ph * 0.84328997f) * 0.02f - 0.5f)};
     v.muzzle_flash = float(p->muzzle_frames);
     v.flash_color = {float(d.flash_r) / 255.0f, float(d.flash_g) / 255.0f, float(d.flash_b) / 255.0f};
     return v;

@@ -3,6 +3,7 @@
 #include <set>
 
 #include "game/sp_common.hpp"
+#include "game/sp_states.hpp"
 #include "game/weapons.hpp"
 
 namespace nf::sp {
@@ -47,6 +48,7 @@ void music_from_level(std::uint32_t level, float& need, float& seconds, float& r
 
 SpSystem::SpSystem(DroneSystem& drones, SpLevel level, SpTables tables, SpConfig config)
     : drones_(drones), level_(std::move(level)), tables_(std::move(tables)), config_(config) {
+    register_sp_states();   // NDrone2_StateFuncs content layer (sp_states.cpp fans out to all areas)
     auto& cb = drones_.callbacks();
     cb.switch_channel = [this](int ch) { return channels.on(ch); };
     cb.visibility_at = [this](const Vec3& p) { return level_.visibility_at(p); };

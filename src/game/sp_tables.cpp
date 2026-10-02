@@ -43,6 +43,8 @@ bool step(Regs& g, std::uint32_t w) {
     case 0x1e:  // lq
     case 0x23:  // lw
     case 0x2b:  // sw
+    case 0x28:  // sb (direct field stores beside the setProperty calls, e.g. CastleChatGuard1 +0x13d)
+    case 0x29:  // sh (e.g. PartyGirlLooker +0x35c)
     case 0x1b:  // ld? (unused) -- harmless
         return true;
     default:
@@ -129,6 +131,10 @@ void SpTables::apply_dmode_init(int dmode_index, Behaviour& b) const {
 }
 
 int check_behaviour_layout(const SpTables& t) {
+    // The core addresses properties analytically (drone::field_for); the original uses the tables:
+    // value = (word & bit_masks[idx]) >> shift with word/shift from bitDescs. Write (mask >> shift) through
+    // the analytic path: the words must come back identical (shift/word match and the analytic field width
+    // covers every table mask bit).
     int bad = 0;
     for (int id = 0; id < Behaviour::kCount; ++id) {
         const unsigned desc = t.bit_descs[std::size_t(id) * 2], mask_index = t.bit_descs[std::size_t(id) * 2 + 1];
@@ -136,9 +142,9 @@ int check_behaviour_layout(const SpTables& t) {
         const unsigned word = desc & 7, shift = desc >> 3;
         const std::uint32_t mask = t.bit_masks[mask_index];
         Behaviour b;
-        b.set(id, mask);   // all field bits on
+        b.set(id, mask >> shift);
         Behaviour expect;
-        if (word < 3) expect.word[word] = mask << shift;
+        if (word < 3) expect.word[word] = mask;
         if (b.word != expect.word) ++bad;
     }
     return bad;

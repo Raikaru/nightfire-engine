@@ -8,6 +8,10 @@
 
 #include "game/drone_anim.hpp"
 #include "game/drone_demo.hpp"
+#include "game/sp_civilian_util.hpp"
+#include "game/sp_common.hpp"
+#include "game/sp_placement.hpp"
+#include "game/sp_tables.hpp"
 
 namespace nf::drone {
 
@@ -53,6 +57,13 @@ bool DroneCli::parse(int argc, char** argv, int& i) {
         trace_ = true;
     } else if (a == "--drone-probe") {
         probe_ = true;
+    } else if (a == "--sp") {
+        sp_ = true;
+    } else if (a == "--sp-enable-all") {
+        sp_enable_all_ = true;   // Drone_EnableAll: release every WaitSwitch drone (test hook for patrol/react)
+        sp_ = true;
+    } else if (a == "--difficulty" && need(1)) {
+        difficulty_ = std::clamp(std::atoi(argv[++i]), 1, 3);
     } else if (a == "--cam" && need(5)) {
         cam_ = std::array<float, 5>{num(argv, i), num(argv, i), num(argv, i), num(argv, i), num(argv, i)};
     } else if (a == "--follow-drone" && need(1)) {
@@ -69,7 +80,7 @@ void DroneCli::setup(World& world, Level& level, CharacterBank& bank, const Elf3
     cfg.elf = &elf;
     cfg.level_id = level_id_from_name(bin_name);
     const bool mp = cfg.level_id >= 0x7000021 && cfg.level_id <= 0x700004c;
-    cfg.difficulty = mp ? 1 : 2;   // multiplayer forces difficulty 1 (P_MPCONFIRM_Handler)
+    cfg.difficulty = mp ? 1 : difficulty_;   // multiplayer forces difficulty 1 (P_MPCONFIRM_Handler)
     if (const GameFile* tuning = gf.find("TuningVars.txt")) {
         const auto bytes = gf.read(*tuning);
         cfg.tuning = DroneTuning::load(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()), cfg.level_id);
@@ -83,6 +94,17 @@ void DroneCli::setup(World& world, Level& level, CharacterBank& bank, const Elf3
     sys_->callbacks().on_first_seen = [](Drone& d) {
         std::printf("drone %d: first sight of the player at tick %u (alertness %.2f)\n", d.id, d.now(), d.alertness);
     };
+    // Single-player layer first so its tick (cover nodes, spawners) runs before the drones (sp_common.hpp).
+    std::unique_ptr<sp::SpSystem> spsys;
+    if (sp_) {
+        sp::SpConfig spcfg;
+        spcfg.level_id = cfg.level_id;
+        spcfg.difficulty = difficulty_;
+        spsys = std::make_unique<sp::SpSystem>(*sys_, sp::parse_sp_level(level, cfg.level_id),
+                                               sp::SpTables::load(elf), spcfg);
+        spsys_ = spsys.get();
+        world.add_system(std::move(spsys));
+    }
     world.add_system(std::move(sys));
 
     // Skin: requested, else the first Mp_* skin of the bank.
@@ -141,11 +163,27 @@ void DroneCli::setup(World& world, Level& level, CharacterBank& bank, const Elf3
         std::printf("drone %d spawned at %.2f %.2f %.2f (skin %08x sub-class %d weapon %d)\n", d.id, d.pos[0], d.pos[1],
                     d.pos[2], skin->hash, sub_class_, weapon_);
     }
+    if (sp_ && spsys_) {
+        // Drone_Create + DefaultInit over the level's placed NPCs (difficulty gate applied).
+        const std::size_t n = spsys_->spawn_placed();
+        std::printf("sp: %zu placed NPCs spawned (difficulty %d, %zu cover nodes, %zu spawners)\n", n, difficulty_,
+                    spsys_->level().cover_nodes.size(), spsys_->level().spawners.size());
+        for (const auto& d : sys_->drones())
+            if (d && d->ext) {
+                sp_ids_.push_back(d->id);
+                sp_last_state_.push_back(-1);
+            }
+    }
 }
 
 void DroneCli::after_tick(World& world) {
     if (!sys_) return;
     const long frame = long(world.frame());
+    if (sp_enable_all_ && frame == 1) {
+        // Drone_EnableAll 0x1383e8: release the channel-gated drones (the level scripts would do this).
+        for (int id : sp_ids_)
+            if (Drone* d = sys_->find(id)) sp::release_waiting(*d);
+    }
     for (const Hit& h : hits_) {
         if (h.frame != frame || h.drone < 1 || std::size_t(h.drone) > ids_.size()) continue;
         Drone* d = sys_->find(ids_[std::size_t(h.drone - 1)]);
@@ -180,11 +218,40 @@ void DroneCli::after_tick(World& world) {
                         frame, d->id, d->pos[0], d->pos[1], d->pos[2], d->yaw, d->mv.speed, d->visibility, d->seen_frames,
                         d->lost_frames, dasc_name(d->anim.cur_state), d->anim.script);
     }
+    for (std::size_t k = 0; k < sp_ids_.size(); ++k) {
+        Drone* d = sys_->find(sp_ids_[k]);
+        if (!d) {
+            if (sp_last_state_[k] != -2) std::printf("frame %ld: sp drone %d removed\n", frame, sp_ids_[k]);
+            sp_last_state_[k] = -2;
+            continue;
+        }
+        if (!trace_) continue;
+        if (d->smi.cur != sp_last_state_[k]) {
+            std::printf("frame %ld: sp drone %d state %s (%d) anim %s pos %.2f %.2f %.2f\n", frame, d->id,
+                        std::string(state_name(d->smi.cur)).c_str(), d->smi.cur, dasc_name(d->anim.cur_state), d->pos[0],
+                        d->pos[1], d->pos[2]);
+            sp_last_state_[k] = d->smi.cur;
+        }
+        if (frame % 10 == 0)
+            std::printf("frame %ld: sp drone %d pos %.2f %.2f %.2f yaw %.2f speed %.3f/tick vis %.2f seen %u lost %u anim %s clip %08x\n",
+                        frame, d->id, d->pos[0], d->pos[1], d->pos[2], d->yaw, d->mv.speed, d->visibility, d->seen_frames,
+                        d->lost_frames, dasc_name(d->anim.cur_state), d->anim.script);
+    }
 }
 
 bool DroneCli::camera(Vec3& eye, float& yaw, float& pitch) const {
     if (follow_ > 0 && sys_ && std::size_t(follow_) <= ids_.size()) {
         if (const Drone* d = const_cast<DroneSystem*>(sys_)->find(ids_[std::size_t(follow_ - 1)])) {
+            const Vec3 fwd = d->forward();
+            eye = {d->pos[0] - fwd[0] * 2.6f, d->pos[1] + 0.35f, d->pos[2] - fwd[2] * 2.6f};
+            yaw = d->yaw;
+            pitch = -0.08f;
+            return true;
+        }
+    }
+    // --follow-drone N with no demo drones follows the Nth SP drone (1-based).
+    if (follow_ > 0 && sys_ && ids_.empty() && std::size_t(follow_) <= sp_ids_.size()) {
+        if (const Drone* d = const_cast<DroneSystem*>(sys_)->find(sp_ids_[std::size_t(follow_ - 1)])) {
             const Vec3 fwd = d->forward();
             eye = {d->pos[0] - fwd[0] * 2.6f, d->pos[1] + 0.35f, d->pos[2] - fwd[2] * 2.6f};
             yaw = d->yaw;

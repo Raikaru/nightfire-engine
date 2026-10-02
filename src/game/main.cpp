@@ -28,14 +28,18 @@
 #include "assets/game_files.hpp"
 #include "assets/level.hpp"
 #include "assets/sound_archive.hpp"
+#include "assets/sprites.hpp"
 #include "audio/audio.hpp"
 #include "game/actions.hpp"
 #include "game/drone_cli.hpp"
 #include "game/drone_render.hpp"
+#include "game/nfgame_effects.hpp"
+#include "game/nfgame_weapon_view.hpp"
 #include "game/weapon_script.hpp"
 #include "game/nfgame_mp.hpp"
 #include "game/weapons.hpp"
 #include "game/world.hpp"
+#include "render/character_renderer.hpp"
 #include "render/gl.hpp"
 #include "render/level_renderer.hpp"
 #include "render/window.hpp"
@@ -375,6 +379,11 @@ int run(int argc, char** argv) {
     weapons.set_bank(weapon_bank.get());
     world.add_system(std::move(weapon_system));
     if (drone_cli.enabled()) drone_cli.setup(world, level, *weapon_bank, action_elf, gf, weapons, bin_name);
+    // Impact/explosion visuals and dynamic lights (CPU-side until the first draw uploads textures).
+    SpriteLibrary fx_sprites;
+    if (level.map()) fx_sprites.add(level.map()->chunk);
+    WeaponEffects effects(weapons.table(), *weapon_bank, &fx_sprites);
+    effects.set_map_lights(&weapon_bank->lights());
     for (int i = 1; i < player_count; ++i) world.spawn_player(i, spawns[std::min<std::size_t>(std::size_t(i) * 3, spawns.size() - 1)]);
     std::optional<WeaponScript> script;
     std::unique_ptr<GameAudio> game_audio;
@@ -404,6 +413,8 @@ int run(int argc, char** argv) {
         world.tick(pads, FrameTiming{f ? f->rate : World::kTickHz});
         drone_cli.after_tick(world);
         if (print_events) WeaponScript::dump_events(i, weapons.events());
+        effects.consume(weapons.events());
+        effects.tick(FrameTiming{f ? f->rate : World::kTickHz}.mul());
         weapons.events().clear();
         if (trace) write_trace_line(trace, f ? f->frame : long(world.frame()), world, pads[0]);
     }
@@ -417,6 +428,8 @@ int run(int argc, char** argv) {
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");   // pads keep working when the window is not focused
     Window window("nfgame - " + bin_name, 1280, 720, !shot.empty());
     LevelRenderer renderer(level);
+    CharacterRenderer chars(*weapon_bank);
+    WeaponView weapon_view(*weapon_bank, chars);
     std::optional<drone::DroneRenderer> drone_renderer;
     if (drone_cli.system()) drone_renderer.emplace(*weapon_bank);
     glEnable(GL_DEPTH_TEST);
@@ -429,10 +442,26 @@ int run(int argc, char** argv) {
     auto draw = [&](const Camera& cam) {
         int width, height;
         window.begin_frame(width, height);
+        const float aspect = float(width) / float(std::max(height, 1));
+        Camera wc = cam;
+        wc.fovy = 1.1f / std::max(1.0f, weapons.zoom(0));   // Player_Zoom narrows the view while aiming
         glClearColor(0.25f, 0.3f, 0.4f, 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        renderer.draw(cam, float(width) / float(std::max(height, 1)), show_collision);
-        if (drone_renderer) drone_renderer->draw(cam, float(width) / float(std::max(height, 1)), *drone_cli.system());
+        renderer.draw(wc, aspect, show_collision);
+        if (drone_renderer) drone_renderer->draw(wc, aspect, *drone_cli.system());
+        effects.draw(wc, aspect, chars, weapons.projectiles());
+        // Weapon layer (Player_SetWeaponAnimObj / Player_MuzzleFlash): drawn last, after the Z buffer
+        // is cleared, camera-attached.
+        glClear(GL_DEPTH_BUFFER_BIT);
+        const ViewModel vm = weapons.viewmodel(0);
+        if (vm.visible && vm.skin && vm.anim) {
+            const Vec3 muzzle =
+                weapon_view.draw(wc, aspect, vm, weapons.table().weapon(vm.weapon), effects.lighting_at(wc.eye, 2.0f));
+            if (vm.muzzle_flash > 0.0f && muzzle != Vec3{0, 0, 0})
+                effects.add_light(muzzle, vm.flash_color, 5.0f, 2.0f);
+        }
+        glEnable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
     };
 
     if (!shot.empty()) {
@@ -487,6 +516,8 @@ int run(int argc, char** argv) {
             world.tick(pads);
             drone_cli.after_tick(world);
             if (game_audio) game_audio->frame(player, weapons.events());
+            effects.consume(weapons.events());
+            effects.tick(FrameTiming{}.mul());
             weapons.events().clear();
             if (trace) write_trace_line(trace, long(world.frame()), world, pads[0]);
             accumulator -= kStep;

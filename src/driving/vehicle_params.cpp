@@ -101,9 +101,12 @@ VehicleParams VehicleParams::load(const Attributes& a) {
     p.boost_extra_acc = a.get_float("BOOST_EXTRA_ACC");
     p.boost_time = a.get_int("BOOST_TIME");
 
-    // The driving code divides by these; the shipped data always sets them.
+    // The driving code divides by these; the shipped data always sets them. WHEEL_RADIUS is 0
+    // for wheel-less vehicles (IS_SUB/SUB_PHYSICS/NUM_WHEELS=0 submarines, IS_SNOWMOBILE sleds:
+    // vanquishsub, alpha_sub, mini_sub, supersnow, small_snowmobile, subcopter), which run their
+    // own dynamics and never enter the shared tyre model, so 0 is allowed here.
     if (!(p.mass > 0)) throw FormatError("vehicle attributes: MASS missing or not positive");
-    if (!(p.wheel_radius > 0)) throw FormatError("vehicle attributes: WHEEL_RADIUS missing or not positive");
+    if (!(p.wheel_radius >= 0)) throw FormatError("vehicle attributes: WHEEL_RADIUS missing or negative");
     if (!(p.fric_mod_range > 0)) throw FormatError("vehicle attributes: FRIC_MOD_RANGE missing or not positive");
     if (p.num_blend_steps < 1) throw FormatError("vehicle attributes: NUM_BLEND_STEPS missing or below 1");
     for (float lim : p.gear_limit)

@@ -524,13 +524,20 @@ ArenaHud ArenaSystem::hud(int viewer, const Vec3& eye, float yaw) const {
     const Vec3 forward{std::sin(yaw), 0, std::cos(yaw)}, right{-std::cos(yaw), 0, std::sin(yaw)};
     auto blip = [&](const Vec3& p, std::uint32_t color, int kind) {
         const Vec3 rel = p - eye;
-        h.blips.push_back({dot(rel, right), rel[1], dot(rel, forward), color, kind});
+        ArenaHud::Blip b;
+        b.x = dot(rel, right), b.y = rel[1], b.z = dot(rel, forward);
+        b.color = color, b.kind = kind, b.world = p;
+        h.blips.push_back(b);
     };
     for (int i = 0; i < int(kMpSlots); ++i) {
         if (i == viewer || !alive(i)) continue;
         std::uint32_t color = 0x7F7F7FFF;
-        if (settings_.team_game()) color = settings_.slots[std::size_t(i)].team == kTeamPhoenix ? 0xD22D35FF : 0x2D61D2FF;
+        const bool lineal = settings_.team_game() && settings_.slots[std::size_t(i)].team != kTeamNone;
+        if (lineal) color = settings_.slots[std::size_t(i)].team == kTeamPhoenix ? 0xD22D35FF : 0x2D61D2FF;
         blip(slots_[std::size_t(i)].body->position(), color, 0);
+        ArenaHud::Blip& b = h.blips.back();
+        if (settings_.radar_names) b.name = settings_.slots[std::size_t(i)].name;   // HUD_RadarUpdate name tags
+        b.same_team = valid(viewer) && lineal && settings_.slots[std::size_t(i)].team == settings_.slots[std::size_t(viewer)].team;
     }
     for (const MpObjective& o : objectives_) {
         using K = MpObjective::Kind;

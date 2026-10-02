@@ -446,24 +446,127 @@ void ObjectAmbient::step(const std::array<std::uint8_t, 3>& target) {
     }
 }
 
-std::array<float, 3> ObjectAmbient::tint() const {
+std::array<float, 3> ObjectAmbient::tint(bool ambient_path) const {
     std::array<float, 3> t;
-    for (std::size_t i = 0; i < 3; ++i) t[i] = float((unsigned(tweak[i]) * unsigned(level[i])) >> 8) / 255.0f;
+    for (std::size_t i = 0; i < 3; ++i)
+        t[i] = float(ambient_path ? (unsigned(tweak[i]) * unsigned(level[i])) >> 8 : tweak[i]) / 255.0f;
     return t;
 }
 
-std::optional<std::array<std::uint8_t, 3>> CharacterBank::ambient_at(const Vec3& pos, std::uint32_t off) const {
-    const LightZone* best = nullptr;
-    float best_volume = 0;
+void DynamicLights::add_map_lights(const std::vector<MapLight>& map) {
+    for (const auto& m : map) {
+        DynamicLight l;
+        l.position = m.position;
+        l.radius = m.radius;
+        l.r = std::uint8_t(std::min(255.0f, m.color[0] * 255.0f));
+        l.g = std::uint8_t(std::min(255.0f, m.color[1] * 255.0f));
+        l.b = std::uint8_t(std::min(255.0f, m.color[2] * 255.0f));
+        lights_.push_back(l);
+    }
+}
+
+std::size_t DynamicLights::create(const Vec3& pos, float radius, std::uint8_t r, std::uint8_t g, std::uint8_t b,
+                                  float brightness, int life, std::uint16_t channel, std::uint8_t type) {
+    DynamicLight l;
+    l.position = pos;
+    l.radius = radius;
+    l.r = r;
+    l.g = g;
+    l.b = b;
+    l.brightness = brightness;
+    l.life = life;
+    l.channel = channel;
+    l.type = type;
+    lights_.push_back(l);
+    return lights_.size() - 1;
+}
+
+std::size_t DynamicLights::muzzle(const Vec3& pos, float radius, std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+    return create(pos, radius, r, g, b, 2.0f, 1, 0, 1);
+}
+
+void DynamicLights::update(const SwitchChannels& switches) {
+    for (std::size_t i = 0; i < lights_.size();) {
+        DynamicLight& l = lights_[i];
+        if (l.channel != 0) l.enabled = switches.get(l.channel) != 0;   // Light_Update
+        if (l.life > 0 && --l.life == 0) {                             // lifetime over: free-list return
+            lights_.erase(lights_.begin() + std::ptrdiff_t(i));
+            continue;
+        }
+        ++i;
+    }
+}
+
+LightSetup DynamicLights::lights_for(const Vec3& centre, float sphere_radius, unsigned flags,
+                                    const SwitchChannels* switches) const {
+    struct Candidate {
+        float key;
+        MapLight light;
+    };
+    std::vector<Candidate> found;
+    for (const auto& l : lights_) {
+        const bool enabled = l.channel != 0 && switches ? switches->get(l.channel) != 0 : l.enabled;
+        if (!enabled) continue;                                        // LightList +0x48
+        if (l.type == 0 && !(flags & 0x80)) continue;                  // Lights_CalcClosestLights type filter
+        if (l.type == 1 && (flags & 0x100)) continue;
+        if (l.type == 2 && !(flags & 0x80)) continue;
+        const float d = length(l.position - centre);
+        if (d > sphere_radius + l.radius) continue;
+        MapLight m{l.position, l.radius,
+                   {float(l.r) / 255.0f * l.brightness, float(l.g) / 255.0f * l.brightness,
+                    float(l.b) / 255.0f * l.brightness}};
+        found.push_back({d / (l.radius * 0.5f), m});
+    }
+    std::stable_sort(found.begin(), found.end(), [](const Candidate& a, const Candidate& b) { return a.key < b.key; });
+    LightSetup setup;
+    for (std::size_t i = 0; i < found.size() && i < 2; ++i) setup.light[setup.count++] = found[i].light;
+    return setup;
+}
+
+const LightZone* CharacterBank::find_cel(const Vec3& pos, const CelRay& ray) const {
+    const LightZone* list[64];
+    unsigned count = 0;
     for (const auto& z : zones_) {
         bool inside = true;
         for (int k = 0; k < 3; ++k) inside = inside && z.lo[k] <= pos[k] && pos[k] <= z.hi[k];
-        if (!inside) continue;
-        const float volume = (z.hi[0] - z.lo[0]) * (z.hi[1] - z.lo[1]) * (z.hi[2] - z.lo[2]);
-        if (!best || volume < best_volume) best = &z, best_volume = volume;
+        if (inside && count < 64) list[count++] = &z;
     }
-    if (!best) return std::nullopt;
-    return (off >> best->channel & 1) ? best->ambient_off : best->ambient;
+    if (count == 0) return nullptr;
+    if (count == 1 || !ray) {   // without the ray test the smallest box wins, the previous behaviour
+        if (count == 1) return list[0];
+        const LightZone* best = list[0];
+        float best_volume = 0;
+        bool first = true;
+        for (unsigned i = 0; i < count; ++i) {
+            const float volume =
+                (list[i]->hi[0] - list[i]->lo[0]) * (list[i]->hi[1] - list[i]->lo[1]) * (list[i]->hi[2] - list[i]->lo[2]);
+            if (first || volume < best_volume) best = list[i], best_volume = volume, first = false;
+        }
+        return best;
+    }
+    // build_FindCel: a ray from the point 256 up and 256 down against each candidate cel; the cel with the
+    // nearest hit wins, a hit at 256+ counts as a miss, with no hits the first candidate wins.
+    const LightZone* best = nullptr;
+    float best_dist = 256.0f;
+    for (unsigned i = 0; i < count; ++i) {
+        float nearest = 256.0f;
+        bool hit = false;
+        for (int s = 0; s < 2; ++s) {
+            const Vec3 to = {pos[0], pos[1] + (s == 0 ? 256.0f : -256.0f), pos[2]};
+            if (const auto d = ray(*list[i], pos, to)) {
+                if (*d < nearest) nearest = *d, hit = true;
+            }
+        }
+        if (hit && (!best || nearest < best_dist)) best = list[i], best_dist = nearest;
+    }
+    return best ? best : list[0];
+}
+
+std::optional<std::array<std::uint8_t, 3>> CharacterBank::ambient_at(const Vec3& pos, const SwitchChannels& switches,
+                                                                    const CelRay& ray) const {
+    const LightZone* cel = find_cel(pos, ray);
+    if (!cel) return std::nullopt;
+    return switches.get(cel->channel) ? cel->ambient_off : cel->ambient;
 }
 
 MorphSelection select_morph_weights(const std::vector<float>& facial) {
@@ -551,7 +654,8 @@ CharacterBank::CharacterBank(std::vector<std::uint8_t> world_bin, std::vector<st
     // Room cels of the map: class 0xC023 / 0xC047 instances (local models; boxes from the model's root box).
     for (std::size_t c = 0; c < chunks_.size(); ++c) {
         if (chunks_[c].entry.type != EntryType::Map) continue;
-        for (const auto& st : chunks_[c].chunk.statics) {
+        for (std::size_t s = 0; s < chunks_[c].chunk.statics.size(); ++s) {
+            const auto& st = chunks_[c].chunk.statics[s];
             if (st.object_class() != 0xC023 && st.object_class() != 0xC047) continue;
             if (st.hash != -1 || st.model_index >= chunks_[c].chunk.models.size()) continue;
             const Bytes gfx = chunks_[c].chunk.models[st.model_index].gfx;
@@ -573,6 +677,8 @@ CharacterBank::CharacterBank(std::vector<std::uint8_t> world_bin, std::vector<st
             if (z.ambient == std::array<std::uint8_t, 3>{0, 0, 0}) z.ambient = {60, 60, 60};   // parseentity_fixup_entity default
             z.ambient_off = {byte(6), byte(7), byte(8)};
             z.channel = st.object_class() == 0xC047 ? std::uint8_t(st.param(5) & 31) : 0;
+            z.chunk = c;
+            z.instance = s;
             zones_.push_back(z);
         }
     }
@@ -639,6 +745,14 @@ const SkinDef* CharacterBank::find_skin(std::string_view key) const {
     return nullptr;
 }
 
+bool model_envmapped(const Model& model) {
+    if (model.gfx.size() <= 0x20) return false;
+    const auto info = load<std::uint32_t>(model.gfx, 4);
+    const std::size_t box = load<std::uint32_t>(model.gfx, info + 4);
+    if (box + 0x38 > model.gfx.size()) return false;
+    return (load<std::uint32_t>(model.gfx, box + 0x34) & 1) != 0;
+}
+
 const SkinnedMesh& CharacterBank::skinned_mesh(ModelRef r) {
     auto& slot = skinned_[(std::uint64_t(r.chunk) << 32) | r.model];
     if (!slot) {
@@ -646,15 +760,20 @@ const SkinnedMesh& CharacterBank::skinned_mesh(ModelRef r) {
         Bytes morph;
         const auto& blocks = chunks_.at(r.chunk).chunk.blocks;
         for (std::size_t i = 1; i < blocks.size(); ++i)
-            if (blocks[i].data.data() == model(r).gfx.data() && blocks[i - 1].id == std::uint8_t(BlockId::MorphData)) morph = blocks[i - 1].data;
+            if (blocks[i].data.data() == model(r).gfx.data() && blocks[i - 1].id == std::uint8_t(BlockId::MorphData))
+                morph = blocks[i - 1].data;
         slot = std::make_unique<SkinnedMesh>(decode_skinned_gfx(model(r).gfx, morph));
+        slot->envmap = model_envmapped(model(r));
     }
     return *slot;
 }
 
 const GfxMesh& CharacterBank::static_mesh(ModelRef r) {
     auto& slot = static_[(std::uint64_t(r.chunk) << 32) | r.model];
-    if (!slot) slot = std::make_unique<GfxMesh>(decode_ps2_gfx(model(r).gfx));
+    if (!slot) {
+        slot = std::make_unique<GfxMesh>(decode_ps2_gfx(model(r).gfx));
+        slot->envmap = model_envmapped(model(r));
+    }
     return *slot;
 }
 
@@ -682,6 +801,24 @@ CharacterInstance::CharacterInstance(const CharacterBank& bank, const SkinDef& s
     : bank_(bank), skin_(skin), skeleton_(*bank.skeleton(skin.skeleton)) {}
 
 namespace {
+// A body sequence fits a skin of rig `skin_skel` when it decodes onto it exactly as authored: the sequence's rig
+// has no more bones than the skin's, with the same translation-channel mask over those bones (rig_compatible
+// covers the equal case, e.g. skeletons 0/1). Extra skin bones hold bind pose (tolerated, not exercised by game
+// data: all families match exactly). Unknown rigs never fit.
+bool seq_fits_rig(const CharacterBank& bank, std::uint8_t seq_skel, std::uint8_t skin_skel) {
+    const Skeleton* rig = bank.skeleton(seq_skel);
+    const Skeleton* want = bank.skeleton(skin_skel);
+    if (!rig || !want || rig->bone_count > want->bone_count) return false;
+    for (std::size_t i = 0; i < rig->bone_count; ++i)
+        if (rig->translation_animated[i] != want->translation_animated[i]) return false;
+    return true;
+}
+// The rig a sequence decodes under (AnimFrameCopy sizes everything by the sequence's own skeleton id):
+// the sequence's rig, or the skin's when that rig is absent from this bin (best effort, the old behavior).
+const Skeleton& decode_skeleton(const CharacterBank& bank, const AnimSeq& seq, const Skeleton& skin_skel) {
+    if (const Skeleton* rig = bank.skeleton(seq.skeleton)) return *rig;
+    return skin_skel;
+}
 // The sequence a layer shows at `frame`: a bare sequence, or the last op-0 command of the script whose range
 // holds the frame (AnimProcessScriptCmds / AnimSeqSet: sequence frame = script frame - start + 1).
 const AnimSeq* layer_sequence(const CharacterBank& bank, const AnimScript* script, const AnimSeq* seq, float frame, bool facial,
@@ -692,7 +829,7 @@ const AnimSeq* layer_sequence(const CharacterBank& bank, const AnimScript* scrip
     for (const auto& c : script->cmds) {
         if (c.op != 0) continue;
         const AnimSeq* s = bank.sequence(0x04000000u | c.words[2]);
-        if (!s || s->facial() != facial || (!facial && s->skeleton != skeleton)) continue;
+        if (!s || s->facial() != facial || (!facial && !seq_fits_rig(bank, s->skeleton, skeleton))) continue;
         if (frame >= float(c.words[0]) && frame <= float(c.words[1])) {
             found = s;
             seq_frame = frame - float(c.words[0]) + 1;
@@ -701,6 +838,10 @@ const AnimSeq* layer_sequence(const CharacterBank& bank, const AnimScript* scrip
     return found ? found : seq;
 }
 }  // namespace
+bool CharacterBank::clip_fits_skin(const AnimSeq& seq, const SkinDef& skin, bool facial) const {
+    if (seq.facial() != facial) return false;
+    return facial || seq_fits_rig(*this, seq.skeleton, skin.skeleton);
+}
 
 bool CharacterInstance::make_layer(std::uint32_t clip, bool loop, bool facial, Layer& out) const {
     if (clip < 0x1000000) clip |= 0x04000000;
@@ -710,7 +851,7 @@ bool CharacterInstance::make_layer(std::uint32_t clip, bool loop, bool facial, L
         if (!l.script) return false;
         for (auto id : l.script->sequences()) {
             const AnimSeq* s = bank_.sequence(id);
-            if (s && s->facial() == facial && (facial || s->skeleton == skin_.skeleton)) {
+            if (s && bank_.clip_fits_skin(*s, skin_, facial)) {
                 l.seq = s;
                 break;
             }
@@ -720,7 +861,7 @@ bool CharacterInstance::make_layer(std::uint32_t clip, bool loop, bool facial, L
         l.seq = bank_.sequence(clip);
         if (l.seq) l.length = float(l.seq->frame_count);
     }
-    if (!l.seq || l.seq->facial() != facial || (!facial && l.seq->skeleton != skin_.skeleton)) return false;
+    if (!l.seq || !bank_.clip_fits_skin(*l.seq, skin_, facial)) return false;
     l.loop = loop;
     out = l;
     return true;
@@ -786,7 +927,7 @@ CharacterInstance::Layer* CharacterInstance::find_layer(std::uint32_t id) {
 
 const DistanceTable* CharacterInstance::distance_table(const AnimSeq& seq) {
     auto it = tables_.find(seq.hash);
-    if (it == tables_.end()) it = tables_.emplace(seq.hash, make_distance_table(seq, skeleton_)).first;
+    if (it == tables_.end()) it = tables_.emplace(seq.hash, make_distance_table(seq, decode_skeleton(bank_, seq, skeleton_))).first;
     return &it->second;
 }
 
@@ -951,7 +1092,7 @@ void CharacterInstance::tick_layer(Layer& l, bool body) {
 void CharacterInstance::sample_root(Layer& l, float previous_frame) {
     float seq_frame;
     const AnimSeq* seq = layer_sequence(bank_, l.script, l.seq, l.frame, false, skin_.skeleton, seq_frame);
-    const Vec3 root = sample_seq(*seq, skeleton_, &skin_, seq_frame).translation.at(0);
+    const Vec3 root = sample_seq(*seq, decode_skeleton(bank_, *seq, skeleton_), &skin_, seq_frame).translation.at(0);
     const bool wrapped = l.speed >= 0 ? l.frame < previous_frame : l.frame > previous_frame;
     if (l.have_root && !wrapped) l.root_delta = root - l.prev_root;
     l.prev_root = root;
@@ -1097,10 +1238,21 @@ bool CharacterInstance::finished() const {
 float CharacterInstance::frame() const { return layers_.empty() ? 1.0f : layers_.back().frame; }
 float CharacterInstance::last_frame() const { return layers_.empty() ? 1.0f : layers_.back().length; }
 
+Pose CharacterInstance::skin_pose(const AnimSeq& seq, float frame) const {
+    Pose pose = sample_seq(seq, decode_skeleton(bank_, seq, skeleton_), &skin_, frame);
+    while (pose.translation.size() < skin_.parent.size()) {
+        const std::size_t b = pose.translation.size();
+        pose.translation.push_back({skeleton_.offset[b][0] * skin_.scale[0], skeleton_.offset[b][1] * skin_.scale[1],
+                                    skeleton_.offset[b][2] * skin_.scale[2]});
+        pose.rotation.push_back(Quat{});
+    }
+    return pose;
+}
+
 Pose CharacterInstance::layer_pose(const Layer& l) const {
     float seq_frame;
     const AnimSeq* seq = layer_sequence(bank_, l.script, l.seq, l.frame, false, skin_.skeleton, seq_frame);
-    Pose pose = sample_seq(*seq, skeleton_, &skin_, seq_frame);
+    Pose pose = skin_pose(*seq, seq_frame);
     if (extract_root_) pose.translation.at(0) = {0, 0, 0};
     // A distance-driven loop carries its phase-locked partner, blended in by the AnimSet fraction.
     if (l.drive == Drive::Distance)
@@ -1109,7 +1261,7 @@ Pose CharacterInstance::layer_pose(const Layer& l) const {
                 float partner_frame;
                 const AnimSeq* other = layer_sequence(bank_, o.script, o.seq, o.frame, false, skin_.skeleton, partner_frame);
                 {
-                    Pose partner = sample_seq(*other, skeleton_, &skin_, partner_frame);
+                    Pose partner = skin_pose(*other, partner_frame);
                     if (extract_root_) partner.translation.at(0) = {0, 0, 0};
                     pose = blend_poses(pose, partner, l.pair_weight);
                 }

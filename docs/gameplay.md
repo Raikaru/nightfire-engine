@@ -118,6 +118,61 @@ The simulation runs at 30 Hz with the render camera interpolated between ticks. 
 object per frame in the schema of `tools/oracle/trace.py` (`frame`, `pos`, `yaw`, `pad`, `act`, `flg`) plus
 `pitch`, `vel`, `fall`, `body`, `gny`, `jump`, `sub`, `eye`.
 
+## Weapons (`src/game/weapons.cpp`, `projectiles.cpp`, `damage.cpp`, `weapon_script.cpp`, `src/assets/weapon_data.cpp`)
+
+`WeaponSystem : System` runs after the players moved: inventory and ammo pools from the ELF's `weapon_data`
+static initializer (115 rows, decoded by emulating `_GLOBAL_$I$weapon_data`; two bytes the game patches at
+runtime are applied: row 1 viewmodel skin, row 55 alt id), the firing state machine (fire rate, reload incl.
+shell-by-shell, alt-fire variants, fire-mode cycles), spread (`(2A·U−A)·0.0014` + per-shot growth, 0 while
+aiming with F1&0x400000), recoil sway, zoom/scopes (camera `fovy` narrows while aiming), auto-aim bend toward
+the best victim in the cone while hip-firing [INFERENCE: applied to the bullet, the original turns the camera],
+and projectiles with gravity/bounce/sticky/fuse physics, explosions with distance falloff and chain
+detonation. Gadgets: stunner refund on world hits, grapple hook → `Player::begin_grapple`, guided missiles
+(trigger detonates in flight, owner frozen), remote-mine/shaver detonators (pellets 0 → blow live charges),
+tripbomb proximity, smoke/stun visual-only blasts. Damage goes through `Player::hurt` (armour first, location
+and difficulty multipliers in `apply_player_pain`) and `DamageTarget` for bots/drones.
+First-person view: `viewmodel()` (gun offset + recoil/bob, muzzle flash timer/colour, hidden when scoped)
+drawn by `WeaponView` (`src/game/nfgame_weapon_view.cpp`) after the Z clear; `WeaponEffects`
+(`src/game/nfgame_effects.cpp`) draws impact decals/sparks/puffs, blood, explosion sprites, live projectile
+models and tracers from `WeaponEvents`, and owns the transient dynamic lights (muzzle, explosions, F2&0x2000
+projectiles) merged with the map lights for character lighting. Sounds reach `AudioSystem` via `GameAudio`;
+`WeaponSystem::fill_hud` fills the `HudState` weapon/ammo/aim/crosshair fields for the UI slice.
+Headless scripts (`--script`, `src/game/weapon_script.hpp`): `@frame hold/give/ammo/select/teleport/face/
+health/print/throw`; `--events` dumps sounds/impacts/explosions per tick.
+
+## Multiplayer arena (`src/game/arena*.cpp`, `pickups.cpp`, `nfgame_mp.cpp`, `src/ui/mp_feed.hpp`)
+
+`ArenaSettings` is the match record (MPSettings: scenario/mode bit, frag/score limit, time limit, friendly fire,
+weapon set 0..10, spawn selection Near/Far/Random, handicap, teams/characters per slot). `ArenaSystem : System`
+implements the match flow (MP_Init / MP_Start / MP_Update / MP_CheckForEndCondition / MP_PlayerKilled /
+MP_ReSpawn / MP_GetSpawnPoint): kill/team scoring, 5 s human respawn, Near/Far/Random spawn choice among the team's
+markers further than sqrt(2) from every other participant, and the end-of-match announcement/hold/results phases
+(`MatchResult`: ranking, winning team, banner). All 13 scenarios play: Arena, Team Arena, Capture The Flag, King of
+the Hill (+ team), Uplink, Demolition / Protection (rounds, 2000 hp targets, attackers/defenders scoring), Industrial
+Espionage, GoldenEye Strike, Assassination and Top Agent (elimination + 5 s hold before the results).
+`nfdump validate` steps 96 launched matches (`mp:`) and checks all 8 maps' spawns/pickups (`arena:`); both report
+0 failures.
+
+`PickupField` (MPpickups + Pickup_Create / Pickup_Update / Pickup_Handler) builds one level's pickups from the map
+statics (placement type 240) and the match's PickupMatrix row (row 10 rebuilt randomly per match): weapons (2 clips),
+ammo, armour (to 50), health and bonus items, bobbing/spinning as the original, respawn after `10 * x` s
+(`300 * x + 1` frames at 30 Hz). Objective objects (flags, hill, uplinks, targets, blueprints, GoldenEye items) are
+`MpObjective`s drawn from their placements and simulated per mode in `arena_modes.cpp`.
+
+`nfgame --mp [--mode NAME] [--players 1..4] [--bots 0..4] [--frag-limit N] [--time-limit MIN] [--weapons 0..10]
+[--spawn near|far|random] [--handicap N] [--split-vertical] [--bot-char a,b,c] [--cam ... | --follow-bot N]` runs a
+match on an arena map with 1..4 local players in split screen (Camera_CreateCameras layouts: top/bottom for 2,
+2+1 and 2x2; `--split-vertical` puts 2 players side by side) on additional gamepads, plus MP-drone bots via
+`BotMatch` (the Bots slice; bots are drones, not Players). `--frames N` + `--inputs*` + `--shot` work as in
+single-player for scripted verification. Humans are `HumanBody`s (Player movement + WeaponSystem combat);
+`ArenaSession` owns World + WeaponSystem + ArenaSystem and routes each frame's messages/sounds.
+
+The HUD feed is `ArenaSystem::hud(viewer, eye, yaw)` (`ArenaHud`: scores, clock, flags, uplink states, radar blips
+with world positions/names) plus `take_messages()` / `take_sounds()` / `result()`, converted by `src/ui/mp_feed.hpp`
+into `HudState::mp` (`apply_arena_hud`), radar name tags (`project_name_tags`, render-camera angles), status
+messages (`to_hud_message`), clock/results text (`format_match_clock`, `describe_result`) and per-viewer
+`HudConfig` (`make_mp_config`).
+
 ## Known gaps (movement)
 
 - **Animated foot height.** `collbody+0xCC` is `sAnimObject+0x5C` (the sAnimObject starts at collbody+0x70):
@@ -132,8 +187,10 @@ object per frame in the schema of `tools/oracle/trace.py` (`frame`, `pos`, `yaw`
   `update_locomotion` exist; driving them with the player's speed did not reproduce the recorded phase and amplitude
   yet: the AnimSetAppend arguments 0.37 / 0.5 and the distance-table phase would have to be matched). Effect without
   it: walking positions differ by up to a few cm in y, crouching by up to 0.4 m during the transition.
-- Water, ladders, climbing, wires, zip lines, zero-G, weapons, aiming/zoom look and other
-  controller styles are not implemented (substates other than walk/crouch/dead, `body::kZoomed`).
+- Water, zero-G and scan mode (`player_water.cpp`, `player_zerog.cpp`, `player_scan.cpp`), ladders and
+  creep walls (`player_climb.cpp`, `ladder.cpp`, `object_world.cpp`), grapple/wire/zip line
+  (`player_rope.cpp`, `grapple.cpp`, `wire.cpp`) and vehicles/movers (below) are implemented and hooked
+  into the update, camera and collision passes; the animated foot height comes from `PlayerAnimator`.
 - The recoil turn `BLData+0x910` is always 0 (only weapons set it).
 
 ## Collision
@@ -258,7 +315,17 @@ every object with a HITTEST and calls `control_funcs[class][1]` = `Player_Collis
 - Visit order across placements is unknown (depends on the cel list): descending placement index is assumed.
   It only affects capsule corners where two placements push in the same frame.
 - Cel gating (`Collide_StraddleCels`, bounding-sphere tests in `Collide_Pick`) is replaced by an exact
-  world-bounds overlap; it can only add candidates, never change a result.
+  world-bounds overlap; it can only add candidates. An added candidate CAN change a result: a resting
+  capsule tangent to its floor also overlaps a second triangle of another placement, whose push lifts the
+  player while the game (which never tests that placement) stays planted. Proven case (nfmips frame diff,
+  Skyrail MP spawn 18.88,7.35,27.49, crouching): the port's capsule query hits placement 12 tri 235
+  (mat 0x0C, dist 0.4687 < 0.55, push +0.073y) with the identical capsule, HITTEST (type 0x800, pick 0,
+  hit 0) and foot height the game uses, while the game's pass records no touch (`collbody+0x60` stays
+  0x08) and `pos.y` tracks the foot height to 0.1 mm. Capsule formula, HITTEST params, jump takeoff
+  (`WldGravity * -0.4`, delay 4) and the feet-planted Y rule all match the original exactly; only the
+  candidate set differs. At the Player1 spawn the same queries match to 0.000 cm over 58 frames, so the
+  divergence is spot-specific (cel topology), not a global math error. Full cel-chain culling is the fix;
+  until then resting-contact frames can differ by centimetres where two placements' floors overlap.
 - Object collision (`Collide_PickObj`, `Collide_Jointy`, dynamic-object matrices, `DeltaP` for moving
   platforms), the point query `Intersect_PointGeom` (type `0x101`), `Collide_SphereIntersect`, and per-cel
   flags (`cel+0x94 & 0x20/0x40`: skip / ghost) are not modelled.
@@ -374,3 +441,32 @@ armour 0, health, `+0x160` cleared, `Player_StandAtNewPosition` (state 1, substa
 - `Player_MonitorAir` (drowning, `type 7`), the zero-G drift of dead players (`obj+0x50 += 0.001`), `PlrStat_*` logging gates and
   the level `0x07000012` kill plane are not modelled.
 - The pain grunt uses a local LCG instead of `Rand_Rand`.
+
+## Vehicles (`player_vehicle.cpp`, substates 10/11/12/16)
+
+Substates `10`–`12` and `16` are the seats; `Player_Aiming` returns at once for all of them (like
+`8`/`9`), and no movement handler runs (`Player_Update` cases `0xB`/`0xC`/`0x10` only break; case
+`0xA` ticks a timer). Ours did not exist: those substates fell through to the crouch handler.
+
+| Substate | Entered by (player half) | Camera (`BLData+0x950`) | Notes |
+|----------|--------------------------|-------------------------|-------|
+| `10` SpawnWait | `enter_spawn_wait(frames)` (`MP_ReSpawn`) | back to `0` when `BL+0x4A2` fires | countdown, one per logic frame |
+| `11` Car | `board_vehicle(Car, …)` (`Car_Activate`, class `0x28`) | `0xD` | `BL+0x878` = car; gravity still applies |
+| `12` Gun | `board_vehicle(Gun, …)` (`GunImp_Activate`, class `0x47`) | `0xE` | `BL+0x878` = gun; no gravity (`Player_Collision` skips it like 1/2/5/6/14/15) |
+| `16` Driven | `board_vehicle(Scripted, …)` (`GT_TakeControl`, class `0x36`) | `0xF` | gravity applies; capsule is the standard one |
+
+Boarding stows the weapon (`Player_WeaponNone`, read back via `weapon_stowed()`), freezes input
+(`Player_Disable(obj, 1)`), and records the Driving slice's object handle; `leave_vehicle()` is the
+`Car/GunImp_Deactivate` player half (camera `0`, substate `0`, input released). Every `SetCamMode`
+calls `HUD_Reset`: nf_ui owns that half (poll `Player::cam_mode()` after `World::tick`). The
+vehicle-side state (its own substate, sounds, gun flags, `GT_LoseControl`) is the Driving slice's.
+`Player_Activate`'s probe already dispatches classes `0x28`/`0x36`/`0x47` to those activators
+(see "Enable, disable, carry-over, activation"); the object registry they act on does not exist yet.
+
+## Script-driven movers (`ObjectWorld::Mover`)
+
+`ObjectWorld::set_movers()` installs the frame's script-driven solids (lifts, doors, platforms; AABB
+plus the frame's displacement, with a script id). `collide()` pushes the capsule's end spheres and
+midpoint out of them (hits carry `placement == SIZE_MAX`) and a grounded player standing on one's top
+face is carried by `ride_displacement()`. [INFERENCE: the carry path is a reimplementation; no
+ACTION.ELF lift trace pins down the original's frame order.] Scripting/Driving own the per-tick update.

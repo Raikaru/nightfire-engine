@@ -42,6 +42,7 @@ constexpr std::uint32_t kSetFlags = 0x2b;        // control state byte (bit0 hid
 constexpr std::uint32_t kListScrollTop = 0x2c;
 constexpr std::uint32_t kSetUv = 0x2d;           // label: a = u<<16|v, b = (w-1)<<16|(h-1)
 constexpr std::uint32_t kScrollSet = 0x2e;       // scroll: value a (notifies the parent with 0x54)
+constexpr std::uint32_t kScrollSlider = 0x69;    // scroll: slider mode (no wrap, arrow stepping)
 constexpr std::uint32_t kGetText = 0x2f;
 constexpr std::uint32_t kGetColor = 0x30;
 constexpr std::uint32_t kGetCount = 0x33;

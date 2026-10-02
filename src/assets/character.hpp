@@ -2,6 +2,8 @@
 
 #include <array>
 #include <cstdint>
+#include <cstddef>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -47,8 +49,14 @@ struct SkinnedMesh {
     // vertex owns `morph_targets` consecutive position deltas, one per target.
     std::uint32_t morph_targets = 0;
     std::vector<std::array<float, 3>> morph_deltas;
+    // Box 0 flags +0x34 bit 0, like GfxMesh::envmap: the skin VU variant builds ST from the camera axes
+    // (FillMatrixChainSkin always uploads them). Set by CharacterBank from the model's box.
+    bool envmap = false;
     std::size_t triangles() const;
 };
+
+// Box 0 flags +0x34 bit 0 of a map-chunk model: environment-mapped (FillMatrixChainRot / the skin VU variant).
+bool model_envmapped(const Model& model);
 
 // The (at most eight) strongest facial weights, ascending by target index (AnimObjectDraw -> Morph_Index /
 // Morph_Weight / Morph_Count); weights below 1e-6 are dropped.
@@ -93,25 +101,85 @@ struct LightSetup {
 };
 LightSetup closest_lights(const std::vector<MapLight>& lights, const Vec3& centre, float sphere_radius);
 
+// Light switch channels (ACTION.ELF `switch_channels[256]`, Init_SwitchChannels zeroes them, Switch_Create sets
+// each switch's initial value, Switch_Activate toggles). One byte per channel; 0 is the default state.
+// Polarity depends on the consumer: a runtime light with a nonzero channel is enabled only while its channel is
+// nonzero (Light_Update); a room cel shows its `ambient_off` colour while its channel is nonzero, else `ambient`.
+struct SwitchChannels {
+    std::array<std::uint8_t, 256> channel{};
+    void reset() { channel.fill(0); }
+    void set(unsigned c, std::uint8_t v) { channel[c & 255] = v; }
+    void toggle(unsigned c) { channel[c & 255] = channel[c & 255] ? 0 : 1; }   // Switch_Activate
+    std::uint8_t get(unsigned c) const { return channel[c & 255]; }
+};
+
+// One runtime light (ACTION.ELF `light_tag`, Light_Create): muzzle flashes (Player_MuzzleFlash: radius from the
+// weapon data, brightness 2.0, life 1 tick, type 1), explosions (Bullet/GunImp_Update), script lights
+// (Script_LightStart) and searchlights. +0x20 life counts down in Light_Update (0 = infinite); +0x22 channel
+// gates `enabled` (0 = always on); +0x47 type filters against the drawn object's flags; +0x48 is the result.
+struct DynamicLight {
+    Vec3 position{};
+    float radius = 1;
+    std::uint8_t r = 255, g = 255, b = 255;
+    float brightness = 1;      // +0x40, multiplies the colour (muzzle flashes use 2.0)
+    int life = 0;              // +0x20 ticks remaining; 0 = infinite
+    std::uint16_t channel = 0; // +0x22 light switch channel; 0 = always enabled
+    std::uint8_t type = 0;     // +0x47: 0 needs object flag 0x80, 1 is skipped when flag 0x100 is set
+    bool enabled = true;       // +0x48
+};
+
+// The game's LightList for characters: the level's map radiators (block 0x26, uploaded once by
+// Light_SetAmbientRadiators as infinite type-0 lights) plus lights created at runtime. lights_for is
+// Lights_CalcClosestLights over the combined list: enabled lights within sphere radius + light radius,
+// ordered by distance / (radius / 2), the first two kept. `flags` is the drawn object's flags (obj+0xF0);
+// characters accept every type with 0x80, the value View_SetupRenderModes is called with for them.
+class DynamicLights {
+public:
+    void add_map_lights(const std::vector<MapLight>& map);
+    // Life <= 0 means infinite. Returns the stable id (index).
+    std::size_t create(const Vec3& pos, float radius, std::uint8_t r, std::uint8_t g, std::uint8_t b,
+                       float brightness = 1, int life = 0, std::uint16_t channel = 0, std::uint8_t type = 0);
+    // Muzzle flash (Player_MuzzleFlash): the weapon's flash radius and colour, brightness 2.0, 1 tick, type 1.
+    std::size_t muzzle(const Vec3& pos, float radius, std::uint8_t r, std::uint8_t g, std::uint8_t b);
+    void clear() { lights_.clear(); }
+    std::size_t size() const { return lights_.size(); }
+    const DynamicLight& at(std::size_t i) const { return lights_.at(i); }
+    // One Light_Update tick: channel gating, life countdown with removal (like the original's free-list return).
+    void update(const SwitchChannels& switches);
+    LightSetup lights_for(const Vec3& centre, float sphere_radius, unsigned flags = 0x80,
+                          const SwitchChannels* switches = nullptr) const;
+
+private:
+    std::vector<DynamicLight> lights_;
+};
 // Ambient light zones: the room cels of the map, i.e. static instances of class 0xC023 / 0xC047 (flags 0x40000
 // set by parseentity_fixup_entity). Params 0/1/2 = ambient R/G/B (all zero -> 60 each), 5 = light switch channel,
-// 6/7/8 = the colour while that switch is off (0xC047 only).
+// 6/7/8 = the colour while that switch is off (0xC047 only). `chunk` / `instance` locate the cel's static in the
+// bank (for the build_FindCel ray test through CollisionWorld); SIZE_MAX when unknown.
 struct LightZone {
     Vec3 lo, hi;                               // cel bounding box (model box through the placement)
     std::array<std::uint8_t, 3> ambient{}, ambient_off{};
     std::uint8_t channel = 0;
+    std::size_t chunk = SIZE_MAX, instance = SIZE_MAX;
 };
 
 // The light-level state one object carries (obj+0x100..0x102 = ambient, obj+0x103..0x105 = its tweak colour, both
-// 0xFF at creation). Lights_CalcAmbientLight steps the ambient towards its cel's colour every tick
-// (ClrStep, 10 % of the difference, at least 1), View_SetupRenderModes_Tweak feeds
-// (tweak * ambient) >> 8 to psiSetTweakARGB, i.e. the VU1 lit program's TAmbient.
+// 0xFF at creation; obj+0x106 = alpha, 0x80 opaque). Lights_CalcAmbientLight steps the ambient towards its cel's
+// colour every tick (ClrStep, 10 % of the difference, at least 1), Script_SetColour/SP_SetColour write the tweak,
+// and View_SetupRenderModes_Tweak feeds psiSetTweakARGB: the rgb is (tweak * ambient) >> 8 when the object uses
+// the ambient path (obj flags & 0x800, characters do) else the raw tweak; fades and drone deaths drive the alpha.
 struct ObjectAmbient {
     std::array<std::uint8_t, 3> level{255, 255, 255};
     std::array<std::uint8_t, 3> tweak{255, 255, 255};
+    std::uint8_t alpha = 0x80;
     void step(const std::array<std::uint8_t, 3>& target);
-    std::array<float, 3> tint() const;         // TAmbient rgb, 0..1
+    void set_tweak(std::uint8_t r, std::uint8_t g, std::uint8_t b) { tweak = {r, g, b}; }   // Script_SetColour
+    void set_alpha(std::uint8_t a) { alpha = a; }
+    std::array<float, 3> tint(bool ambient_path = true) const;   // TAmbient rgb, 0..1
+    float opacity() const { return float(alpha) / 128.0f; }      // TweakA, 0x80 = 1.0
 };
+
+
 
 struct ModelRef {
     std::size_t chunk;                 // index into CharacterBank::chunks()
@@ -135,16 +203,26 @@ public:
     const std::map<std::uint32_t, AnimSeq>& sequences() const { return seqs_; }
     const std::map<std::uint32_t, AnimScript>& scripts() const { return scripts_; }
     const std::vector<LightZone>& light_zones() const { return zones_; }
-    // Lights_CalcAmbientLight's target for an object at `pos`: the ambient colour of the room cel containing it
-    // (build_FindCel; where several boxes overlap the smallest wins), or nullopt outside every cel. `switched_off`
-    // says which light switch channels are off (default: all on).
-    std::optional<std::array<std::uint8_t, 3>> ambient_at(const Vec3& pos, std::uint32_t switched_off = 0) const;
+    // The room cel containing `pos` (build_FindCel): candidates are the zones whose box contains it (original
+    // order, at most 64); one candidate wins directly, otherwise each candidate's geometry is ray-tested
+    // vertically (256 up and 256 down) and the cel with the nearest hit wins; with no hits the first candidate
+    using CelRay = std::function<std::optional<float>(const LightZone&, const Vec3&, const Vec3&)>;
+    const LightZone* find_cel(const Vec3& pos, const CelRay& ray = {}) const;
+    // Lights_CalcAmbientLight's target for an object at `pos`: the ambient colour of find_cel's cel, or nullopt
+    // outside every cel. A cel whose switch channel is nonzero in `switches` shows its off colour.
+    std::optional<std::array<std::uint8_t, 3>> ambient_at(const Vec3& pos, const SwitchChannels& switches = {},
+                                                         const CelRay& ray = {}) const;
     const std::vector<MapLight>& lights() const { return lights_; }   // every block 0x26 of the world bin
 
     const Skeleton* skeleton(std::uint16_t id) const;
     const SkinDef* skin(std::uint32_t hash) const;
     const AnimSeq* sequence(std::uint32_t hash) const;
     const AnimScript* script(std::uint32_t hash) const;
+    // Whether CharacterInstance::play would accept `seq` (bare or inside a script) on `skin`: facial clips only
+    // need the facial flag; body clips need a rig that decodes onto the skin's (same bone count and translation
+    // mask, or a tolerated strict subset with the extra bones at bind pose). The original never
+    // compares rig ids (AnimFrameCopy sizes everything by the sequence's own skeleton).
+    bool clip_fits_skin(const AnimSeq& seq, const SkinDef& skin, bool facial) const;
     std::optional<ModelRef> find_model(std::uint32_t hash) const;
     const Model& model(ModelRef r) const { return chunks_.at(r.chunk).chunk.models.at(r.model); }
 
@@ -222,7 +300,7 @@ public:
     CharacterInstance(const CharacterBank& bank, const SkinDef& skin);
 
     // Clip = sequence 04xxxxxx (id < 0x1000000 is taken as a sequence id) or script 06xxxxxx. All three return
-    // false, leaving the state unchanged, if the clip is unknown, authored for another skeleton, or facial.
+    // false, leaving the state unchanged, if the clip is unknown, of an incompatible rig, or facial.
     // play: replaces every body layer (AnimListDelete + AnimScriptAppend); `speed` is the layer's frames per tick
     // (AnimScriptAddSpeed: Player_Wire plays its shimmy scripts at 1.2).
     bool play(std::uint32_t clip, bool loop = true, float speed = 1.0f);
@@ -328,6 +406,9 @@ private:
     void start_strafe(int side);
     void tick_facial(Layer& l);
     Pose layer_pose(const Layer& l) const;
+    // The pose of one sequence in skin-bone space: sampled under the sequence's own rig, extra skin bones
+    // past it holding bind pose, so every layer folds at the same size.
+    Pose skin_pose(const AnimSeq& seq, float frame) const;
     const DistanceTable* distance_table(const AnimSeq& seq);
 
     const CharacterBank& bank_;

@@ -20,7 +20,7 @@ struct LevelDesc {
     std::string_view name;    // command-line name
     std::string_view viv;     // archive name without extension
     std::string_view track;   // `data\track\<track>.crp`
-    std::string_view player_car;  // default four-wheeled player vehicle; empty = none in this mission (submarines)
+    std::string_view player_car;  // default Bond vehicle (car, sub or ultralight; see DriveSession::kind)
 };
 const std::vector<LevelDesc>& driving_levels();
 const LevelDesc* find_level(std::string_view name);   // by name or archive name, case-insensitive

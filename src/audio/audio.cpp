@@ -28,6 +28,8 @@ constexpr int kStreamPitch = 1881;            // pitch of a STREAMS.BIN entry: 2
 constexpr float kSpuUnity = 16384.0f;         // SPU volume register value of gain 1.0
 constexpr int kFadeFrames = 120;              // SFXFadeDown/Up take 2 s
 constexpr int kFadeFull = 10000;
+constexpr std::int32_t kAmbientTag = 0x1A481E55;  // reserved PlayOptions tag of map-sound emitters
+
 // BonbUnderWaterSFX in SFX.IRX: effects that keep their level while the listener is under water.
 constexpr std::uint32_t kUnderwaterSfx[] = {335, 331, 332, 333, 334, 330, 279, 278, 277, 253, 1303, 137,
                                             1492, 1491, 136, 514, 10, 40, 33, 310, 311, 39, 9};
@@ -97,7 +99,6 @@ struct AudioSystem::Impl {
     std::map<int, std::shared_ptr<SoundBank>> banks;
     std::map<std::pair<int, std::size_t>, std::shared_ptr<const Pcm>> sample_cache;
     std::map<std::uint32_t, std::shared_ptr<const Pcm>> stream_cache;
-
     // effect state
     std::vector<std::unique_ptr<Item>> items;
     SfxHandle next_handle = 1;
@@ -105,6 +106,20 @@ struct AudioSystem::Impl {
     bool stereo = true;
     int pressure = 0;          // gp-32732: grows by 100 per started effect, decays 10% per update
     std::uint32_t rng_a = 0x1F123BB5u, rng_b = 0x159A55E5u;
+
+    // ambient map sounds (HandleMapSoundAllocation)
+    struct Ambient {
+        MapSound def;
+        SfxPoint pos;  // def.position in EE thousandths
+        SfxHandle handle = 0;
+        bool active = false;
+    };
+    std::vector<Ambient> ambient;
+    // subtitles (Sound_DoSubtitle): dword_2A37C8 gate (ELF init 0) plus the Snd2Lbl entry queued
+    // at start time, delivered to the game at the end of update().
+    bool subtitles_enabled = false;
+    std::function<void(const SubtitleEvent&)> subtitle_callback;
+    std::vector<SubtitleEvent> pending_subtitles;
 
     // volumes (percent)
     int sfx_volume = 100, music_volume = 70;
@@ -127,7 +142,6 @@ struct AudioSystem::Impl {
     std::array<std::int32_t, 64> events{};
 
     // --- helpers ----------------------------------------------------------------------------
-    // SFXrnd: a lagged-Fibonacci style generator, returns 0..n-1.
     int rnd(int n) {
         if (n <= 0) return 0;
         rng_a += rng_b;
@@ -339,7 +353,7 @@ struct AudioSystem::Impl {
     }
 
     SfxHandle start(std::uint32_t id, std::shared_ptr<const SoundBank> bank, const SfxEntry* entry,
-                    std::shared_ptr<const SfxEntry> direct, const PlayOptions& opt) {
+                    std::shared_ptr<const SfxEntry> direct, const PlayOptions& opt, bool subtitle = true) {
         if (items.size() >= kMaxItems) return 0;
         auto it = std::make_unique<Item>();
         it->handle = next_handle++;
@@ -352,6 +366,16 @@ struct AudioSystem::Impl {
         it->vel = to_sfx_point(opt.velocity);
         it->inner = opt.inner_radius >= 0 ? opt.inner_radius : entry->params.inner_radius;
         it->outer = opt.outer_radius >= 0 ? opt.outer_radius : entry->params.outer_radius;
+        it->volume_override = std::clamp(opt.volume, 0, 100);
+        // Sound_Play/Sound_Play3D pass the EE SFXOutputData radii to the IOP, not the bank header's.
+        const SfxDefaults* def = archive.sfx_defaults(id);
+        if (def && opt.inner_radius < 0) it->inner = static_cast<int>(def->inner_radius);
+        if (def && opt.outer_radius < 0) it->outer = static_cast<int>(def->outer_radius);
+        // Sound_ReqestPlaySfx: cull_far effects are not started beyond 1.1 x outer radius.
+        if (def && def->cull_far &&
+            (entry->params.tracking == Tracking::Positional || entry->params.tracking == Tracking::Front) &&
+            distance_units(listener, it->real_pos) * 10 > it->outer * 11)
+            return 0;
         Item* raw = it.get();
         items.push_back(std::move(it));
         SfxHandle handle = raw->handle;
@@ -359,11 +383,72 @@ struct AudioSystem::Impl {
             erase_deleted();
             return 0;
         }
+        if (subtitle) queue_subtitle(handle, id, *raw);
         return handle;
+    }
+
+    // Sound_DoSubtitle: queue the Snd2Lbl label of a started effect for delivery in update().
+    // The proximity gate mirrors Sound_ReqestPlaySfx's byte 82 (distant cull_far positional sounds
+    // subtitle only while close; 2D sounds always do).
+    void queue_subtitle(SfxHandle handle, std::uint32_t id, const Item& it) {
+        const auto* sub = archive.subtitle_for_sfx(id);
+        if (!sub || (!subtitles_enabled && !sub->forced())) return;
+        if ((it.params().tracking == Tracking::Positional || it.params().tracking == Tracking::Front)) {
+            const SfxDefaults* def = archive.sfx_defaults(id);
+            if (def && def->cull_far && distance_units(listener, it.real_pos) * 2 > it.outer) return;
+        }
+        double seconds = 0;
+        for (const Slot& s : it.slots) {
+            if (!s.active || !s.pcm || s.pcm->data.empty() || s.step <= 0) continue;
+            double remain = static_cast<double>(s.pcm->data.size()) - s.pos;
+            seconds = std::max(seconds, std::max(remain, 0.0) / (s.step * rate));
+        }
+        pending_subtitles.push_back({handle, id, sub->label, seconds});
     }
 
     void erase_deleted() {
         std::erase_if(items, [](const std::unique_ptr<Item>& i) { return i->delete_me; });
+    }
+
+    // HandleMapSoundAllocation: squared distances in EE thousandths against the record radii.
+    // Starts an emitter as a 3D sound inside its radius, stops it beyond 1.2 x radius (and drops
+    // handles whose one-shot finished inside, so re-entry restarts them). Ambient never subtitles.
+    void tick_ambient() {
+        for (Ambient& a : ambient) {
+            std::int64_t dx = std::int64_t(listener.pos.x) - a.pos.x;
+            std::int64_t dy = std::int64_t(listener.pos.y) - a.pos.y;
+            std::int64_t dz = std::int64_t(listener.pos.z) - a.pos.z;
+            std::int64_t d2 = dx * dx + dy * dy + dz * dz;
+            std::int64_t r = std::int64_t(a.def.radius * 1000.0f);
+            if (a.active) {
+                if (!find_item(a.handle)) {
+                    a.active = false;
+                    a.handle = 0;
+                } else if (d2 > r * r * 12 / 10) {
+                    if (Item* it = find_item(a.handle)) it->delete_me = true;
+                    a.active = false;
+                    a.handle = 0;
+                }
+            }
+            if (!a.active && d2 < r * r) {
+                PlayOptions opt;
+                opt.position = Vec3{a.def.position[0], a.def.position[1], a.def.position[2]};
+                opt.volume = static_cast<int>(a.def.volume);
+                opt.inner_radius = static_cast<int>(a.def.inner_radius);
+                opt.outer_radius = static_cast<int>(a.def.radius);
+                opt.tag = kAmbientTag;
+                SfxHandle h = 0;
+                for (auto& [slot, bank] : banks)
+                    if (const SfxEntry* e = bank->find(a.def.sfx_id())) {
+                        h = start(a.def.sfx_id(), bank, e, nullptr, opt, false);
+                        break;
+                    }
+                if (h != 0) {
+                    a.handle = h;
+                    a.active = true;
+                }
+            }
+        }
     }
 
     // SFXUpdateEnding: an effect whose samples are all done loops or is removed.
@@ -607,6 +692,33 @@ SfxHandle AudioSystem::play_sfx(std::string_view name, const PlayOptions& option
     return id ? play_sfx(*id, options) : 0;
 }
 
+void AudioSystem::load_map_sounds(std::vector<MapSound> sounds) {
+    std::lock_guard lock(impl_->mutex);
+    for (auto& a : impl_->ambient)
+        if (a.active)
+            if (Item* it = impl_->find_item(a.handle)) it->delete_me = true;
+    impl_->erase_deleted();
+    impl_->ambient.clear();
+    for (MapSound& m : sounds) {
+        Impl::Ambient a;
+        a.def = m;
+        a.pos = to_sfx_point(Vec3{m.position[0], m.position[1], m.position[2]});
+        impl_->ambient.push_back(a);
+    }
+}
+
+void AudioSystem::clear_map_sounds() { load_map_sounds({}); }
+
+void AudioSystem::set_subtitles_enabled(bool enabled) {
+    std::lock_guard lock(impl_->mutex);
+    impl_->subtitles_enabled = enabled;
+}
+
+void AudioSystem::set_subtitle_callback(std::function<void(const SubtitleEvent&)> callback) {
+    std::lock_guard lock(impl_->mutex);
+    impl_->subtitle_callback = std::move(callback);
+}
+
 SfxHandle AudioSystem::play_stream(std::uint32_t index, const PlayOptions& options) {
     if (index >= impl_->archive.stream_count()) return 0;
     auto entry = std::make_shared<SfxEntry>();
@@ -781,6 +893,13 @@ void AudioSystem::update() {
             if (!it->delete_me) s.tick_item(*it);
     }
     s.erase_deleted();
+    s.tick_ambient();
+    s.erase_deleted();
+    if (s.subtitle_callback && !s.pending_subtitles.empty()) {
+        std::vector<SubtitleEvent> pending = std::move(s.pending_subtitles);
+        s.pending_subtitles.clear();
+        for (const SubtitleEvent& e : pending) s.subtitle_callback(e);
+    }
 }
 
 }  // namespace nf::audio

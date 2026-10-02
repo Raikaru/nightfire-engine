@@ -74,7 +74,7 @@ struct MenuControl {
 
 struct MenuPage {
     std::uint32_t id;           // 0x4000xxxx
-    std::uint32_t menu;         // 0x80000002 for every page of the disc
+    std::uint32_t menu;         // 0x80000002 for the front end; level scripts mix 0x80000002/3/4
     std::uint32_t extra;
     std::vector<MenuControl> controls;
 };

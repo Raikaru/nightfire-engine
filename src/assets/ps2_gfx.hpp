@@ -68,6 +68,9 @@ struct GfxBatch {
 struct GfxMesh {
     std::array<float, 3> bbox_min{}, bbox_max{};
     std::vector<GfxBatch> batches;
+    // Box 0 flags +0x34 bit 0 (FillMatrixChainRot): environment-mapped; the VU program builds ST from the
+    // camera axes instead of the vertex UVs. Set by the owner from the model's box, not by decode_ps2_gfx.
+    bool envmap = false;
 };
 
 // PS2_GFX block layout (psiDrawObjectMatrix / DrawThisBox):

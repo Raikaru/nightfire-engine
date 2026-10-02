@@ -2,10 +2,10 @@
 
 #include <array>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
-
 #include "assets/mp_data.hpp"
 #include "assets/sp_menu.hpp"
 #include "assets/ui_assets.hpp"
@@ -35,9 +35,21 @@ struct Frontend::Impl : ui::MenuHost {
     std::array<bool, 4> controllers_present{true, false, false, false};   // PlayerSetting+0x155 per controller
     std::uint32_t rand_state = 0x1234567;   // Rand_Random for Quick Game
     PauseInfo pause_info;
-    PlayerOptions player_options;
+    PlayerOptions player_options;    // controller style / Y-inversion (pause CONTROLS tab, P_CNCONTROLS)
     bool quit_confirm = false;       // cGpffff8c5b: the confirm box asks about quitting (else restarting)
     bool ignore_accept = false;      // cGpffff8c5c
+    GameOptions options;             // session options (options/AV/controls/MP-options/screen pages)
+    MissionResults mission_results;  // mission results screens (P_NFRESULTS and friends)
+    DebriefInfo debrief;             // P_MPDEBRIEFING table
+    std::string profile_name = "Bond";  // in-memory codename (no memory card: typed on P_CNNAME)
+    std::map<std::uint32_t, int> tweaks;     // P_TWEAKS/P_TWEAKS2 cheats by control id (C_CH*)
+    std::string name_entry;          // P_CNNAME letter grid buffer (max 8 chars)
+    bool av_confirmed = false;       // P_CNAVOPTIONS 0x138: keep slider/radio edits on hide
+    int screen_entry_x = 0, screen_entry_y = 0;  // P_SCREENADJUST entry values (0x6b restores)
+    bool options_dirty = false;      // P_CNOPTIONS/P_CNMPOPTIONS accept: hub triangle asks (cGpffff8eb7)
+    DossierInfo dossier;             // dossier pages (P_DS*), set by the game
+    std::optional<MpLaunch> last_mp_launch;  // P_MPDEBRIEFING Replay restarts it
+    int movie_frames = 0;            // movie placeholder pages: idle frames before auto-advance
 
     bool handle(ui::MenuManager& m, ui::Control& ctrl, const ui::Msg& msg) override;
 
@@ -63,6 +75,14 @@ struct Frontend::Impl : ui::MenuHost {
 
     // ---- frontend.cpp ----
     void register_front_handlers();
+    void register_options_handlers();    // frontend_options.cpp (codenames, options, controls, AV, screen)
+    void register_info_handlers();       // frontend_info.cpp (dossier, results, debriefing, movies)
+    void register_level_handlers();      // frontend_level.cpp (level-bin pages: endmission, NIS, cheats)
+    // Radio helpers: fill an On/Off (or Toggle/Hold) radio from a value, read it back on accept.
+    void radio_onoff(std::uint32_t control, bool value);
+    void radio_toggle_hold(std::uint32_t control, bool value);
+    // Scroll (slider) helper: range 0..max, set to value.
+    void slider_set(std::uint32_t control, int value, int max);
     bool p_start(ui::Control&, const ui::Msg&);
     bool p_main(ui::Control&, const ui::Msg&);
     bool p_paris_enum(ui::Control&, const ui::Msg&);
@@ -153,6 +173,45 @@ struct Frontend::Impl : ui::MenuHost {
     void show_controller_styles();
     bool p_pause(ui::Control&, const ui::Msg&);
     bool c_gc_pause(ui::Control&, const ui::Msg&);
+    // ---- frontend_options.cpp ----
+    std::vector<WheelItem> cn_option_items() const;
+    bool p_cn_menu(ui::Control&, const ui::Msg&);
+    bool c_sb_cn_options(ui::Control&, const ui::Msg&);
+    bool p_cn_select(ui::Control&, const ui::Msg&);
+    bool c_sb_cn_select(ui::Control&, const ui::Msg&);
+    bool p_cn_name(ui::Control&, const ui::Msg&);
+    bool c_keyboard(ui::Control&, const ui::Msg&);
+    bool p_cn_options(ui::Control&, const ui::Msg&);
+    bool p_cn_mp_options(ui::Control&, const ui::Msg&);
+    bool p_cn_controls(ui::Control&, const ui::Msg&);
+    bool c_rb_control(ui::Control&, const ui::Msg&);
+    bool c_keypad(ui::Control&, const ui::Msg&);
+    bool p_cn_av_options(ui::Control&, const ui::Msg&);
+    bool p_screen_adjust(ui::Control&, const ui::Msg&);
+    bool c_sb_screen(ui::Control&, const ui::Msg&);
+    // ---- frontend_info.cpp ----
+    std::vector<WheelItem> ds_option_items() const;
+    bool p_dossier(ui::Control&, const ui::Msg&);
+    bool c_sb_dossier(ui::Control&, const ui::Msg&);
+    bool p_ds_weapons(ui::Control&, const ui::Msg&);
+    bool p_ds_gadgets(ui::Control&, const ui::Msg&);
+    bool c_sb_ds_weapons(ui::Control&, const ui::Msg&);
+    bool c_sb_ds_gadgets(ui::Control&, const ui::Msg&);
+    bool p_ds_records(ui::Control&, const ui::Msg&);
+    bool p_ds_rewards(ui::Control&, const ui::Msg&);
+    bool p_nf_results(ui::Control&, const ui::Msg&);
+    bool p_nf_stats(ui::Control&, const ui::Msg&);
+    bool p_nf_bonus(ui::Control&, const ui::Msg&);
+    bool p_wingame(ui::Control&, const ui::Msg&);
+    bool p_mp_debriefing(ui::Control&, const ui::Msg&);
+    bool p_movie(ui::Control&, const ui::Msg&);
+    // ---- frontend_level.cpp ----
+    bool p_end_mission(ui::Control&, const ui::Msg&);
+    bool p_nis(ui::Control&, const ui::Msg&);
+    bool c_nis(ui::Control&, const ui::Msg&);
+    bool p_cheat_medal(ui::Control&, const ui::Msg&);
+    bool p_tweaks(ui::Control&, const ui::Msg&);
+    bool p_tweaks_cheat(ui::Control&, const ui::Msg&);
 };
 
 }  // namespace nf

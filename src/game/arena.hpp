@@ -71,7 +71,8 @@ struct ArenaSpawn {
 
 // A line of on-screen text (Text_AddMsg): who sees it, and for how long.
 struct MatchMessage {
-    enum class Type { Info = 0, Objective = 1, Mission = 2, Pickup = 6 };   // TXTMSG_TYPE values the arena uses
+    // TXTMSG_TYPE values (assets/hud_data.hpp HudMsgType): the status panes take 1, 2, 3 and 6.
+    enum class Type { Info = 1, Objective = 2, Mission = 3, Pickup = 6 };
     int slot = -1;              // -1 every human viewer
     Type type = Type::Info;
     std::string text;
@@ -121,6 +122,9 @@ struct ArenaHud {
         float x = 0, y = 0, z = 0;              // camera space: x right, y up, z forward
         std::uint32_t color = 0x7F7F7FFF;
         int kind = 0;                           // RADAROBJ+0x14: 0 player, 1 flag, 2 uplink, 3 target, 4 GoldenEye, 6 blueprint, 7 base
+        Vec3 world{};                           // world position (for the HUD's name-tag projection)
+        std::string name;                       // participant name (player blips when radar_names), else empty
+        bool same_team = false;                 // team games: blip is on the viewer's team
     };
     std::uint32_t mode = mp_mode::kArena;
     bool teams = false, objective = false;

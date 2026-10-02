@@ -570,49 +570,66 @@ void open_insert(std::list<std::uint16_t>& open, Nodes& nodes, std::uint16_t id)
 }  // namespace
 
 bool NavNetwork::node_search(NodeSearch& s) {
-    // AINetwork_NodeSearchCel @0x156e18 (AINetwork_NodeSearch's neighbour-cel loop re-runs the same
-    // query and never finds anything new, so only the query's own cel is searched).
+    // AINetwork_NodeSearchCel @0x156e18, driven by AINetwork_NodeSearch: the query's own cel first, then the
+    // neighbour cels (portals) whose vertical span overlaps the query (y +/- 2), until something is found.
     if (s.query.cel == kNoCel || s.path < 0) return false;
     NavPath& path = paths_[std::size_t(s.path)];
-    float half = s.radius_sq != 0.0f ? std::sqrt(s.radius_sq) : kDefaultBox;
+    const float half = s.radius_sq != 0.0f ? std::sqrt(s.radius_sq) : kDefaultBox;
     const Vec3& q = s.query.pos;
-    std::vector<std::uint16_t> cand;
-    for (NodeRef ref : cels_[std::size_t(s.query.cel)].nodes) {
-        if (ref.path != path.index) continue;
-        NavNode& n = path.nodes[ref.node];
-        if (n.pos[0] < q[0] - half || n.pos[0] > q[0] + half || n.pos[2] < q[2] - half || n.pos[2] > q[2] + half ||
-            n.pos[1] < q[1] - kNodeYTol || n.pos[1] > q[1] + kNodeYTol)
-            continue;
-        n.dist2d = dist2d(n.pos, q);
-        if (s.radius_sq > 0 && n.dist2d > s.radius_sq) continue;   // compares distance with radius^2 (original)
-        auto it = cand.begin();
-        while (it != cand.end() && path.nodes[*it].dist2d <= n.dist2d) ++it;
-        cand.insert(it, ref.node);
-    }
-    for (std::uint16_t id : cand) {
-        NavNode& n = path.nodes[id];
-        NodeRef ref{std::uint16_t(path.index), id};
-        if (!s.seed_mode) {
-            if (move_test_from_node(ref, s.query) == 1) {
-                n.flags |= s.mask;
-                ++s.found;
-                return true;
+    auto search_cel = [&](int cel) {
+        std::vector<std::uint16_t> cand;
+        for (NodeRef ref : cels_[std::size_t(cel)].nodes) {
+            if (ref.path != path.index) continue;
+            NavNode& n = path.nodes[ref.node];
+            if (n.pos[0] < q[0] - half || n.pos[0] > q[0] + half || n.pos[2] < q[2] - half || n.pos[2] > q[2] + half ||
+                n.pos[1] < q[1] - kNodeYTol || n.pos[1] > q[1] + kNodeYTol)
+                continue;
+            n.dist2d = dist2d(n.pos, q);
+            if (s.radius_sq > 0 && n.dist2d > s.radius_sq) continue;   // compares distance with radius^2 (original)
+            auto it = cand.begin();
+            while (it != cand.end() && path.nodes[*it].dist2d <= n.dist2d) ++it;
+            cand.insert(it, ref.node);
+        }
+        for (std::uint16_t id : cand) {
+            NavNode& n = path.nodes[id];
+            NodeRef ref{std::uint16_t(path.index), id};
+            if (!s.seed_mode) {
+                if (move_test_from_node(ref, s.query) == 1) {
+                    n.flags |= s.mask;
+                    ++s.found;
+                    return;
+                }
+                if (s.fallback == 0) {
+                    n.flags |= s.mask << 1;
+                    s.fallback = 1;
+                }
+            } else {
+                if (move_test_to_node(s.query, ref) == 1) {
+                    n.g = n.dist2d;
+                    n.h = s.goal ? dist2d(s.goal->pos, n.pos) : 0.0f;
+                    n.f = n.g + n.h;
+                    n.parent = kNoNode;
+                    s.result = id;
+                    if (s.add_open) n.flags |= nodeflag::kOpenClosed;
+                    ++s.found;
+                    return;
+                }
             }
-            if (s.fallback == 0) {
-                n.flags |= s.mask << 1;
-                s.fallback = 1;
+        }
+    };
+    search_cel(s.query.cel);
+    if (s.found == 0) {
+        for (int pi : cel_portals_[std::size_t(s.query.cel)]) {
+            const Portal& p = portals_[std::size_t(pi)];
+            const int neighbour = p.cel_a == s.query.cel ? p.cel_b : p.cel_a;
+            float lo = p.quad[0][1], hi = p.quad[0][1];
+            for (const Vec3& v : p.quad) {
+                lo = std::min(lo, v[1]);
+                hi = std::max(hi, v[1]);
             }
-        } else {
-            if (move_test_to_node(s.query, ref) == 1) {
-                n.g = n.dist2d;
-                n.h = s.goal ? dist2d(s.goal->pos, n.pos) : 0.0f;
-                n.f = n.g + n.h;
-                n.parent = kNoNode;
-                s.result = id;
-                if (s.add_open) n.flags |= nodeflag::kOpenClosed;
-                ++s.found;
-                return true;
-            }
+            if (q[1] < lo - kNodeYTol || q[1] > hi + kNodeYTol) continue;
+            search_cel(neighbour);
+            if (s.found != 0) break;
         }
     }
     return true;

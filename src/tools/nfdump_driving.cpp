@@ -10,8 +10,8 @@
 #include "driving/attributes.hpp"
 #include "driving/camera_ini.hpp"
 #include "driving/driving_level.hpp"
+#include "driving/mission_data.hpp"
 #include "driving/track_collision.hpp"
-#include "driving/track_model.hpp"
 
 namespace nf {
 namespace {
@@ -56,6 +56,7 @@ std::size_t validate_driving(const std::filesystem::path& gamedir) {
                             const driving::SceneMesh scene = driving::build_track_scene(carp, elf);
                             std::printf("  %s: %zu instances (%zu without geometry), %zu collision triangles\n", entry.path.c_str(),
                                         scene.instances, scene.unresolved, stats.triangles);
+                            failures += driving::validate_mission(carp, viv + ":" + entry.path);
                         } else if (entry.path.find("\\car\\model\\") != std::string::npos) {
                             ++cars;
                             const auto parts = driving::build_vehicle_parts(carp, elf);

@@ -82,6 +82,12 @@ struct SpExt : drone::DroneExt {
     int partner = -1;                      // Drone+0x2b0: paired drone id (hostage killer <-> hostage), -1 none
     int door_partner = -1;                 // Drone+0x2bc: door-guard partner drone id, -1 none
     int near_drone = -1;                   // Drone+0x2b8: armed enemy drone found by NDrone2_NearArmedDrone
+    int cover_node = -1;                   // claimed cover node index into SpLevel::cover_nodes (-1 none)
+    struct AiGoal {                        // AIPoint_tag (Drone+0x6f0): the fixed position goal a state walks to
+        bool set = false;                  //   +0x04 valid
+        Vec3 pos{};                        //   +0x20 goal position (feet space)
+        float radius = 2.0f;               //   +0x14 arrival radius (0 -> 2.0)
+    } ai_goal;
     struct Scary {                         // scary object (Drone+0x324/+0x330/+0x340/+0x350/+0x354): ConsiderExplosive fills it
         std::uint32_t until = 0;           //   +0x324 keep running away until this tick
         Vec3 pos{};                        //   +0x330

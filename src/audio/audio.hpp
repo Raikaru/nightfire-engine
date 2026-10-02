@@ -2,11 +2,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "assets/map_sounds.hpp"
 #include "assets/sound_archive.hpp"
 #include "core/math.hpp"
 
@@ -42,6 +45,18 @@ struct PlayOptions {
     std::int32_t tag = 0;          // caller identifier for remove_sfx / set_position (SFXStart3D's handle)
     std::int32_t inner_radius = -1;  // game units; -1 keeps the effect's own radius
     std::int32_t outer_radius = -1;
+    int volume = 100;  // Sound_Play3D's volume argument (map emitters pass their record volume)
+};
+
+// Sound_DoSubtitle: fired when an effect with a Snd2Lbl entry starts. `label` is the text label
+// hash for Txt_BindLabel (high bit = show even when subtitles are disabled); resolve it with
+// StringTable::label and post it as a HUD message of type Subtitle. `duration_sec` is the length of
+// the started samples (one loop for looping samples; sequential follow-ups not included).
+struct SubtitleEvent {
+    SfxHandle handle = 0;
+    std::uint32_t sfx_id = 0;
+    std::uint32_t label = 0;
+    double duration_sec = 0;
 };
 
 struct MusicStatus {
@@ -92,8 +107,11 @@ public:
     void set_environment(int room, bool indoors);
     void set_stereo(bool stereo);                             // false: SFXSetMode mono (channels averaged)
 
-    // SFXStart3D. Looks the id up in the loaded banks. Returns 0 if it is unknown, was culled (too far,
-    // rejected for lack of voices) or the effect list (40 effects) is full.
+    // SFXStart3D/Sound_ReqestPlaySfx. Looks the id up in the loaded banks. Returns 0 if it is
+    // unknown, was culled (Sound_ReqestPlaySfx refuses cull_far effects beyond 1.1 x outer radius,
+    // SFXSetup sheds low-priority positional effects under voice pressure) or the effect list
+    // (40 effects) is full. Radii default to the EE SFXOutputData entry (what Sound_Play3D passes
+    // to the IOP), falling back to the bank header when the id has no EE entry.
     SfxHandle play_sfx(std::uint32_t id, const PlayOptions& options = {});
     SfxHandle play_sfx(std::string_view name, const PlayOptions& options = {});  // "SFX_..." name
     // Plays STREAMS.BIN entry `index` directly (normally reached through an effect's sample pool).
@@ -106,6 +124,22 @@ public:
     bool is_playing(SfxHandle handle) const;
     bool is_sfx_playing(std::uint32_t id) const;              // SFXIsSFXPlaying
     std::size_t active_effects() const;
+
+    // --- ambient map sounds (Sound_LoadMapSounds / HandleMapSoundAllocation) --------------------
+    // Replaces the emitter table (stops the previous ambient first). update() starts each emitter
+    // as a 3D sound while the listener is within its radius and stops it beyond 1.2 x radius.
+    // Emitters play under a reserved tag, so remove_sfx(0) also stops them; the handles are tracked
+    // internally and need no game bookkeeping.
+    void load_map_sounds(std::vector<MapSound> sounds);
+    void clear_map_sounds();
+
+    // --- subtitles (Sound_DoSubtitle) ----------------------------------------------------------
+    // The dword_2A37C8 gate of ACTION.ELF initialises to 0 (subtitles off); wire the options-menu
+    // setting here. The callback is invoked from update() for every started effect that has a
+    // Snd2Lbl entry and passes the gate (or whose label high bit is set). It runs with the
+    // internal lock held and MUST NOT call back into the AudioSystem.
+    void set_subtitles_enabled(bool enabled);
+    void set_subtitle_callback(std::function<void(const SubtitleEvent&)> callback);
 
     // --- music ---------------------------------------------------------------------------------
     // SFXStartMusic: `track_hash` is the hash from MFXINFO.MXI (Level music in ACTION.ELF's MapMusic),

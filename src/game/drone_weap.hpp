@@ -26,6 +26,9 @@ bool ready2fire(Drone& d);
 void opponent_targetting(Drone& d);
 // DroneWeap_DoBulletAccuracy: rolls hit/miss (fills Drone::aim_offset). Returns true when the shot is a hit.
 bool do_bullet_accuracy(Drone& d);
+// Same with the Rand_FRand(100) draw injected (differential testing against the original, whose RNG is
+// scripted by the harness; production calls the overload above).
+bool do_bullet_accuracy(Drone& d, float rand_draw);
 // DroneWeap_FireWeapon: one shot (or one burst pellet set) through the weapons system.
 void fire_weapon(Drone& d);
 // Where bullets leave the drone (weapon datum, else the right hand height on the torso).

@@ -211,7 +211,7 @@ std::size_t validate_sp(GameFiles& files, const std::filesystem::path& gamedir) 
     failures += validate_tables(elf, tables, true);
 
     std::size_t levels = 0, npcs = 0, npcs_by_diff[4] = {0, 0, 0, 0}, cover = 0, points = 0, volumes = 0, spawners = 0,
-                groups_orphan = 0, captains[4] = {0, 0, 0, 0}, resolved = 0, skins_checked = 0;
+                groups_orphan = 0, captains[4] = {0, 0, 0, 0}, resolved = 0, skins_checked = 0, skin_warnings = 0;
     std::set<std::uint32_t> all_skins;
     for (const GameFile& f : files.files()) {
         if (!is_sp_bin(f)) continue;
@@ -227,10 +227,15 @@ std::size_t validate_sp(GameFiles& files, const std::filesystem::path& gamedir) 
             std::size_t template_npcs = 0;
             for (const sp::PlacedNpc& n : data.npcs) {
                 all_skins.insert(n.spec.skin);
+                // Missing skins are warnings, not failures: the shipped data contains placeholder-skinned
+                // placements (0x5000090 polySurface1 / 0x50000b1 polySurface2, present in sibling levels'
+                // banks but absent from 0700000c/07000014) and the engine spawns those drones skinless with
+                // the AI fully active (DroneSystem::spawn leaves character null; locomotion falls back to the
+                // AnimInfo forward step). Failing here would demand assets the disc never shipped.
                 if (bank && !bank->skin(n.spec.skin)) {
-                    std::printf("  FAIL %s: NPC skin 0x%x does not resolve in the level's character bank\n", f.name.c_str(),
+                    std::printf("  WARN %s: NPC skin 0x%x does not resolve in the level's character bank\n", f.name.c_str(),
                                 n.spec.skin);
-                    ++failures;
+                    ++skin_warnings;
                 }
                 ++skins_checked;
                 if (n.spec.mode >= 0x24 && n.spec.mode != 0x64) {
@@ -251,7 +256,7 @@ std::size_t validate_sp(GameFiles& files, const std::filesystem::path& gamedir) 
                     ++resolved;
                     if (r.captain) ++cap[diff];
                     const bool bad = r.initial_state <= 0 || r.initial_state >= 250 || r.health <= 0 ||
-                                     r.dtype >= sp::kDtypeCount || r.side < 1 || r.side > 3 || !bank || !bank->skin(r.skin);
+                                     r.dtype >= sp::kDtypeCount || r.side < 1 || r.side > 3;
                     if (bad) {
                         std::printf("  FAIL %s: NPC static %u (skin 0x%x mode 0x%x) at difficulty %d resolves to state %d "
                                     "health %g dtype %d side %d skin 0x%x\n",
@@ -284,10 +289,10 @@ std::size_t validate_sp(GameFiles& files, const std::filesystem::path& gamedir) 
             ++failures;
         }
     }
-    std::printf("  %zu SP levels: %zu NPCs (skins checked %zu, resolved %zu times at easy/normal/hard), %zu cover nodes, "
+    std::printf("  %zu SP levels: %zu NPCs (skins checked %zu with %zu missing-skin warnings, resolved %zu times at easy/normal/hard), %zu cover nodes, "
                 "%zu AI points, %zu spawners, %zu AI volumes; %zu distinct skins; %zu NPCs in spawner-less groups; "
                 "%zu failures\n",
-                levels, npcs, skins_checked, resolved, cover, points, spawners, volumes, all_skins.size(), groups_orphan,
+                levels, npcs, skins_checked, skin_warnings, resolved, cover, points, spawners, volumes, all_skins.size(), groups_orphan,
                 failures);
     return failures;
 }

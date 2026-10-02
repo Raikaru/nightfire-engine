@@ -23,6 +23,7 @@
 #include "assets/game_files.hpp"
 #include "assets/level.hpp"
 #include "render/character_renderer.hpp"
+#include "game/collision_world.hpp"
 #include "render/level_renderer.hpp"
 #include "render/gl.hpp"
 #include "render/window.hpp"
@@ -43,8 +44,9 @@ struct Options {
     float frame = 1, look_h = -1, look_v = -1, speed = 0, max_speed = 1;
     int at_ticks = 0, after_ticks = 4, focus = -1, light_at = -1;
     std::array<float, 3> tint{1, 1, 1};
-    bool at_start = false, have_at = false, tint_given = false;
     Vec3 at{0, 0, 0};
+    bool at_start = false, have_at = false, tint_given = false, flash = false;
+    float fade = 1.0f;   // object alpha 0..1 (TweakA / 128): fades drive it, 0x80 = 1.0
     bool have_frame = false;
     unsigned sleeve = 0;
     float yaw = 0.6f, pitch = 0.15f, dist = 0;
@@ -73,6 +75,8 @@ Options parse(int argc, char** argv) {
             if (std::sscanf(v.c_str(), "%f,%f,%f", &o.at[0], &o.at[1], &o.at[2]) != 3) throw std::runtime_error("--at x,y,z");
             o.have_at = true;
         } else if (a == "--light-at") o.light_at = std::stoi(next(i));
+        else if (a == "--flash") o.flash = true;   // a muzzle-flash light at the character (dynamic light demo)
+        else if (a == "--fade") o.fade = std::stof(next(i));   // object alpha 0..1 (TweakA fades)
         else if (a == "--focus") o.focus = std::stoi(next(i));
         else if (a == "--blend-to") o.blend_to = next(i);
         else if (a == "--at") o.at_ticks = std::stoi(next(i));
@@ -167,22 +171,25 @@ int run_character_view(int argc, char** argv) {
     const float extent = std::max({hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]});
     if (o.dist <= 0) o.dist = extent * 1.1f;
 
-    // Lighting: with --light-at n the character stands next to the level's n-th point light and is lit by the
-    // lights closest_lights picks there; otherwise one preview light sits at the camera.
+    // Lighting (View_SetupRenderModes): a DynamicLights over the level's map radiators plus an optional
+    // muzzle-flash light (--flash); otherwise one preview light sits at the camera.
     Mat4 model = identity();
     CharacterLighting lighting;
     lighting.tint = o.tint;
+    DynamicLights dynamics;
+    dynamics.add_map_lights(bank.lights());
     if (o.light_at >= 0) {
         if (std::size_t(o.light_at) >= bank.lights().size()) throw std::runtime_error("level has no such light");
         const MapLight& l = bank.lights()[std::size_t(o.light_at)];
         model[12] = l.position[0] + 0.8f, model[13] = l.position[1] - 0.4f, model[14] = l.position[2] + 0.4f;
-        lighting.lights = closest_lights(bank.lights(), transform_point(model, centre), extent * 0.5f);
+        lighting.lights = dynamics.lights_for(transform_point(model, centre), extent * 0.5f);
         std::printf("light %d at %.1f %.1f %.1f radius %.1f; %u light(s) reach the character\n", o.light_at, l.position[0],
                     l.position[1], l.position[2], l.radius, lighting.lights.count);
     }
     // In-level placement: the object stands at --at (or the Player1 start), the world is drawn around it, and the
-    // lighting is what the game would compute there: the ambient of the room cel it is in (stepped to convergence
-    // like Lights_CalcAmbientLight) as tint, plus the closest point lights.
+    // lighting is what the game would compute there: the ambient of the room cel it is in (build_FindCel's ray
+    // test through the CollisionWorld, stepped to convergence like Lights_CalcAmbientLight) as tint, plus the
+    // closest lights, with an optional muzzle-flash light (--flash).
     std::unique_ptr<Level> level;
     std::unique_ptr<LevelRenderer> world;
     if (o.at_start || o.have_at) {
@@ -202,19 +209,40 @@ int run_character_view(int argc, char** argv) {
         }
         model = identity();
         model[12] = pos[0], model[13] = pos[1], model[14] = pos[2];
-        lighting.lights = closest_lights(bank.lights(), pos, extent * 0.5f);
+        const CollisionWorld collision(*level);
+        // build_FindCel's ray test: the up/down-256 segment against the candidate cel's own placement.
+        const auto placements = level->placements();
+        CharacterBank::CelRay ray = [&](const LightZone& z, const Vec3& from, const Vec3& to) {
+            std::optional<float> nearest;
+            for (const auto& hit : collision.ray_hits(from, to, 0)) {
+                if (placements[hit.placement].instance != z.instance) continue;
+                if (!nearest || hit.dist < *nearest) nearest = hit.dist;
+            }
+            return nearest;
+        };
+        if (o.flash) dynamics.muzzle({pos[0] + 0.5f, pos[1] + 0.3f, pos[2] + 0.5f}, 8, 255, 220, 160);
+        lighting.lights = dynamics.lights_for(pos, extent * 0.5f);
         if (!o.tint_given) {
             ObjectAmbient amb;
-            const auto target = bank.ambient_at(pos);
+            const auto target = bank.ambient_at(pos, SwitchChannels{}, ray);
             if (target)
                 for (int t = 0; t < 120; ++t) amb.step(*target);
             lighting.tint = amb.tint();
+            if (const LightZone* cel = bank.find_cel(pos, ray))
+                std::printf("cel box %.1f %.1f %.1f - %.1f %.1f %.1f\n", cel->lo[0], cel->lo[1], cel->lo[2], cel->hi[0],
+                            cel->hi[1], cel->hi[2]);
             std::printf("at %.1f %.1f %.1f: ambient %s %u %u %u, tint %.2f %.2f %.2f, %u point light(s)\n", pos[0], pos[1], pos[2],
                         target ? "cel" : "none (0xFF)", amb.level[0], amb.level[1], amb.level[2], lighting.tint[0], lighting.tint[1],
                         lighting.tint[2], lighting.lights.count);
         }
+        if (o.flash) lighting.tint = {1, 1, 1};
+        lighting.alpha = o.fade;
         world = std::make_unique<LevelRenderer>(*level);
         world->set_level(std::uint32_t(std::strtoul(bin_name.c_str(), nullptr, 16)));
+    } else if (o.flash) {
+        dynamics.muzzle(transform_point(model, centre + Vec3{0.5f, 0.3f, 0.5f}), 8, 255, 220, 160);
+        lighting.lights = dynamics.lights_for(transform_point(model, centre), extent * 0.5f);
+        lighting.tint = {1, 1, 1};
     }
     glEnable(GL_DEPTH_TEST);
     auto draw_frame = [&] {

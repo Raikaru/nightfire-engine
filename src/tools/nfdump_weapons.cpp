@@ -64,7 +64,9 @@ std::size_t validate_weapons(GameFiles& files, const std::filesystem::path& game
         for (const WeaponDef& w : t.weapons()) {
             if (w.base >= WeaponTable::kWeaponCount) fail("base out of range for " + std::to_string(w.id));
             if (w.ammo_type >= WeaponTable::kAmmoCount) fail("ammo type out of range for " + std::to_string(w.id));
-            if (w.selectable && text.label(w.name_label).empty()) fail("unnamed selectable weapon " + std::to_string(w.id));
+            // Id 1 (fists/unarmed melee) is selectable but legitimately unnamed (spec 5.1: empty name row).
+            if (w.id != 1 && w.selectable && text.label(w.name_label).empty())
+                fail("unnamed selectable weapon " + std::to_string(w.id));
             named += !text.label(w.name_label).empty();
         }
         // Values the spec's independent emulation of the same initializer produced (docs/spec-weapons.md 5.1).

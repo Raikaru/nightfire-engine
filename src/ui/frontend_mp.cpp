@@ -781,6 +781,7 @@ bool Frontend::Impl::p_mp_confirm(ui::Control&, const ui::Msg& m) {
         r.level_bin = launch.level_bin;
         r.level_id = launch.settings.level_id;
         r.launch = std::move(launch);
+        last_mp_launch = r.launch;  // P_MPDEBRIEFING Replay restarts it
         result = std::move(r);
         closed = true;
         return true;

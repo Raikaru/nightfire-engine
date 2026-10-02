@@ -100,6 +100,11 @@ Skeleton parse_skeleton(Bytes d) {
     return s;
 }
 
+bool rig_compatible(const Skeleton& seq_skel, const Skeleton& skin_skel) {
+    return seq_skel.bone_count == skin_skel.bone_count &&
+           seq_skel.translation_animated == skin_skel.translation_animated;
+}
+
 SkinDef parse_skin(Bytes d, const Skeleton& skeleton) {
     SkinDef s;
     s.hash = load<std::uint32_t>(d, 0);

@@ -1,3 +1,5 @@
+#include <cmath>
+
 #include "game/sp_idle.hpp"
 
 namespace nf::sp {
@@ -85,4 +87,61 @@ void play_script(Drone& d, std::uint32_t script, int dasc, bool loop, int end_ms
     if (!ok) anim_call(d, 0, dasc, 0, 0, end_msg);   // script not in this skeleton's bank: stand in the requested pose
 }
 
+
+void set_ai_goal(Drone& d, const Vec3& pos, float radius) {
+    // NDrone2_SetSoundAlertRoute 0x1541c0: AI goal = alert position; the movement route restarts.
+    SpExt::AiGoal& g = sx(d).ai_goal;
+    g.set = true;
+    g.pos = pos;
+    g.radius = radius <= 0.0f ? 2.0f : radius;
+    if (d.nav) {
+        d.nav->set_goal_position(pos, g.radius);
+        d.nav->invalidate_route();
+    }
+    d.mv.goal_is_object = false;
+}
+
+const SpExt::AiGoal& ai_goal(const Drone& d) {
+    return static_cast<const SpExt*>(d.ext.get())->ai_goal;
+}
+
+int move_to_ai_goal(Drone& d) {
+    // NDrone2_MoveToGoalPosition on the stored AI goal (GoToGoalPosition / AlertToPosition TICK).
+    const SpExt::AiGoal& g = ai_goal(d);
+    if (!g.set) return int(RouteStatus::CannotCalc);
+    return move_to_goal_position(d, g.pos, g.radius);
+}
+
+float distance_to_ai_point(const Drone& d) {
+    // NDrone2_DistanceToAIPoint: 2-D feet distance to the AI goal.
+    const SpExt::AiGoal& g = ai_goal(d);
+    if (!g.set) return 1e9f;
+    const Vec3 f = d.nav_pos();
+    const float dx = f[0] - g.pos[0], dz = f[2] - g.pos[2];
+    return std::sqrt(dx * dx + dz * dz);
+}
+
+void refind_mission_path(Drone& d) {
+    // NDrone2_ReFindMissionPath: re-anchor the patrol at the mission-route node nearest the drone and
+    // make it the AI goal, so the GoToGoalPosition transition walks back onto the path.
+    if (!d.nav || !d.sys->nav()) return;
+    const NavNetwork& net = *d.sys->nav();
+    const NavRoute& mr = d.nav->mission_route();
+    if (!mr.valid() || mr.path < 0 || std::size_t(mr.path) >= net.paths().size()) return;
+    const NavPath& path = net.paths()[std::size_t(mr.path)];
+    const Vec3 f = d.nav_pos();
+    const NavNode* best = nullptr;
+    float best_d2 = 1e18f;
+    for (const std::uint16_t id : mr.nodes) {
+        if (id >= path.nodes.size()) continue;
+        const NavNode& n = path.nodes[id];
+        const float dx = f[0] - n.pos[0], dz = f[2] - n.pos[2];
+        const float d2 = dx * dx + dz * dz;
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            best = &n;
+        }
+    }
+    if (best) set_ai_goal(d, best->pos, 2.0f);
+}
 }  // namespace nf::sp

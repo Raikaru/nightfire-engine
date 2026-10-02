@@ -348,7 +348,10 @@ WeaponTable WeaponTable::from_elf(const Elf32& elf) {
         t.weapons_.push_back(decode(raw, std::size_t(i) * kStride));
         if (t.weapons_.back().id != i) throw FormatError("weapon_data initializer left a bad row " + std::to_string(i));
     }
-
+    // Two bytes the game patches at runtime after the static initializer (nfmips live-RAM diff): row 1
+    // (fists) points its viewmodel at skin 0x050000B0, and the Remote Mine (55) alt-selects 57, not 56.
+    t.weapons_.at(1).model_gfx = 0x050000B0;
+    t.weapons_.at(55).alt = 2;
     const auto ammo = need("ammo_data");
     const std::vector<std::uint8_t> ammo_raw = cpu.read(ammo.value, ammo.size);
     for (int i = 0; i < kAmmoCount; ++i) {

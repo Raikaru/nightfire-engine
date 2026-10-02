@@ -62,6 +62,14 @@ public:
     float brake() const { return brake_; }
     float steer() const { return steer_; }          // slewed steering, -1..1
     int boost_ticks_left() const { return boost_timer_; }
+    // Battle-damage handling for the mission layer (PBondCar_ApplyDamage/IsTyreShredded
+    // effects on the tyre model): axle grip scales (blown tyres) and rolling drag (body
+    // damage). Defaults are neutral: behaviour without set_damage_state() is unchanged.
+    void set_damage_state(float grip_front, float grip_rear, float drag) {
+        grip_front_ = grip_front;
+        grip_rear_ = grip_rear;
+        extra_drag_ = drag;
+    }
     const VehicleParams& params() const { return params_; }
 
 private:
@@ -120,6 +128,8 @@ private:
     bool collided_ = false;     // rec+1277
     int since_object_hit_ = 0;  // rec+1246, only object contacts (not ported) reset it
     std::array<float, 4> slip_out_{};
+    float grip_front_ = 1, grip_rear_ = 1;  // damage grip scales (set_damage_state)
+    float extra_drag_ = 0;                  // damage rolling drag (set_damage_state)
 };
 
 }  // namespace nf::driving

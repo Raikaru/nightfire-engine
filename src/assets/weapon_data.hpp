@@ -82,8 +82,10 @@ constexpr std::uint32_t kFireUnderwater = 0x2, kLaserSight = 0x8, kClipVariant =
 // F2 (flags2) bits, 4.2.
 namespace wf2 {
 constexpr std::uint32_t kGuided = 0x4, kGravity = 0x8, kTracer = 0x10, kEjectCasing = 0x40, kTaserBeam = 0x80,
-                        kLaserBeam = 0x100, kQuarterSpeed = 0x200, kHoldStates = 0x400, kIgnoreWorld = 0x800,
-                        kTracerAll = 0x1000, kLight = 0x2000, kSwoosh = 0x10000;
+                        kLaserBeam = 0x100, kQuarterSpeed = 0x200, kHoldStates = 0x400, kSolidWater = 0x800,
+                        kTracerAll = 0x1000, kLight = 0x2000, kWeaponLock = 0x4000, kSwoosh = 0x10000;
+// kSolidWater (was kIgnoreWorld): water surfaces stay solid for the sweep (ray mask 520, not 522);
+// it never skips the world — grenades carrying it still explode on walls. Water itself is unmodelled.
 }
 // F3 (flags3) bits, 4.3.
 namespace wf3 {
