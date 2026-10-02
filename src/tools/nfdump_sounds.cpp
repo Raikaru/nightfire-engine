@@ -437,14 +437,28 @@ static std::size_t validate_driving_audio(const std::filesystem::path& gamedir) 
     std::size_t streams = 0, music = 0, speech = 0, stream_blocks = 0, stream_block_seams = 0, stream_block_clicks = 0;
     double music_seconds = 0, speech_seconds = 0;
 
+    // banks.ini is one global file: every mission's copy lists all levels, but each VIV ships only
+    // its own mission's banks (MIS01 the paris set, MIS11 the isap set, ...). A referenced bank must
+    // therefore ship in at least one mission VIV, not necessarily this one.
+    std::set<std::string> shipped;
+    auto normalise = [](std::string s) {
+        for (char& c : s) c = c == '/' ? '\\' : (c >= 'A' && c <= 'Z' ? char(c + ('a' - 'A')) : c);
+        return s;
+    };
+    for (const auto& stem : list_driving_missions(*dir)) {
+        DrivingMission m(*dir, stem);
+        for (const auto& p : m.bank_paths()) shipped.insert(normalise(std::string("data\\audio\\") + p));
+    }
+
     for (const auto& stem : list_driving_missions(*dir)) {
         try {
             DrivingMission m(*dir, stem);
             ++missions;
-            // Every bank of every level exists, its index names real sounds, and every sound decodes.
+            // Every bank of every level ships on the disc, its index names real sounds, and every sound decodes.
             for (const auto& [level, refs] : m.banks_ini().sections) {
                 for (const auto& r : refs)
-                    if (!m.viv().find("data\\audio\\" + r.path)) throw FormatError("level " + level + " lists missing bank " + r.path);
+                    if (!shipped.contains(normalise(std::string("data\\audio\\") + r.path)))
+                        throw FormatError("level " + level + " lists missing bank " + r.path);
             }
             for (const auto& p : m.bank_paths()) {
                 const auto bank = m.bank(p);
@@ -492,14 +506,21 @@ static std::size_t validate_driving_audio(const std::filesystem::path& gamedir) 
             }
             for (const auto& f : m.mix_files()) presets += m.mix_presets(f).size();
             // The engine layers of every level resolve in its Engine bank (a bank may lack some layers).
+            // Levels of other missions (whose banks this VIV does not ship) are skipped: the union check
+            // above already proved the bank exists on the disc.
             for (const auto& [level, refs] : m.banks_ini().sections)
                 for (const auto& r : refs) {
                     if (r.role != "Engine") continue;
+                    if (!m.viv().find(std::string("data\\audio\\") + r.path)) continue;
                     auto index = m.bank_index(r.path);
                     std::size_t found = 0;
                     for (const char* name : {"SFX_IN-idle", "SFX_OUT-idle", "SFX_IN-lowload", "SFX_OUT-lowload", "SFX_IN-hiload",
                                              "SFX_OUT-hiload", "SFX_IN-cruz", "SFX_OUT-cruz"})
                         found += index->lookup(name).has_value();
+                    // Special vehicles (the uw_mis11 submarine, the snowmobile) carry their own layer
+                    // names instead of the car set; the mixer stays silent on the missing voices.
+                    // A partial car set means a broken bank.
+                    if (found == 0) continue;
                     if (found != 8) throw FormatError("level " + level + ": engine bank " + r.path + " lacks idle/lowload/hiload/cruz layers");
                     ++engines;
                 }

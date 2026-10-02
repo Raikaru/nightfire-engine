@@ -1,0 +1,120 @@
+// `nightfire` settings persistence + boot-time disc loading.
+#include "app/app.hpp"
+
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
+
+#include "assets/menu_validate.hpp"
+#include "assets/sp_menu.hpp"
+
+namespace nf::app {
+
+std::filesystem::path config_path() {
+    if (const char* home = std::getenv("HOME"); home && *home)
+        return std::filesystem::path(home) / ".config" / "nightfire" / "nightfire.cfg";
+    return std::filesystem::path("nightfire.cfg");
+}
+
+namespace {
+
+void set_key(AppConfig& c, const std::string& key, const std::string& value) {
+    const int n = std::atoi(value.c_str());
+    const bool b = n != 0;
+    if (key == "sfx_volume") c.sfx_volume = std::clamp(n, 0, 100);
+    else if (key == "music_volume") c.music_volume = std::clamp(n, 0, 100);
+    else if (key == "controller_style") c.controller_style = n;
+    else if (key == "invert_y") c.invert_y = b;
+    else if (key == "vibration") c.vibration = b;
+    else if (key == "auto_aim") c.auto_aim = b;
+    else if (key == "crosshairs") c.crosshairs = b;
+    else if (key == "crouch_toggle") c.crouch_toggle = b;
+    else if (key == "manual_aim") c.manual_aim = b;
+    else if (key == "weapon_auto_switch") c.weapon_auto_switch = b;
+    else if (key == "hud_always_on") c.hud_always_on = b;
+    else if (key == "speaker") c.speaker = std::clamp(n, 0, 2);
+    else if (key == "widescreen") c.widescreen = b;
+    else if (key == "screen_x") c.screen_x = n;
+    else if (key == "screen_y") c.screen_y = n;
+    else if (key == "profile") c.profile = value;
+    else if (key == "difficulty") c.difficulty = std::clamp(n, 0, 2);
+}
+
+}  // namespace
+
+bool load_config(const std::filesystem::path& path, AppConfig& cfg) {
+    std::ifstream in(path);
+    if (!in) return false;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (const auto hash = line.find('#'); hash != std::string::npos) line.resize(hash);
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        set_key(cfg, line.substr(0, eq), line.substr(eq + 1));
+    }
+    return true;
+}
+
+bool save_config(const std::filesystem::path& path, const AppConfig& c) {
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    std::ofstream out(path);
+    if (!out) return false;
+    out << "# nightfire settings (options pages write this back on change)\n";
+    out << "sfx_volume=" << c.sfx_volume << "\nmusic_volume=" << c.music_volume << "\n";
+    out << "controller_style=" << c.controller_style << "\ninvert_y=" << (c.invert_y ? 1 : 0) << "\n";
+    out << "vibration=" << (c.vibration ? 1 : 0) << "\nauto_aim=" << (c.auto_aim ? 1 : 0) << "\n";
+    out << "crosshairs=" << (c.crosshairs ? 1 : 0) << "\ncrouch_toggle=" << (c.crouch_toggle ? 1 : 0) << "\n";
+    out << "manual_aim=" << (c.manual_aim ? 1 : 0) << "\nweapon_auto_switch=" << (c.weapon_auto_switch ? 1 : 0) << "\n";
+    out << "hud_always_on=" << (c.hud_always_on ? 1 : 0) << "\n";
+    out << "speaker=" << c.speaker << "\nwidescreen=" << (c.widescreen ? 1 : 0) << "\n";
+    out << "screen_x=" << c.screen_x << "\nscreen_y=" << c.screen_y << "\n";
+    out << "profile=" << c.profile << "\ndifficulty=" << c.difficulty << "\n";
+    return bool(out);
+}
+
+AppContext::AppContext(const std::string& dir, GameFiles f, Elf32 elf, UiAssets a, MenuFile m, MpData mp, SpMenuData sp,
+                       HudData hud, LevelMusicTable mus)
+    : gamedir(dir),
+      files(std::move(f)),
+      action_elf(std::move(elf)),
+      assets(std::move(a)),
+      menu(std::move(m)),
+      mp_data(std::move(mp)),
+      sp_data(std::move(sp)),
+      hud_data(std::move(hud)),
+      music(std::move(mus)) {}
+
+std::unique_ptr<AppContext> load_context(const std::string& gamedir) {
+    GameFiles files(gamedir);
+    Elf32 elf(read_file(std::filesystem::path(gamedir) / "ACTION.ELF"));
+    UiAssets assets = load_ui_assets(gamedir, files);
+    const GameFile* frontend = files.find(std::string(kFrontEndBin));
+    if (!frontend) throw std::runtime_error("FILES.BIN has no " + std::string(kFrontEndBin));
+    MenuFile menu = load_menu_from_bin(Bytes(files.read(*frontend)));
+    MpData mp = load_mp_data(files, gamedir, assets.strings);
+    SpMenuData sp = load_sp_menu(elf);
+    HudData hud = load_hud_data(elf);
+    LevelMusicTable music(gamedir);
+    return std::make_unique<AppContext>(gamedir, std::move(files), std::move(elf), std::move(assets), std::move(menu),
+                                        std::move(mp), std::move(sp), std::move(hud), std::move(music));
+}
+
+namespace {
+// The original's frame is also our view convention here: Camera looks down
+// -Z at yaw 0 while the player looks down +Z (see nfgame's camera_for).
+constexpr float kPi = 3.14159265358979f;
+}  // namespace
+
+Camera camera_for_eye_yaw_pitch(const Vec3& eye, float yaw, float pitch) {
+    Camera cam;
+    cam.eye = eye;
+    cam.yaw = yaw + kPi;
+    cam.pitch = pitch;
+    return cam;
+}
+
+float camera_aspect(int width, int height) { return float(width) / float(std::max(height, 1)); }
+
+}  // namespace nf::app

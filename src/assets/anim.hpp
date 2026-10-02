@@ -33,6 +33,13 @@ struct Skeleton {
     std::vector<Vec3> offset;               // fixed local translation of bones without translation channels
 };
 
+// Whether a sequence authored for rig `seq_skel` plays on a skin of rig `skin_skel`: the original sizes every
+// pose by the skin's own skeleton (AnimFrameSet reads pSkeletons[skin skeleton] + 2) and never compares rig ids,
+// so clips are interchangeable when they decode identically: same bone count and same translation-channel mask
+// (skeletons 0 and 1 are both 73 bones with identical masks; only the bind offsets differ, and those come from
+// the skin's rig). Mp_kiko_combat (skeleton 1) has only skeleton-0 locomotion clips in its banks.
+bool rig_compatible(const Skeleton& seq_skel, const Skeleton& skin_skel);
+
 // A skinned-mesh or rigid-part reference in a skin. Skinned meshes of weapons use the "sleeve" marker
 // (flag 0x100000 in the hash): the arm mesh is chosen at run time from SleeveEnts.
 struct MeshRef {

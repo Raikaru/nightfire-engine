@@ -188,11 +188,13 @@ void Memory::rollback() {
     for (auto& s : saved_) std::memcpy(s.where, s.bytes.data(), kPageSize);
     saved_.clear();
     std::fill(page_saved_.begin(), page_saved_.end(), u8(0));
+    journal_on_ = false;
 }
 
 void Memory::end_journal() {
     journal_on_ = false;
     saved_.clear();
+    std::fill(page_saved_.begin(), page_saved_.end(), u8(0));
 }
 
 }  // namespace nf::ee

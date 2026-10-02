@@ -86,11 +86,15 @@ static bool road_start(const CarpFile& carp, Vec3& pos, float& yaw) {
 }
 
 DriveSession::DriveSession(DrivingLevel& level, const std::string& car)
-    : collision_(TrackCollision::load(level.carp())),
+    : car_(car),
+      collision_(TrackCollision::load(level.carp())),
       rays_(std::make_unique<Rays>(collision_)),
       camera_ini_(CameraIni::parse(level.read_text("data\\render\\camera.ini"))) {
     // Vehicle model.
     const Attributes attrs = level.vehicle_attributes(car);
+    if (attrs.get_int("IS_SUB", 0) || attrs.get_int("SUB_PHYSICS", 0)) kind_ = PlayerKind::Sub;
+    else if (attrs.get_int("IS_FLYING", 0)) kind_ = PlayerKind::Fly;
+    else if (attrs.get_int("IS_SNOWMOBILE", 0)) kind_ = PlayerKind::Sled;
     const std::string render_name = attrs.get_string("render_filename", car + ".crp");
     std::string stem = render_name.substr(0, render_name.rfind('.'));
     const auto model = level.read_file("data\\car\\model\\" + stem + ".crp");
@@ -122,8 +126,13 @@ DriveSession::DriveSession(DrivingLevel& level, const std::string& car)
         Attributes::parse_flat(level.read_text("data\\tuning\\physics\\rigid\\default.tun")),
         Attributes::parse_flat(level.read_text("data\\tuning\\physics\\physical\\default.tun")));
     const VehicleParams params = VehicleParams::load(attrs);
+    params_ = params;
     wheel_radius_ = params.wheel_radius;
-    vehicle_ = std::make_unique<Vehicle>(params, globals, half);
+    if (kind_ == PlayerKind::Car) vehicle_ = std::make_unique<Vehicle>(params, globals, half);
+    const float top_speed = params.gear_limit[5] > 0 ? params.gear_limit[5] : 60.0f;
+    if (kind_ == PlayerKind::Sub) sub_ = std::make_unique<Submarine>(params, top_speed);
+    if (kind_ == PlayerKind::Fly) fly_ = std::make_unique<Ultralight>(params, top_speed);
+    if (kind_ == PlayerKind::Sled) sled_ = std::make_unique<Snowmobile>(params, top_speed);
     camera_ = std::make_unique<ChaseCamera>(camera_ini_, car);
     half_ = half;
 
@@ -137,9 +146,19 @@ DriveSession::DriveSession(DrivingLevel& level, const std::string& car)
 
 DriveSession::~DriveSession() = default;
 
-Mat4 DriveSession::body_matrix() const { return mul(vehicle_->model_matrix(), translation(body_center_ * -1.0f)); }
+Mat4 DriveSession::player_body_matrix() const {
+    Mat4 dyn;
+    if (kind_ == PlayerKind::Sub) dyn = sub_->model_matrix();
+    else if (kind_ == PlayerKind::Fly) dyn = fly_->model_matrix();
+    else if (kind_ == PlayerKind::Sled) dyn = sled_->model_matrix();
+    else dyn = vehicle_->model_matrix();
+    return mul(dyn, translation(body_center_ * -1.0f));
+}
+
+Mat4 DriveSession::body_matrix() const { return player_body_matrix(); }
 
 Mat4 DriveSession::wheel_matrix(int w) const {
+    if (kind_ != PlayerKind::Car) return player_body_matrix();  // sleds/subs/flyers have no wheels
     const WheelPose& p = vehicle_->wheels()[w];
     // Hub: the suspension attachment point (bottom of the body box), moved by the spring extension.
     const Vec3 attach = vehicle_->body().axes().to_local(p.position - vehicle_->body().position());
@@ -151,24 +170,99 @@ Mat4 DriveSession::wheel_matrix(int w) const {
     return m;
 }
 
+bool DriveSession::has_wheels() const {
+    for (const SceneMesh& w : wheels_)
+        if (!w.batches.empty()) return true;
+    return false;
+}
+
+Vec3 DriveSession::player_position() const {
+    if (kind_ == PlayerKind::Sub) return sub_->position();
+    if (kind_ == PlayerKind::Fly) return fly_->position();
+    if (kind_ == PlayerKind::Sled) return sled_->position();
+    return vehicle_->body().position();
+}
+
+Vec3 DriveSession::player_forward() const {
+    if (kind_ == PlayerKind::Sub) return sub_->forward();
+    if (kind_ == PlayerKind::Fly) return fly_->forward();
+    if (kind_ == PlayerKind::Sled) return sled_->forward();
+    return vehicle_->body().axes().forward;
+}
+
+float DriveSession::player_speed() const {
+    if (kind_ == PlayerKind::Sub) return sub_->speed();
+    if (kind_ == PlayerKind::Fly) return fly_->speed();
+    if (kind_ == PlayerKind::Sled) return sled_->speed();
+    return vehicle_->speed();
+}
+
+float DriveSession::player_rpm() const {
+    if (kind_ == PlayerKind::Sub) return sub_->rpm();
+    if (kind_ == PlayerKind::Fly) return fly_->rpm();
+    if (kind_ == PlayerKind::Sled) return sled_->rpm();
+    return vehicle_->rpm();
+}
+
+CameraTarget DriveSession::player_camera_target() const {
+    if (kind_ == PlayerKind::Sub) return sub_->camera_target();
+    if (kind_ == PlayerKind::Fly) return fly_->camera_target();
+    if (kind_ == PlayerKind::Sled) return sled_->camera_target();
+    return vehicle_->camera_target();
+}
+
+Submarine& DriveSession::sub() { return *sub_; }
+Ultralight& DriveSession::fly() { return *fly_; }
+Snowmobile& DriveSession::sled() { return *sled_; }
+
+void DriveSession::set_player_damage(float grip_front, float grip_rear, float drag) {
+    if (kind_ == PlayerKind::Car) vehicle_->set_damage_state(grip_front, grip_rear, drag);
+}
+
+void DriveSession::trigger_player_boost() {
+    if (kind_ == PlayerKind::Car) vehicle_->enable_rocket_boost();
+    else if (kind_ == PlayerKind::Sub) sub_->set_boost(3.0f);
+    else if (kind_ == PlayerKind::Fly) fly_->set_boost(3.0f);
+    else sled_->set_boost(3.0f);
+}
+
 void DriveSession::tick(const PadState& pad) {
     pad_.push(pad);
     const PadActions actions = actions_from_pad(pad_);
-    vehicle_->step(actions.drive, collision_);
+    const FlightInput flight{actions.drive.steer, pad_stick_axis(pad_.now.ly), actions.drive.gas,
+                             actions.drive.brake};
+    if (kind_ == PlayerKind::Sub) sub_->step(flight, collision_);
+    else if (kind_ == PlayerKind::Fly) fly_->step(flight, collision_);
+    else if (kind_ == PlayerKind::Sled) sled_->step(actions.drive, collision_);
+    else vehicle_->step(actions.drive, collision_);
     if (actions.change_camera) camera_->cycle_view();
     camera_->set_look_back(actions.look_back);
-    camera_pose_ = camera_->update(vehicle_->camera_target(), rays_.get());
+    camera_pose_ = camera_->update(player_camera_target(), rays_.get());
     ++ticks_;
 }
 
 void DriveSession::place_at_start(const Vec3& position, float yaw) {
     Vec3 p = position;
-    GroundHit ground;
-    if (collision_.ground_below({p[0], p[1] + 3.0f, p[2]}, ground)) p[1] = ground.point[1];
-    p[1] += half_[1] + vehicle_->params().spring_rest_length + 0.2f;
-    vehicle_->reset(p, yaw);
-    camera_->reset(vehicle_->camera_target());
-    camera_pose_ = camera_->update(vehicle_->camera_target(), rays_.get());
+    if (kind_ == PlayerKind::Sub) {
+        sub_->reset(p, yaw);  // swim paths (rs) already run at water depth
+    } else if (kind_ == PlayerKind::Fly) {
+        GroundHit ground;
+        if (collision_.ground_below({p[0], p[1] + 3.0f, p[2]}, ground)) p[1] = ground.point[1];
+        p[1] += 40.0f;  // airborne start [INFERENCE]
+        fly_->reset(p, yaw);
+    } else if (kind_ == PlayerKind::Sled) {
+        GroundHit ground;
+        if (collision_.ground_below({p[0], p[1] + 3.0f, p[2]}, ground)) p[1] = ground.point[1];
+        p[1] += 0.5f;  // sled ride height
+        sled_->reset(p, yaw);
+    } else {
+        GroundHit ground;
+        if (collision_.ground_below({p[0], p[1] + 3.0f, p[2]}, ground)) p[1] = ground.point[1];
+        p[1] += half_[1] + vehicle_->params().spring_rest_length + 0.2f;
+        vehicle_->reset(p, yaw);
+    }
+    camera_->reset(player_camera_target());
+    camera_pose_ = camera_->update(player_camera_target(), rays_.get());
 }
 
 }  // namespace nf::driving

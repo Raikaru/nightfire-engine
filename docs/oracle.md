@@ -51,9 +51,10 @@ Check which executable is resident by comparing RAM at `0x107100` with the ELF's
 segment: the first story mission (Paris Prelude) runs `DRIVING.ELF`; multiplayer and FPS
 missions run `ACTION.ELF`.
 
-Stop PCSX2 by closing its window (`xdotool search --name '007 - Nightfire' windowclose`), not with
-`kill`: v2.8.2 segfaults during teardown on SIGTERM (seen once; savestates written earlier were
-unaffected).
+Stop PCSX2 by closing its window with `tools/oracle/stop_pcsx2.sh` (KDE Wayland: there is no X
+display, so `xdotool` cannot see the window; the script runs a one-shot KWin script that calls
+`closeWindow()`), not with `kill`: v2.8.2 segfaults during teardown on SIGTERM (seen once;
+savestates written earlier were unaffected). Close it as soon as a recording session ends.
 
 ## Getting to a traceable state
 
@@ -122,7 +123,11 @@ action floats match to 1.2e-7 and the flag bytes match except around frames the 
 - **Resting contact noise.** A capsule resting exactly on the floor is tangent to within float rounding
   (`dist == 0.55 +- 1 ulp`); the game's ground bit flickers on this every ~4 frames when crouched, ours on
   slightly different frames, and the gravity step that follows is 2.7 mm. It is invisible standing, but
-  makes the free-run column of `crouch` unpredictable.
+  makes the free-run column of `crouch` unpredictable. Deeper cause found by nfmips frame diff (see
+  docs/gameplay.md "Assumptions and gaps"): where two placements' floors overlap, our broadphase (no
+  cel-chain culling) tests a triangle the game never sees, and its push lifts us centimetres above the
+  game's rest height. Jump takeoff itself matches exactly (`WldGravity * -0.4`, delay 4, verified against
+  the instruction stream), so the jump column is clean once re-recorded without missed tracer frames.
 - **Chaotic contact.** In the free runs the error grows where the capsule slides over the lip near the top of
   the walk ramp (sub-millimetre per-frame differences amplify to 2-3 cm); the synced runs show the per-frame
   error there is < 1 cm.

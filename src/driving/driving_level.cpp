@@ -7,14 +7,16 @@ namespace nf::driving {
 
 const std::vector<LevelDesc>& driving_levels() {
     // Mission archives; names follow the track data (Paris prelude, Alps chase, ...).
+    // Default cars are the Bond-driven vehicles (MSet name + AIC_BOND_POS/IS_* markers;
+    // underwater/flying missions need their sub/flight dynamics, see DriveSession::kind).
     static const std::vector<LevelDesc> levels = {
         {"paris", "MIS01", "paris_mis01", "vanquish"},
-        {"alps", "MIS3", "snow1a_mis3", "paris_hench"},
+        {"alps", "MIS3", "snow1a_mis3", "supersnow"},
         {"alps2", "MIS4", "snow2a_mis4", "vanquishalps"},
-        {"underwater", "MIS11", "uw_mis11", ""},
-        {"jungle1", "MIS13A", "junglea_mis13a", "jungle_hench"},
-        {"jungle2", "MIS13B", "jungleb_mis13b", "jungle_hench"},
-        {"jungle3", "MIS13C", "junglec_mis13c", "jungletank"},
+        {"underwater", "MIS11", "uw_mis11", "vanquishsub"},
+        {"jungle1", "MIS13A", "junglea_mis13a", "jungle_truck"},
+        {"jungle2", "MIS13B", "jungleb_mis13b", "ultralight"},
+        {"jungle3", "MIS13C", "junglec_mis13c", "ultralightbig"},
         {"race", "RACE", "snow2a_race", "cobra_player"},
     };
     return levels;

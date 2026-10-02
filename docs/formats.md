@@ -309,6 +309,9 @@ Level bin entry type 8: the front end has `08000002` (52 pages usable on the PS2
 identical `08000001` (pause, end of mission, NIS, tweaks; 9 pages, menu ids `0x80000002/3/4`). The token stream is
 documented in `assets/menu_file.hpp`; `nf::parse_menu_file` reads it and `nf::load_menu_from_bin` finds the entry.
 `MenuManager_Create(menu_id, first_page, ..)` keeps only the pages of its menu id and platform byte 0/3 (the PS2).
+This reimplementation creates every page of the file instead: the game navigates pause (`0x80000002`) ->
+`P_ENDMISSION` (`0x80000004`) -> mission select through one manager, and `Menu_GetPage` searches the whole file.
+How the original crosses the menu boundary there (a second manager or an unfiltered lookup) is unknown.
 
 **Coordinates.** Everything is authored for 640x480 and `FixupResolution` (controls and keyframes) maps it into the
 512x448 draw buffer (the display stretches x by 1.25):
@@ -442,6 +445,12 @@ the header. Per bone the channels are, in order, `tx ty tz` (only when the skele
 translation is `skeleton.offset * scale`), `qx qy qz`: `qz` carries the sign of `w` (`qz + 4` when `w < 0`),
 `w = +-sqrt(1 - x^2 - y^2 - z^2)`. Bones the skin marks inactive are skipped. Frames are integers; `AnimFrameSet`
 blends frame `f` and `f + 1` (translation lerp, `Quat_Slerp_Acc` for rotation).
+Rig interchange: `AnimFrameCopy` sizes everything by the *sequence's* skeleton id (no rig check anywhere on the
+play path), so a clip plays on any skin whose rig decodes it identically: no more bones, same translation mask
+over those bones (`rig_compatible` / `CharacterBank::clip_fits_skin`). Skeletons 0 and 1 are both 73 bones with
+identical masks (only bind offsets differ), so skeleton-1 skins (Mp_kiko_combat) play skeleton-0 locomotion.
+All weapon families match exactly (P2K skin/scripts are skeleton 2, PP7 skeleton 39); fewer-bone clips on a
+more-bone rig are additionally tolerated, with the extra bones held at bind pose.
 
 ### Script (`AnimProcessScriptData`, `AnimProcessScriptCmds`, entry type 5)
 
@@ -577,25 +586,45 @@ for each light i:  d = TLight_i - P;  a = max(1/|d|^2 - TColor_i.w, 0);  L_i = m
 RGB = min(255, TAmbient.rgb * vertexRGB(255) + TColor_0.rgb * L_0 + TColor_1.rgb * L_1);  A = TAmbient.a * 128
 ```
 (`ERSADD` gives `1/|d|^2`, `MFP` reads it back; the colour is `FTOI0`ed into RGBAQ and the GS modulates the texture with it:
-`0x80` = 1.0). `ROTATE_FAST` (no lights) and `ROTATE_TWEEK` (tint only) are the same without the light terms. With the default tint
-of 1.0 the base colour is already 255 (about twice the texture), so lights only change the picture of objects tinted below 1.
-`nfview` reproduces this per vertex (`CharacterLighting`: lights + tint).
+`0x80` = 1.0). `ROTATE_FAST` (no lights) and `ROTATE_TWEEK` (tint only) are the same without the light terms. Fresh objects
+are 0xFF/0xFF, and `(255*255)>>8 = 254`, so the default tint is 254/255 (base colour ~254, about twice the texture);
+lights only change the picture of objects tinted below that. `nfview` reproduces this per vertex (`CharacterLighting`:
+lights + tint + alpha).
 
 Ambient (tint) writers, `Lights_CalcAmbientLight` / `View_SetupRenderModes_Tweak`: an object with flag `0xF0 & 0x800` (assumed
 for characters) keeps the light level of its current room cel in obj+0x100..0x102 (0xFF at creation) and steps it every tick
-towards the cel's colour with `ClrStep` (10 % of the difference, at least 1 either way). The tint fed to `psiSetTweakARGB` is
-`(obj+0x103..0x105 * level) >> 8` (obj+0x103.. = 0xFF by default). The cel's colour is set by `parseentity_fixup_entity` for
-the room cels of the map, static instances of class `0xC023` / `0xC047` (flags `0x40000` in the cel; the pieces are placed at
-identity, bounding box = the model's root box): params 0/1/2 = R/G/B bytes (all zero -> 60 each), 5 = light-switch channel,
-6/7/8 = the colour while that switch is off (`switch_channels`, all on by default); `build_FindCel` picks the room whose box
-contains the object (where several do it casts a ray to choose; `CharacterBank::ambient_at` takes the smallest box).
+towards the cel's colour with `ClrStep` (10 % of the difference, at least 1 either way). `Script_SetColour`/`SP_SetColour`
+write the tweak (obj+0x103..0x105, 0xFF by default); fades and drone deaths drive the alpha (obj+0x106, 0x80 opaque). The tint
+fed to `psiSetTweakARGB` is `(tweak * level) >> 8` with the ambient path, else the raw tweak. The cel's colour is set by
+`parseentity_fixup_entity` for the room cels of the map, static instances of class `0xC023` / `0xC047` (flags `0x40000` in
+the cel; the pieces are placed at identity, bounding box = the model's root box): params 0/1/2 = R/G/B bytes (all zero
+-> 60 each), 5 = light-switch channel, 6/7/8 = the colour while that switch is off. `build_FindCel` gathers the cels whose
+box contains the object (at most 64, original order): one candidate wins directly, otherwise a ray from the point 256 up
+and 256 down is tested against each candidate cel's geometry (`Collide_RayIntersect`) and the cel with the nearest hit wins
+(256+ counts as a miss, no hits = first candidate). `CharacterBank::find_cel` is that, with the ray supplied by the caller
+(`nfview` tests each candidate's own placement through `CollisionWorld`); without a ray the smallest box wins. A cel whose
+switch channel is nonzero shows its off colour (the disc's only switched cel is 07000046 channel 30: 60,60,60 -> 0,0,0).
 Skyrail's start cel is (38, 64, 88) -> tint 0.15/0.25/0.34, the interiors of the story missions are ~(40, 30, 26).
-`ObjectAmbient`, `CharacterBank::light_zones()/ambient_at()`; `nfview --at-start` / `--at x,y,z` draw the level and stand the
-character in it with this tint and the closest lights.
+`ObjectAmbient` (+ `set_tweak`/`set_alpha`), `SwitchChannels`, `CharacterBank::light_zones()/find_cel/ambient_at()`;
+`nfview --at-start` / `--at x,y,z` draw the level and stand the character in it with this tint and the closest lights.
 
-Not implemented: muzzle-flash lights created at run time (script event 7), `switch_channels` state changes, the ray test of
-`build_FindCel` for overlapping rooms, and tint writers other than the ambient (`Script_SetColour`, fades).
-(muzzle flashes `Light_Create` in script event 7).
+Runtime lights (`Light_Create`, `Light_Update`, `LightList`): muzzle flashes (`Player_MuzzleFlash`: the weapon's flash
+radius and colour, brightness 2.0, 1 tick, type 1), explosion and bullet lights, script lights (`Script_LightStart`) and
+searchlights. Life counts down per tick (0 = infinite); a nonzero channel gates `enabled` off `switch_channels`; type 0
+needs object flag 0x80 and type 1 is skipped when flag 0x100 is set. Map radiators (block 0x26) enter the same list as
+infinite type-0 lights (`Light_SetAmbientRadiators`), so `Lights_CalcClosestLights` sorts map + runtime lights together by
+`distance / (radius / 2)` and `psiLight_SetLights` uploads the first two. `DynamicLights` is that list (`create`/`muzzle`,
+`update`, `lights_for`); `nfview --flash` adds a muzzle-flash light at the character. Fades that cover the screen
+(`Script_FadeStart` -> `Camera_SetFade`) are a viewer-side overlay, not an object tint.
+
+Environment mapping (box 0 flags +0x34 bit 0, read by `FillMatrixChainRot`; 876 models on the disc: weapon metal,
+heads, glass, gadgets): the VU program builds ST from the camera axes instead of the vertex UVs. `FillMatrixChainSkin`
+always uploads two vectors with a 0.5 bias (VU data qw 16/17); the rigid path uploads them only for flagged models.
+The vectors are viewer view-matrix rows 0/1 (viewer_tag+0x120 is a matrix: `MatrixBond2PS2_2(viewer+0x120)` in
+`PS2WorldViewVU1Kick2`), i.e. unit camera axes, scaled by 1/256 (`* 0.00390625`). The sweep is tiny on purpose:
+each surface samples near its texture's centre texel (matte finish: gold stays gold, glass stays tinted, faces stay
+skin). The skinned path has its own VU variant (flagged skinned meshes exist, e.g. grunt heads). `model_envmapped`,
+`SkinnedMesh`/`GfxMesh::envmap`; the renderer shades flagged meshes with `ST = (N.R, N.U) + 0.5` from the uploads.
 
 ## Sound: banks, music, streams
 
@@ -712,15 +741,31 @@ stream indices sound banks reference). `data_size` can run into the next clip: a
 end-flag frame (+ the silent frame). Header = the music marker header (1 section, markers `0` and `9`; the end
 marker is within one frame before the end frame). Data: mono ADPCM at 22050 Hz (`StartSample`: pitch 1881).
 
+### Dialogue subtitles (`Sound_DoSubtitle`, `Snd2Lbl`)
+
+`Snd2Lbl` (ACTION.ELF, 484 x `{u32 text label, u32 SFX id}`) maps dialogue effects to text labels.
+When a `DynamicSound` starts audibly (`Sound_UpdateSounds`, flag +82: always for 2D sounds, within
+half the outer radius for `cull_far` 3D sounds), the label is shown as a HUD message of type 4
+(`Text_AddMsg(-1, 0xFF, 4, Txt_BindLabel(label & 0x7FFFFFFF), 0, duration)`). Labels with the high
+bit set show even when the `dword_2A37C8` gate (ELF init 0, the options-menu subtitles setting) is
+off. 13 of the 484 labels are forced; the rest need the setting.
+
 ### Map block 0x28 (`Sound_LoadMapSounds`, `HandleMapSoundAllocation`)
 
 `u32 count` (<= 50), then 32-byte records: `u32 0; u32 id | flags (id = low 20 bits; 0x40000000 common);
 f32 position[3]; f32 volume (100); f32 radius; f32 inner radius`. Each is started as a 3D sound while the
 listener is within `radius` and stopped beyond 1.2 x `radius`. A record with everything zero is an empty
-placeholder.
 
-Driving levels (`DRIVING/*.MUS|.VIV|.SPE` on the disc) use the same IOP library with other file names; they
-are not part of the extracted `PS2/` tree and are not read here.
+Driving levels (`<gamedir>/DRIVING/*.MUS|.VIV|.SPE`, EA library via `MODULES/SNDDRV.IRX`, not `SFX.IRX`):
+loaders `src/assets/driving_audio.{hpp,cpp}`, mixer `src/audio/{driving_mixer,engine_sound}.{hpp,cpp}`.
+`MISxx.VIV`/`MISC.VIV`/`RACE.VIV` are BIGF archives (`src/assets/big_archive.*`, entries RefPack-compressed):
+`data\audio\banks.ini` (one global file in every VIV: `[level]` sections of `Role=path` lines; each VIV
+ships only its own mission's banks), `*.bnk` sample banks + `.h` name indices, `data\audio\*.ini` mix
+presets (`Name = volume, group`, group optional). `MISxx.MUS` / `MISxxEN.SPE` are BIGF archives of `*.asf`
+SCHl streams (music/speech). Sample banks hold SPU ADPCM and EA-XA (`decxa16c`) sounds with an EA "PT"
+property header (`u8 platform = 5`, tags to `0xFF`; values over 8 bytes, e.g. tag `0x14`'s 24-byte "CNYS"
+sync word in stream headers, are skipped). The engine voice (`AVehicle/AEngine/APlayerVehicle::Play`)
+layers idle/load/hiload/cruz samples with rpm-smoothed pitch `(rpm + 2000) / engine_pitch_scale`.
 
 ## Multiplayer data (arena setup)
 
@@ -761,7 +806,11 @@ controls (`Menu_UpdateWheel`, `Menu_SelectItemInControl`, `Menu_GetItemFromHash`
 Bit 29 (`0x20000000`) = team game (copied to `MPSettings+0x18c` by `MP_Init`), bit 30 (`0x40000000`) = the score comes
 from the objective, not from kills (`MPSettings+0x190`; `MP_PlayerKilled` only adds kill points while it is 0).
 `mp_options`: Continue, AI Bots, Game Rules, Player Mods, Enviro-Mods. `mp_bots` (used with `SendMessage 0x27` = last
-index 4): Continue + "Setup Bot 1..16" (the page only uses four).
+index 4): Continue + "Setup Bot 1..16" (the page only uses four). `cn_options` (0x2dfc28, 7 rows: the P_CNMENU hub
+wheel, C_SBCNOPTIONS rows 0..5 open pages 0x20/0x22/0x3e/0x2d/0x2e/0x31, row 6 saves) and `ds_options` (0x2dfcd0,
+4 rows: the P_DOSSIER hub wheel, C_SBDOSSIER rows 0..3 open 0x3a/0x3b/0x3c/0x3d) share the layout; so do `sp_level`
+(0x2df2e0, 12: value = level id, only the first two missions enabled on a fresh save) and `difficulty` (0x2df4c0,
+3: value = GameState difficulty 1..3).
 
 Characters (29, index = `value`): 0 Bond, 1 Drake, 2 Rook, 3 Kiko, 4 Alura, 5 Dominique, 6 Snow Guard, 7 Black Ops,
 8 Yakuza, 9 Phoenix Commando, 10 Phoenix Soldier, 11 Ninja (enabled at boot), then reward characters 12 Bond Tux,

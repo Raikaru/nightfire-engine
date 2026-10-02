@@ -59,6 +59,16 @@ public:
     std::optional<std::uint32_t> sfx_id(std::string_view name) const;
     const SfxDefaults* sfx_defaults(std::uint32_t id) const;
 
+    // Snd2Lbl (484 x {u32 text label hash, u32 SFX id} in ACTION.ELF): Sound_DoSubtitle shows the
+    // label as a HUD subtitle (type 4) when the effect starts. Labels with the high bit set show
+    // even when subtitles are disabled (dword_2A37C8 == 0).
+    struct SubtitleEntry {
+        std::uint32_t label;  // text label hash (Txt_BindLabel), high bit = show regardless
+        std::uint32_t sfx;    // SFX id that triggers it
+        bool forced() const { return label & 0x80000000u; }
+    };
+    const SubtitleEntry* subtitle_for_sfx(std::uint32_t id) const;
+
     const std::filesystem::path& root() const { return root_; }
 
 private:
@@ -73,6 +83,7 @@ private:
     std::vector<StreamEntry> streams_;
     std::vector<std::pair<std::uint32_t, std::string>> names_;
     std::vector<SfxDefaults> defaults_;
+    std::vector<SubtitleEntry> subtitles_;
 };
 
-}  // namespace nf
+}

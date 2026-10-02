@@ -11,7 +11,7 @@
 #include "game/damage.hpp"
 #include "game/projectiles.hpp"
 #include "game/world.hpp"
-
+namespace nf { struct HudState; }   // ui/hud.hpp; defined there, filled by fill_hud for the UI slice.
 namespace nf {
 
 // Weapon animation object states (`obj+244` of BLData+2024, docs/spec-weapons.md 6.1).
@@ -169,6 +169,10 @@ public:
     int ammo_pool(int slot, int ammo_type) const;
     bool aiming(int slot) const;
     float zoom(int slot) const;                            // current zoom factor (BLData+2256)
+    // Fills the weapon/aiming/ammo fields of the HUD state for the UI slice (HUD_UpdateAmmoPane,
+    // HUD_UpdateCrossHair): weapon in hand / being switched to, clip + reserve, aim/zoom/scope, crosshair
+    // row, damage flash. Needs ui/hud.hpp where defined; no link dependency (plain data).
+    void fill_hud(int slot, HudState& hud) const;
     ViewModel viewmodel(int slot) const;
     const PlayerWeapons* state(int slot) const;
     PlayerWeapons* state(int slot);
@@ -239,7 +243,10 @@ private:
     void spawn_projectile(const Shooter& shooter, const WeaponDef& def);
     void step_projectiles(World& world, FrameTiming timing);
     bool step_projectile(Projectile& b, World& world, FrameTiming timing, const std::vector<Victim>& victims);
-    SegmentHit trace_segment(const World& world, const Vec3& from, const Vec3& to, int owner, bool ignore_world,
+    Projectile* find_guided(int owner);              // live guided (F2 & 0x4) projectile of `owner`, if any
+    void detonate_owned(int owner, int weapon_id);  // explode every live projectile of the pair (detonators)
+    void update_owner_locks(World& world);           // guided / weapon-lock projectiles freeze their owner
+    SegmentHit trace_segment(const World& world, const Vec3& from, const Vec3& to, int owner,
                              const std::vector<Victim>& victims) const;
     void bullet_hit(Projectile& b, const SegmentHit& hit, const WeaponDef& def, const Vec3& dir);
     void hurt_victim(int victim_id, const HitInfo& hit);

@@ -27,13 +27,15 @@ uniform vec3 u_light_pos[2];        // world space (TLight)
 uniform vec3 u_light_col[2];        // TColor0/1 rgb, 0..255 (colour * intensity)
 uniform float u_light_inv_r2[2];    // TColor0/1 w = 1 / radius^2
 uniform vec3 u_tint;                // TAmbient rgb, 0..1
+uniform vec3 u_cam_right;           // camera right in world space (PS2Viewer view row 0)
+uniform vec3 u_cam_up;              // camera up in world space (view row 1)
+uniform float u_env;                // model box flag: ST from the camera axes, not the vertex UVs
 out vec2 v_uv;
 out vec3 v_color;                   // GS RGBAQ / 128: 1.0 = texture unchanged, 255 -> ~2.0
 void main() {
     mat4 m0 = u_bones[int(a_bone.x + 0.5)], m1 = u_bones[int(a_bone.y + 0.5)];
     vec4 p = vec4(a_pos, 1.0);
     vec3 skinned = a_weight * (m0 * p).xyz + (1.0 - a_weight) * (m1 * p).xyz;
-    v_uv = a_uv;
     gl_Position = u_mvp * vec4(skinned, 1.0);
 
     // _$ROTATE_LIGHT (VU1): colour = tint * vertex colour (255) + sum_i TColor_i * max(a_i * (N . d_i), 0) with
@@ -41,6 +43,9 @@ void main() {
     // clamped to 255 before the GS modulates the texture with it (0x80 = 1.0).
     vec3 world = (u_world * vec4(skinned, 1.0)).xyz;
     vec3 n = mat3(u_world) * (mat3(m0) * a_normal) * (127.0 / 128.0);
+    // Environment-mapped models (box 0 flags bit 0): the VU program builds ST from the camera axes
+    // (FillMatrixChainRot/Skin upload them with a 0.5 bias) instead of the vertex UVs.
+    v_uv = mix(a_uv, vec2(dot(n, u_cam_right), dot(n, u_cam_up)) + 0.5, u_env);
     vec3 colour = u_tint * 255.0;
     for (int i = 0; i < u_lights; ++i) {
         vec3 d = u_light_pos[i] - world;
@@ -55,11 +60,12 @@ const char* kFragmentShader = R"(#version 330 core
 in vec2 v_uv;
 in vec3 v_color;
 uniform sampler2D u_tex;
+uniform float u_alpha;      // TweakA (obj+0x106): fades and drone deaths drive it, 0x80 = 1.0
 out vec4 o_color;
 void main() {
     vec4 c = texture(u_tex, v_uv);
     if (c.a < 0.25) discard;
-    o_color = vec4(min(c.rgb * v_color, vec3(1.0)), c.a);
+    o_color = vec4(min(c.rgb * v_color, vec3(1.0)), c.a * u_alpha);
 }
 )";
 
@@ -114,6 +120,10 @@ CharacterRenderer::CharacterRenderer(CharacterBank& bank) : bank_(bank) {
     u_lights_ = glGetUniformLocation(program_, "u_lights");
     u_world_ = glGetUniformLocation(program_, "u_world");
     u_tint_ = glGetUniformLocation(program_, "u_tint");
+    u_alpha_ = glGetUniformLocation(program_, "u_alpha");
+    u_env_ = glGetUniformLocation(program_, "u_env");
+    u_cam_right_ = glGetUniformLocation(program_, "u_cam_right");
+    u_cam_up_ = glGetUniformLocation(program_, "u_cam_up");
     for (int i = 0; i < 2; ++i) {
         const std::string n = "[" + std::to_string(i) + "]";
         u_light_pos_[i] = glGetUniformLocation(program_, ("u_light_pos" + n).c_str());
@@ -166,6 +176,7 @@ CharacterRenderer::GpuMesh& CharacterRenderer::skinned_mesh(ModelRef ref) {
         if (gb.count) out.batches.push_back(gb);
     }
     if (mesh.morph_targets) out.morph_source = &mesh;
+    out.envmap = mesh.envmap;
     if (!verts.empty()) upload(out, std::move(verts));
     return out;
 }
@@ -187,6 +198,7 @@ const CharacterRenderer::GpuMesh& CharacterRenderer::part_mesh(ModelRef ref, std
         }
         if (gb.count) out.batches.push_back(gb);
     }
+    out.envmap = mesh.envmap;
     if (!verts.empty()) upload(out, std::move(verts));
     return out;
 }
@@ -210,13 +222,19 @@ void CharacterRenderer::apply_morph(GpuMesh& mesh, const MorphSelection& sel) {
     mesh.applied_valid = true;
 }
 
-void CharacterRenderer::draw_mesh(const GpuMesh& mesh) {
+void CharacterRenderer::draw_mesh(const GpuMesh& mesh, bool fade) {
     if (!mesh.vao) return;
-    glBindVertexArray(mesh.vao);
+    glUniform1f(u_env_, mesh.envmap ? 1.0f : 0.0f);
     for (const auto& b : mesh.batches) {
         const Material& m = *b.material;
         glBindTexture(GL_TEXTURE_2D, b.texture);
-        if (m.blend.enabled) {
+        // Fades (TweakA < 0x80) force standard blending over the material's own mode, as the GS does: the
+        // tweak alpha modulates every pixel including opaque ones.
+        if (fade) {
+            glEnable(GL_BLEND);
+            glBlendEquation(GL_FUNC_ADD);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        } else if (m.blend.enabled) {
             glEnable(GL_BLEND);
             glBlendEquation(blend_equation(m.blend.op));
             glBlendFuncSeparate(blend_factor(m.blend.src), blend_factor(m.blend.dst), GL_ONE, GL_ZERO);
@@ -243,6 +261,16 @@ void CharacterRenderer::draw(const Camera& cam, float aspect, const SkinDef& ski
     glUniformMatrix4fv(u_world_, 1, GL_FALSE, model.data());
     glUniform1i(u_lights_, GLint(lighting.lights.count));
     glUniform3f(u_tint_, lighting.tint[0], lighting.tint[1], lighting.tint[2]);
+    glUniform1f(u_alpha_, lighting.alpha);
+    const bool fade = lighting.alpha < 1.0f;
+    // Environment mapping (box 0 flags bit 0): the VU program builds ST from these uploads. FillMatrixChainRot /
+    // FillMatrixChainSkin upload viewer view-matrix rows 0/1 (unit camera axes: viewer_tag+0x120 is a matrix,
+    // see MatrixBond2PS2_2 in PS2WorldViewVU1Kick2) scaled by 1/256 with a 0.5 bias, reproduced here verbatim:
+    // the sweep is tiny on purpose, pinning each surface near its texture's centre texel (matte finish).
+    const Vec3 right = cam.right(), raw_up = cross(right, cam.forward());
+    const float up_len = std::sqrt(dot(raw_up, raw_up));
+    glUniform3f(u_cam_right_, right[0] / 256.0f, right[1] / 256.0f, right[2] / 256.0f);
+    glUniform3f(u_cam_up_, raw_up[0] / up_len / 256.0f, raw_up[1] / up_len / 256.0f, raw_up[2] / up_len / 256.0f);
     for (unsigned i = 0; i < lighting.lights.count; ++i) {
         const MapLight& l = lighting.lights.light[i];
         glUniform3f(u_light_pos_[i], l.position[0], l.position[1], l.position[2]);
@@ -256,14 +284,14 @@ void CharacterRenderer::draw(const Camera& cam, float aspect, const SkinDef& ski
         if (auto m = bank_.find_model(bank_.resolve_skinned(ref, sleeve))) {
             GpuMesh& mesh = skinned_mesh(*m);
             apply_morph(mesh, morph);
-            draw_mesh(mesh);
+            draw_mesh(mesh, fade);
         }
 
     // Rigid parts are modelled in their bone's space and ride its world matrix.
     glUniformMatrix4fv(u_bones_, GLsizei(palette.world.size()), GL_FALSE, palette.world[0].data());
     for (const auto& ref : skin.parts)
         if (ref.hash != 0xFFFFFFFFu)
-            if (auto m = bank_.find_model(ref.hash)) draw_mesh(part_mesh(*m, ref.bone));
+            if (auto m = bank_.find_model(ref.hash)) draw_mesh(part_mesh(*m, ref.bone), fade);
 }
 
 void CharacterRenderer::bounds(const SkinDef& skin, unsigned sleeve, Vec3& lo, Vec3& hi) {

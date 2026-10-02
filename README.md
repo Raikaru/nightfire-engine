@@ -35,7 +35,9 @@ SDL3 is fetched and built statically. Needs a C++20 compiler and OpenGL 3.3.
 - `build/nfview <gamedir> --char <model name | skin hash> [level.bin] [--anim id] [--frame f] [--sleeve n]
   [--yaw a --pitch b --dist d] [--shot out.bmp]`: skinned character / first-person weapon / prop preview
   (bind pose, or a sequence `04xxxxxx` / script `06xxxxxx`; drag to orbit, wheel to zoom, Space pauses,
-  arrows step; `--facial id --look h,v --blend-to id --set Handgun --speed s --light-at n --tint r,g,b` exercise the rest). `nfdump <gamedir> chars [level.bin [skin]]` lists skins, skeletons and animation ids.
+  arrows step; `--facial id --look h,v --blend-to id --set Handgun --speed s --light-at n --tint r,g,b --flash --fade a`
+  exercise the rest: `--flash` adds a muzzle-flash light at the character, `--fade` sets the object alpha).
+  `nfdump <gamedir> chars [level.bin [skin]]` lists skins, skeletons and animation ids.
 - `build/nfdump <gamedir> sounds [banks|bank <slot>|music [n]|streams|maps]` lists sound banks, effects, music sections
   and level sound emitters; `validate` also decodes every SPU2 ADPCM sample, music track and stream.
   `build/nfplay <gamedir> sfx <bank> <index> | sfx-name <SFX_..> | stream <n> | music <n> [--wav out.wav]` plays or
@@ -57,12 +59,22 @@ SDL3 is fetched and built statically. Needs a C++20 compiler and OpenGL 3.3.
   play a level in first person with the original's player movement and collision (`docs/gameplay.md`).
   Click to capture the mouse, WASD walk/strafe, mouse look (arrow keys / PageUp/Down also turn/look), Space jump,
   C or Left Ctrl crouch, K collision wireframe, Esc release/quit. Gamepad: left stick walk/strafe, right stick
-  look, A jump, B or left trigger crouch. The simulation runs at a fixed 30 Hz with an interpolated camera.
+  look, A jump, B or left trigger crouch. Left mouse fire, right mouse aim/zoom (wheel zooms, else cycles guns),
+  R reload, Tab fire mode, E/Q next/previous gadget. Full arsenal (firing, spread, recoil, reload, alt-fire,
+  scopes, grenades/rockets/explosions, melee, Q-gadgets) with viewmodels, muzzle flash, impact decals and
+  sounds (`docs/gameplay.md` "Weapons"); `--script file --events` drives scripted weapon tests headless.
   `--inputs`/`--trace`/`--frames` give headless deterministic replays of recorded PCSX2 sessions.
 - `build/nfdrive <gamedir> [paris|alps|alps2|underwater|jungle1|jungle2|jungle3|race] [--car name]
   [--shot out.bmp [--frames N] [--inputs file]]`: drive a driving mission (`DRIVING.ELF` side) with the original
   60 Hz vehicle physics, track collision and chase camera. W/S gas/brake, A/D steer, Space handbrake, C camera,
   Q look back (gamepad: DualShock 2 layout), Esc quit; `--shot` runs headless (`docs/driving.md`).
+- `build/nightfire <gamedir> [--mission level.bin] [--mp ...] [--drive name] [--frames N] [--shot out.bmp]`:
+  the playable game. With no session flags it boots the frontend (title -> main menu -> mission / arena /
+  options) and launches single-player ACTION missions (world, NPCs, HUD, SFX + music, pause, end-mission),
+  multiplayer arena matches with bots (split screen, per-viewer HUD, pause, debriefing) or driving missions
+  (chase camera, HUD, pause, win/lose banners), then returns to the frontend. Settings persist in
+  `~/.config/nightfire/nightfire.cfg`. Direct flags start a session without the menus (`--mp` takes the
+  nfgame option set); `--frames`/`--shot`/`--inputs`/`--press` run headless for verification.
 - `tools/oracle/`: PCSX2 PINE client, virtual pad, per-frame player + pad tracer, `compare.py` and
   `run_scenarios.sh` (replay vs oracle error report; `docs/oracle.md`).
 
@@ -79,8 +91,10 @@ Formats: `docs/formats.md`.
 - Skinned characters: skeletons, skins, quintic-keyframe sequences, scripts and the VU1/VU0 skinned meshes of
   every Multiplayer skin, NPC, weapon and prop decode (`nfdump validate`: 158 skins, every frame of every
   sequence); GPU two-bone skinning, `CharacterInstance` for gameplay (play clip, palette, bone/datum world
-  transforms). Facial morph targets, layered blending (`blend_to`, AnimSet locomotion + strafe layer), script events,
-  root motion and the VU1 lit skinned program (per-vertex lights + tint) are in.
+  transforms, rig interchange like skeleton-1 skins on skeleton-0 clips). Facial morph targets, layered blending
+  (`blend_to`, AnimSet locomotion + strafe layer), script events, root motion, the VU1 lit skinned program
+  (per-vertex lights + tint + fades), room-cel ambient with switch channels, runtime dynamic lights (muzzle
+  flashes) and environment mapping are in.
 - Audio: all sound banks, music (with the interactive marker/section state machine) and speech streams decode;
   `nf_audio` mixes them with the IOP's 3D volume/pan model (`docs/audio.md`).
 - Gameplay: `CollisionWorld` (ray, line of sight, capsule, ground probe: ports of the `Collide_*`/`Intersect_*`

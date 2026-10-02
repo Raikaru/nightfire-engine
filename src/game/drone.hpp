@@ -303,7 +303,9 @@ public:
     Vec3 aim_offset{};                  // +0x200 (miss wobble)
     Vec3 opp_vec{};                     // +0x1b0 vector to target
     float opp_dist = 1e9f;              // +0x1a0
-    float opp_bearing = 0;              // +0x1c4
+    float opp_bearing = 0;              // +0x1c4 (ry lane of the aim euler below)
+    Vec3 aim_euler{};                   // +0x1c0 euler angles (rx, ry, rz) feeding RotMatrix in
+                                        //   DroneWeap_DoBulletAccuracy; GetOpponentInfo writes (0, bearing, 0)
     float opp_facing_a = 0;             // +0x1d0
     float opp_facing_b = 0;             // +0x1d4
     float visibility = 0;               // +0x230

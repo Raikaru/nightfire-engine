@@ -342,6 +342,7 @@ void Vehicle::car_forces(const CollisionWorld& world) {
     float drive_cmd;
     if (reverse_ && boost_timer_ == 0) drive_cmd = (boost_acc + gas_ * max_acc) - brake_ * rev_acc;
     else drive_cmd = (boost_acc + gas_ * max_acc) - brake_ * P.max_brake;
+    if (extra_drag_ != 0) drive_cmd -= extra_drag_ * (speed_h_ >= 0 ? 1.0f : -1.0f);
 
     // Free-spin rate of the wheels in revolutions per tick.
     float rev_rate = std::sqrt(vel_h[0] * vel_h[0] + vel_h[2] * vel_h[2]) / (P.wheel_radius * 6.32f * kTickHz);
@@ -368,8 +369,8 @@ void Vehicle::car_forces(const CollisionWorld& world) {
         boost_grip = (bt3 >= boost_timer_) ? (static_cast<float>(boost_timer_) / static_cast<float>(bt3)) * 2.0f + 1.0f
                                            : 3.0f;
     }
-    const float limit_front = P.friction_limit_front * boost_grip;
-    const float limit_rear = P.friction_limit_rear * boost_grip * counter;
+    const float limit_front = P.friction_limit_front * boost_grip * grip_front_;
+    const float limit_rear = P.friction_limit_rear * boost_grip * counter * grip_rear_;
 
     for (int i = 0; i < 4; ++i) {
         wheel_[i].position = pos + ax.to_world(wheel_local_[i]);

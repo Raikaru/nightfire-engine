@@ -176,7 +176,8 @@ void get_opponent_info(Drone& d) {
     const Vec3 tp = target_pos(sys, d.opponent);
     d.opp_vec = tp - d.pos;
     d.opp_dist = length(d.opp_vec);
-    d.opp_bearing = heading_of(d.opp_vec[0], d.opp_vec[2]);
+    d.opp_bearing = atan2_approx(d.opp_vec[0], d.opp_vec[2]);   // ATAN2_APPROX -> Drone+0x1c4
+    d.aim_euler = {0.0f, d.opp_bearing, 0.0f};                  // GetOpponentInfo zeroes rx/rz (+0x1c0/+0x1c8)
     const float tyaw = target_yaw(sys, d.opponent);
     d.opp_facing_a = angle_diff(tyaw, d.opp_bearing + kPi);
     d.opp_facing_b = angle_diff(tyaw, d.opp_bearing);

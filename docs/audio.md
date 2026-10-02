@@ -70,8 +70,9 @@ nfplay <gamedir> stream <index> --wav out.wav
 nfplay <gamedir> music <n> [section] [--jump T:S[:1]]... --seconds 60 --wav out.wav
 ```
 
-Without `--wav` nfplay plays on the SDL device; if there is none it says so and exits (`SDL_AUDIODRIVER=dummy`
-exercises the device path without sound). `--wav` needs no device.
+Without `--wav` nfplay plays on the SDL3 default playback device (PipeWire/PulseAudio/ALSA) and
+exits non-zero when there is none (`SDL_AUDIODRIVER=dummy` exercises the device path without
+sound). `--wav` needs no device.
 
 ## Level music director (`audio/music_director.hpp`, `assets/level_music.hpp`)
 
@@ -166,3 +167,46 @@ Level -> track -> script -> sections (`start`, `death/win` = `MapMusic` words 3/
 | 0700004c | 0x11 (MFX_3) | - (generic) | 14 | 0/0 | 0/0 | - | - | - |
 | 07000048 | 0x18 (MFX_10) | - (no restart) | 0 | 0/0 | 0/0 | - | - | - |
 | 07000041, 43, 46, 49 | 0x18 (MFX_10) | - (generic) | 0 | 0/0 | 0/0 | - | - | - |
+
+## Game-facing API (for Integration / Scripting / Weapons)
+
+One `AudioSystem` lives as long as the game session. One `MusicDirector` per level (it keeps
+per-level script state). Per 60 Hz frame, in this order:
+
+```cpp
+audio.set_listener({.position = eye, .dir = forward, .up = up, .norm = left_axis});
+audio.set_environment(area.room, area.enclosed || area.room >= 20);  // SFXSetEnvironment
+music.update();      // MusicDirector: may start/jump the music, posts Music_Events
+audio.update();      // SFXUpdate: voices, ambient emitters, subtitle callbacks
+audio.render(pcm, 800);  // or let the SDL device pull
+```
+
+- **Levels.** `audio.enter_level(level_id)` (`Sound_Ready`: stops everything, loads the level's
+  bank; level `0x07000048` alternates banks per call). Then
+  `audio.load_map_sounds(parse_map_sounds(map_block(0x28)))` (`Sound_LoadMapSounds`); emitters
+  start/stop themselves in `update()` while the listener is within `radius` / beyond 1.2x.
+  Levels without map sounds: `audio.clear_map_sounds()`.
+- **SFX.** `play_sfx(id or "SFX_...")` with `.position` for 3D, `.tag` for later
+  `remove_sfx(tag)` / `set_position(pos, vel, tag)`. Radii default to the EE `SFXOutputData`
+  entry; `cull_far` effects past 1.1x outer radius refuse to start (returns 0), as do sounds
+  with no free voice/effect slot. Occlusion is area-based, like the original: there is no
+  raycast — `set_environment` halves `outdoors` effects indoors and all but the 23 water SFX
+  under water (`kUnderwaterRoom`), and reverb follows `room` 0..100.
+- **Dialogue.** `play_sfx` of a stream-backed effect (or `play_stream(i)`) decodes `STREAMS.BIN`.
+  Subtitles: `set_subtitles_enabled(options.subtitles)` once, and
+  `set_subtitle_callback([](const SubtitleEvent& e) { ... })` once. Each event carries the SFX id,
+  the `Snd2Lbl` text label hash (`StringTable::label(hash)` resolves it; high bit = forced) and
+  the started samples' duration in seconds [INFERENCE: the original's duration operand did not
+  survive decompilation; this uses the decoded length]. Post it as
+  `HudMessage{.type = Subtitle, .label = hash, .frames = seconds * 60}`. The callback fires from
+  `update()` with the audio lock held: queue, do not call back in.
+- **Music.** Drive it through `MusicDirector` (`start_level`, `event`, `update`), not
+  `start_music`/`jump_music` directly, except cutscene code which mirrors `Script_*` NIS
+  handling. `music_event`/`music_event_value` are the 64-entry table the scripts read.
+- **Volumes/pause.** `set_sfx_volume` / `set_music_volume` (percent, from options),
+  `pause_sfx(true)` in menus/NIS (`SFXPause`), `pause_music(true)` likewise, `fade_down()` on
+  level exit (`SFXFadeDown`, 2 s) balanced with `fade_up()`.
+- **Driving.** `DrivingAudio` (`audio/driving_mixer.hpp`, data in `assets/driving_audio.hpp`):
+  `update_vehicle(VehicleState{rpm, gas, speed, slips, ...}, SoundPath)` per frame (one
+  `VehicleSound::update` = `AVehicle/AEngine/APlayerVehicle::Play`: rpm smoothing, idle/load layer
+  weights, skids, scrapes, road noise), then `render()` mixes mission banks/music/speech at 48 kHz.

@@ -131,7 +131,8 @@ void WeaponSystem::spawn_projectile(const Shooter& shooter, const WeaponDef& def
     const float A = (def.spread + shots) * k;
     const float r = (2.0f * A * frand() - A) * 0.0014f;   // Rand_FRand_MVar2(2A, A)
     const float theta = frand() * 2.0f * kPi, phi = frand() * kPi;
-    const Vec3 offset = {r * std::sin(phi) * std::cos(theta), r * std::sin(phi) * std::sin(theta), r * std::cos(phi)};
+    // Vec_Spherical_2_Cartesian: polar axis is Y (a1[1] = r * cos phi).
+    const Vec3 offset = {r * std::sin(phi) * std::cos(theta), r * std::cos(phi), r * std::sin(phi) * std::sin(theta)};
     b.dir = normalized(shooter.direction + offset);
     b.speed = def.speed * ((def.flags2 & wf2::kQuarterSpeed) ? 0.25f : 1.0f);
     if (def.base == 59) b.timer = def.id == 108 ? 900.0f : 60.0f * float(5 * (def.id - def.base) + 5);
@@ -143,7 +144,14 @@ void WeaponSystem::spawn_projectile(const Shooter& shooter, const WeaponDef& def
 void WeaponSystem::fire(const Shooter& shooter, int weapon_id) {
     if (weapon_id <= 0 || weapon_id >= WeaponTable::kWeaponCount) return;
     const WeaponDef& def = table_.weapon(weapon_id);
-    if (def.pellets == 0) return;
+    if (def.pellets == 0) {
+        // Detonator variants (Player_WeaponInitBullet steps 1-2 fire no bullet): remote mines 56/57 blow the
+        // owner's live weapon-55 mines, shaver detonators 90/92 the 89/91 charges. 83 takes over a turret
+        // (GT_TakeControl, not modelled).
+        const int thrown = weapon_id == 56 || weapon_id == 57 ? 55 : weapon_id == 90 ? 89 : weapon_id == 92 ? 91 : -1;
+        if (thrown > 0) detonate_owned(shooter.id, thrown);
+        return;
+    }
     for (int i = 0; i < def.pellets; ++i) spawn_projectile(shooter, def);
     if (def.fire_sound)
         sound(int(def.fire_sound), shooter.origin, true, -1, shooter.id >= 0 && shooter.id < World::kMaxPlayers ? shooter.id : -1);
@@ -157,20 +165,20 @@ void WeaponSystem::explode(const Vec3& position, int weapon_id, int attacker) {
 // Hit tests
 
 WeaponSystem::SegmentHit WeaponSystem::trace_segment(const World& world, const Vec3& from, const Vec3& to, int owner,
-                                                     bool ignore_world, const std::vector<Victim>& victims) const {
+                                                     const std::vector<Victim>& victims) const {
     SegmentHit best;
     const Vec3 delta = to - from;
     const float len = length(delta);
     if (len < 1e-9f) return best;
-    if (!ignore_world) {
-        // Collide_RayIntersect mask 522: ghost surfaces (0x8) and water (material 0x10, 0x2) are skipped.
-        if (auto h = world.collision().ray(from, to, pick::kIgnoreGhost | pick::kIgnoreMaterial10)) {
-            best.world = true;
-            best.t = std::min(1.0f, h->dist / len);
-            best.point = h->point;
-            best.normal = h->normal;
-            best.surface = h->material & 0x3F;
-        }
+    // Collide_RayIntersect mask 522 (520 with F2 & 0x800): ghost surfaces and water are skipped. The 0x800
+    // bit only makes water solid (ray mask 520 keeps it); it never skips the world — grenades with 0x800
+    // still explode on walls. Water surfaces are unmodelled here, so every projectile sweeps the world.
+    if (auto h = world.collision().ray(from, to, pick::kIgnoreGhost | pick::kIgnoreMaterial10)) {
+        best.world = true;
+        best.t = std::min(1.0f, h->dist / len);
+        best.point = h->point;
+        best.normal = h->normal;
+        best.surface = h->material & 0x3F;
     }
     for (const Victim& v : victims) {
         if (v.id == owner) continue;
@@ -204,10 +212,9 @@ void WeaponSystem::hurt_victim(int victim_id, const HitInfo& hit) {
 // Explode_Create + Explode_Propagate: every combatant whose centre lies within `radius` takes
 // damage * (1 - dist / radius); no line-of-sight test (the original only does a sphere intersect).
 void WeaponSystem::explode_at(const Vec3& pos, const WeaponDef& def, int attacker, float scale) {
-    if (def.blast_radius <= 0.0f) return;
     events_.explosions.push_back({pos, def.blast_radius, def.id});
     sound(def.flags3 & 0x2000 ? 22 : 502, pos, true);
-    if (!world_) return;
+    if (def.blast_radius <= 0.0f || !world_) return;   // smoke / flash: the event above still drives the visual
     const std::vector<Victim> victims = collect_victims(*world_);
     for (const Victim& v : victims) {
         const Vec3 c = (v.a + v.b) * 0.5f;
@@ -234,6 +241,18 @@ void WeaponSystem::explode_at(const Vec3& pos, const WeaponDef& def, int attacke
 // Bullet_CollisionHandler for one hit.
 void WeaponSystem::bullet_hit(Projectile& b, const SegmentHit& hit, const WeaponDef& def, const Vec3& dir) {
     const bool on_body = !hit.world;
+    if (!on_body && (def.flags3 & wf3::kGrapple) != 0 && b.owner >= 0 && b.owner < World::kMaxPlayers && world_) {
+        // Grapple hook caught (Bullet_Delete on a type-81 'Q' object -> Player_SetGrapplePoint). Our world
+        // hit-test has no object classes, so any solid world hit counts [INFERENCE].
+        if (Player* pl = world_->player(b.owner); pl && pl->alive()) pl->begin_grapple(hit.point);
+    }
+    if (!on_body && (def.id == 74 || def.id == 76)) {
+        // Stunner beam (Player_WeaponInitBullet step 5): valid only against a close combatant; a world hit
+        // refunds the round instead of firing.
+        if (PlayerWeapons* p = state(b.owner))
+            p->weapon[std::size_t(ammo_index(def.id))].clip =
+                std::int16_t(std::min<int>(p->weapon[std::size_t(ammo_index(def.id))].clip + def.rounds_per_shot, def.clip_size));
+    }
     events_.impacts.push_back({hit.point, hit.normal, hit.surface, def.id, on_body, b.owner});
     if (on_body) {
         float dmg = def.damage;
@@ -304,7 +323,22 @@ bool WeaponSystem::step_projectile(Projectile& b, World& world, FrameTiming timi
             return false;
         }
     }
-    if (b.state == Projectile::State::Stuck) return true;
+    if (b.state == Projectile::State::Stuck) {
+        // Laser tripbomb (F3 & 0x80000): the beam watches for close combatants [INFERENCE: the original casts
+        // a 200-unit ray along the beam at type 2/3/40 objects; without object classes any victim near the
+        // mine trips it].
+        if ((def.flags3 & wf3::kTripbomb) != 0) {
+            for (const Victim& v : victims) {
+                if (v.id == b.owner) continue;
+                if (length((v.a + v.b) * 0.5f - b.pos) < 2.0f) {
+                    b.delete_me = true;
+                    explode_at(b.pos, def, b.owner, b.damage_scale);
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
 
     float step_speed = b.speed;
     if (b.state == Projectile::State::Spawn) {
@@ -326,7 +360,7 @@ bool WeaponSystem::step_projectile(Projectile& b, World& world, FrameTiming timi
     if (b.travelled > def.range) step -= b.travelled - def.range;
     if (step <= 0.0f) return b.travelled <= def.range;
     const Vec3 to = b.pos + b.dir * step;
-    const SegmentHit hit = trace_segment(world, b.pos, to, b.owner, (def.flags2 & wf2::kIgnoreWorld) != 0, victims);
+    const SegmentHit hit = trace_segment(world, b.pos, to, b.owner, victims);
     if (hit.world || hit.victim >= 0) {
         bullet_hit(b, hit, def, b.dir);
         return !b.delete_me;
@@ -343,6 +377,40 @@ void WeaponSystem::step_projectiles(World& world, FrameTiming timing) {
         if (!step_projectile(b, world, timing, victims)) b.delete_me = true;
     }
     std::erase_if(projectiles_, [](const Projectile& p) { return p.delete_me; });
+}
+
+// Helpers for detonators, guided missiles and weapon locks.
+Projectile* WeaponSystem::find_guided(int owner) {
+    for (Projectile& b : projectiles_) {
+        if (!b.delete_me && b.owner == owner && (table_.weapon(b.weapon).flags2 & wf2::kGuided) != 0) return &b;
+    }
+    return nullptr;
+}
+void WeaponSystem::detonate_owned(int owner, int weapon_id) {
+    // Bullet_handle_object_destruction for the owner's live projectiles of one weapon.
+    for (Projectile& b : projectiles_) {
+        if (b.delete_me || b.owner != owner || b.weapon != weapon_id) continue;
+        b.delete_me = true;
+        explode_at(b.pos, table_.weapon(b.weapon), b.owner, b.damage_scale);
+    }
+}
+void WeaponSystem::update_owner_locks(World& world) {
+    // Guided (F2 & 0x4) and weapon-lock (F2 & 0x4000, grapple) projectiles freeze their owner (BLData+352 /
+    // +160): Player_Move ignores the sticks until the projectile dies (Bullet_Delete clears it).
+    for (int slot = 0; slot < World::kMaxPlayers; ++slot) {
+        Player* pl = world.player(slot);
+        if (!pl) continue;
+        bool locked = false;
+        for (const Projectile& b : projectiles_) {
+            if (b.delete_me || b.owner != slot) continue;
+            const std::uint32_t f2 = table_.weapon(b.weapon).flags2;
+            if ((f2 & (wf2::kGuided | wf2::kWeaponLock)) != 0) {
+                locked = true;
+                break;
+            }
+        }
+        pl->movement_frozen = locked;
+    }
 }
 
 }  // namespace nf

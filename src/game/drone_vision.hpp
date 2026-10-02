@@ -22,8 +22,28 @@ inline float wrap_pi(float a) {
 }
 // Vec_AngleDifference(from, to): signed shortest turn from `from` to `to`.
 inline float angle_diff(float from, float to) { return wrap_pi(to - from); }
-// ATAN2_APPROX(x, z): heading of a vector with forward = (sin, cos).
+// ATAN2(x, z): heading of a vector with forward = (sin, cos).
 inline float heading_of(float x, float z) { return std::atan2(x, z); }
+// ATAN2_APPROX 0x11f058: the rational approximation the original uses for headings (GetOpponentInfo
+// writes it to Drone+0x1c4). Replicated op-for-op in f32 (error vs atan2 up to ~5e-3 rad); do NOT replace
+// heading_of elsewhere: only the bearing lane goes through it.
+inline float atan2_approx(float x, float z) {
+    float r;
+    if (z == x) {
+        r = 0.7853982f;
+        if (z == 0.0f) r = 0.0f;
+    } else {
+        const float az = std::fabs(z), ax = std::fabs(x);
+        if (ax < az) {
+            r = (1.0596788f - (ax / az) * 0.27131295f) * (ax / az);
+        } else {
+            r = 1.5707964f - (1.0596788f - (az / ax) * 0.27131295f) * (az / ax);
+        }
+    }
+    if (z < 0.0f) r = 3.1415927f - r;
+    if (x < 0.0f) r = -r;
+    return r;
+}
 
 // ---- per-tick world passes (called by DroneSystem::tick) ---------------------------------------------------
 void process_opponents(DroneSystem& sys);     // Drone_ProcessOpponents: visibility multipliers + opponent info

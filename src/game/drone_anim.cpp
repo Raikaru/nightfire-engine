@@ -251,7 +251,17 @@ void anim_update(Drone& d) {
     if (a.req_state != 0) {
         int blend = a.req_blend, flag = 0;
         std::uint16_t id = data->anim_for(a.cur_state, a.req_state, a.req_variant, &blend, &flag);
-        if (id == 0xffff) id = data->anim_for(0, kUndefined, a.req_variant, &blend, &flag);   // GetDAnimForCall fallback
+        if (id == 0xffff || id == 0) {
+            // GetDAnimForCall fallback: no transition record from the current anim (always the case on a
+            // cold start from kUndefined) -> the requested state's default clip. Without this no drone anim
+            // ever starts and locomotion (anim root motion) never engages.
+            const DroneAnimData::State& st = data->state(a.req_state);
+            int variant = a.req_variant;
+            if (variant >= st.variants) variant = 0;
+            id = std::uint16_t(st.default_anim + variant);
+            blend = 8;
+            (void)flag;
+        }
         const int state = a.req_state;
         const int end_state = a.req_end_state, end_msg = a.req_end_msg;
         a.req_state = 0;

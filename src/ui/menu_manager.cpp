@@ -157,8 +157,11 @@ MenuManager::MenuManager(const MenuFile& file, const StringTable& strings, const
 // MenuManager_Create: build every page of the menu (their initial messages already reach the handlers), show
 // the first page and select the main menu's first button.
 void MenuManager::start(std::uint32_t start_page) {
-    for (const MenuPage& p : file_.pages)
-        if (p.menu == menu_id_) create_page(p);
+    // Every page of the file is created: level scripts carry pages of several menus (the pause
+    // menu is 0x80000002, P_ENDMISSION is 0x80000004, 0x40000021 is 0x80000003) and the game
+    // navigates between them through one manager (Menu_GetPage searches the whole file).
+    for (const MenuPage& p : file_.pages) create_page(p);
+    (void)menu_id_;
     change_page(start_page, 1);
     send_manager(menu_msg::kSelectControl, 0x10000002);
 }

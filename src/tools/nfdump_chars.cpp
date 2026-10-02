@@ -56,7 +56,7 @@ void print_skin_detail(const CharacterBank& bank, const SkinDef& s) {
     std::size_t seqs = 0;
     std::string listing;
     for (const auto& [h, q] : bank.sequences()) {
-        if (q.skeleton != s.skeleton || q.facial()) continue;
+        if (!bank.clip_fits_skin(q, s, false)) continue;
         ++seqs;
         char buf[24];
         std::snprintf(buf, sizeof buf, " %08x/%u", h, q.frame_count);
@@ -135,6 +135,8 @@ std::size_t validate_chars(GameFiles& gf, const std::filesystem::path& gamedir) 
     std::size_t morph_blocks = 0, morph_meshes = 0, morph_vertices = 0, morph_deltas = 0, datums = 0, script_cmds = 0, script_missing = 0, seq_no_skeleton = 0;
     std::set<std::uint32_t> unique_skins, unique_meshes;
     const std::vector<AnimSet> anim_sets = read_anim_sets(Elf32(read_file(gamedir / "ACTION.ELF")));
+    std::size_t cel_checks = 0, cel_ray_checks = 0, switch_checks = 0, dyn_checks = 0, tint_checks = 0;
+    std::size_t env_models = 0;
     std::size_t light_zones = 0, script_events = 0, event_scripts = 0, strafe_runs = 0, root_checks = 0, map_lights = 0, facial_runs = 0, blend_runs = 0, locomotion_runs = 0, sets_unresolved = 0;
     auto finite_palette = [](const Palette& p) {
         for (const auto* list : {&p.skin, &p.world})
@@ -171,6 +173,20 @@ std::size_t validate_chars(GameFiles& gf, const std::filesystem::path& gamedir) 
                     !is_skinned_gfx(ch.chunk.blocks[i + 1].data)) {
                     std::printf("FAIL %s: morph_data block not followed by a skinned PS2_GFX\n", f.name.c_str());
                     ++failures;
+                }
+            }
+        // Environment-mapped models (box 0 flags +0x34 bit 0): every flagged model must decode on the path
+        // the renderer uses for it (skinned meshes through the skin decoder, the rest as rigid parts).
+        for (std::size_t c = 0; c < bank.chunks().size(); ++c)
+            for (std::size_t m = 0; m < bank.chunks()[c].chunk.models.size(); ++m) {
+                const ModelRef ref{c, m};
+                if (!model_envmapped(bank.model(ref))) continue;
+                ++env_models;
+                try {
+                    if (is_skinned_gfx(bank.model(ref).gfx)) bank.skinned_mesh(ref);
+                    else bank.static_mesh(ref);
+                } catch (const std::exception& e) {
+                    fail(f.name, "envmapped model", e);
                 }
             }
 
@@ -271,14 +287,159 @@ std::size_t validate_chars(GameFiles& gf, const std::filesystem::path& gamedir) 
         light_zones += bank.light_zones().size();
         for (const auto& z : bank.light_zones())
             if (!(z.lo[0] <= z.hi[0] && z.lo[1] <= z.hi[1] && z.lo[2] <= z.hi[2])) fail(f.name, "light zone", FormatError("inverted bounding box"));
+        // build_FindCel + switches + dynamic lights + tint writers. Box path: every zone centre resolves, and the
+        // smallest-box rule matches an independent brute-force recomputation. Ray path: under a scripted geometry
+        // the nearest hit under 256 wins, all-miss falls back to the first candidate.
+        try {
+            for (const auto& z : bank.light_zones()) {
+                const Vec3 centre{(z.lo[0] + z.hi[0]) * 0.5f, (z.lo[1] + z.hi[1]) * 0.5f, (z.lo[2] + z.hi[2]) * 0.5f};
+                const LightZone* found = bank.find_cel(centre);
+                if (!found) throw FormatError("zone centre resolves to no cel");
+                const LightZone* brute = nullptr;
+                float brute_volume = 0;
+                for (const auto& c : bank.light_zones()) {
+                    bool inside = true;
+                    for (int k = 0; k < 3; ++k) inside = inside && c.lo[k] <= centre[k] && centre[k] <= c.hi[k];
+                    if (!inside) continue;
+                    const float v = (c.hi[0] - c.lo[0]) * (c.hi[1] - c.lo[1]) * (c.hi[2] - c.lo[2]);
+                    if (!brute || v < brute_volume) brute = &c, brute_volume = v;
+                }
+                if (found != brute) throw FormatError("find_cel disagrees with brute-force smallest box");
+                ++cel_checks;
+                // Ray path: this zone hits at 10, every other candidate misses -> this zone must win (if it is
+                // even a candidate; otherwise the scripted winner is whoever the box path picked among the rest).
+                CharacterBank::CelRay near = [&](const LightZone& c, const Vec3&, const Vec3&) -> std::optional<float> {
+                    return &c == &z ? std::optional<float>(10.0f) : std::nullopt;
+                };
+                const LightZone* ray_found = bank.find_cel(centre, near);
+                bool z_candidate = false;
+                for (const auto& c : bank.light_zones()) {
+                    bool inside = true;
+                    for (int k = 0; k < 3; ++k) inside = inside && c.lo[k] <= centre[k] && centre[k] <= c.hi[k];
+                    if (inside && &c == &z) z_candidate = true;
+                }
+                if (z_candidate && ray_found != &z) throw FormatError("ray cel test does not prefer the hit cel");
+                if (!ray_found) throw FormatError("ray cel test resolves to nothing");
+                ++cel_ray_checks;
+                // All-miss must still resolve to a candidate containing the point.
+                CharacterBank::CelRay miss = [](const LightZone&, const Vec3&, const Vec3&) -> std::optional<float> {
+                    return std::nullopt;
+                };
+                const LightZone* fallback = bank.find_cel(centre, miss);
+                bool contains = false;
+                if (fallback)
+                    for (int k = 0; k < 3; ++k) contains = (fallback->lo[k] <= centre[k] && centre[k] <= fallback->hi[k]);
+                if (!fallback || !contains) throw FormatError("all-miss cel fallback leaves the point");
+                ++cel_ray_checks;
+            }
+            // Outside every box: nullopt, with and without a ray.
+            const Vec3 nowhere{1e6f, 1e6f, 1e6f};
+            if (bank.find_cel(nowhere)) throw FormatError("find_cel resolves a point outside every box");
+            if (bank.ambient_at(nowhere)) throw FormatError("ambient_at resolves a point outside every box");
+            ++cel_checks;
+            // Switches: toggling a cel's channel swaps its ambient to the off colour (0xC047 cels). Only one
+            // switched cel exists on the disc (07000046 channel 30); grid-search a point that resolves to it.
+            for (const auto& z : bank.light_zones()) {
+                if (z.channel == 0 || z.channel > 31) continue;
+                const LightZone* self = nullptr;
+                Vec3 at{0, 0, 0};
+                for (int ix = 0; ix <= 4 && !self; ++ix)
+                    for (int iy = 0; iy <= 4 && !self; ++iy)
+                        for (int iz = 0; iz <= 4 && !self; ++iz) {
+                            const Vec3 p{z.lo[0] + (z.hi[0] - z.lo[0]) * float(ix) / 4.0f,
+                                         z.lo[1] + (z.hi[1] - z.lo[1]) * float(iy) / 4.0f,
+                                         z.lo[2] + (z.hi[2] - z.lo[2]) * float(iz) / 4.0f};
+                            if (bank.find_cel(p) == &z) self = &z, at = p;
+                        }
+                if (!self) continue;
+                SwitchChannels sw;
+                if (bank.ambient_at(at, sw) != std::optional<std::array<std::uint8_t, 3>>(z.ambient))
+                    throw FormatError("ambient with all switches default is not the cel colour");
+                sw.set(z.channel, 1);
+                if (sw.get(z.channel) != 1) throw FormatError("switch set/get roundtrip");
+                sw.toggle(z.channel);
+                if (sw.get(z.channel) != 0) throw FormatError("switch toggle");
+                sw.set(z.channel, 1);
+                if (bank.ambient_at(at, sw) != std::optional<std::array<std::uint8_t, 3>>(z.ambient_off))
+                    throw FormatError("switched cel does not show its off colour");
+                ++switch_checks;
+            }
+            // Dynamic lights over this bank's map radiators: map lights still resolve, a muzzle flash dominates
+            // nearby and expires after one tick, channel-gated lights obey the switches, type filtering applies.
+            {
+                DynamicLights dyn;
+                dyn.add_map_lights(bank.lights());
+                if (dyn.size() != bank.lights().size()) throw FormatError("map radiator count");
+                const Vec3 probe{0, 0, 0};
+                const LightSetup base = dyn.lights_for(probe, 0.5f);
+                if (base.count > 2) throw FormatError("more than two lights picked");
+                const std::size_t flash = dyn.muzzle({0.5f, 0.3f, 0.5f}, 8, 255, 220, 160);
+                if (dyn.at(flash).brightness != 2.0f || dyn.at(flash).life != 1 || dyn.at(flash).type != 1)
+                    throw FormatError("muzzle flash parameters");
+                // Only the flash has brightness 2.0, so its red channel exceeds 1.5; check pickup in a
+                // dedicated list (in the combined list the level's dummy origin light can hold the slots).
+                DynamicLights solo;
+                solo.muzzle({0.5f, 0.3f, 0.5f}, 8, 255, 220, 160);
+                const LightSetup only = solo.lights_for({0.5f, 0.3f, 0.5f}, 0.5f);
+                if (only.count != 1 || only.light[0].color[0] <= 1.5f)
+                    throw FormatError("muzzle flash not picked near its position");
+                dyn.update(SwitchChannels{});
+                if (dyn.size() != bank.lights().size()) throw FormatError("one-tick flash did not expire");
+                const std::size_t gated = dyn.create({0.5f, 0.3f, 0.5f}, 8, 255, 255, 255, 1, 0, 7, 0);
+                SwitchChannels off;   // channel 7 at default 0: Light_Update disables the light
+                dyn.update(off);
+                const LightSetup dark = dyn.lights_for(probe, 0.5f, 0x80, &off);
+                for (unsigned i = 0; i < dark.count; ++i)
+                    if (dark.light[i].position[0] == 0.5f) throw FormatError("channel-gated light leaks while off");
+                SwitchChannels on;
+                on.set(7, 1);
+                const LightSetup bright = dyn.lights_for(probe, 0.5f, 0x80, &on);
+                bool present = false;
+                for (unsigned i = 0; i < bright.count; ++i) present = present || bright.light[i].position[0] == 0.5f;
+                if (dyn.at(gated).enabled && !present && bright.count == 2) throw FormatError("channel-gated light missing while on");
+                // Type filter: type 0 needs flag 0x80, type 1 is skipped when flag 0x100 is set.
+                DynamicLights types;
+                types.create({0, 0, 0}, 50, 255, 0, 0, 1, 0, 0, 0);
+                if (types.lights_for({1, 0, 0}, 1, 0x00).count != 0) throw FormatError("type-0 light leaks without flag 0x80");
+                if (types.lights_for({1, 0, 0}, 1, 0x80).count != 1) throw FormatError("type-0 light missing with flag 0x80");
+                types.create({0, 0, 0}, 50, 0, 255, 0, 1, 0, 0, 1);
+                if (types.lights_for({1, 0, 0}, 1, 0x180).count != 1) throw FormatError("type-1 light wrongly skipped");
+                dyn_checks += 8;
+            }
+            // Tint writers: Script_SetColour's tweak, the ambient path switch, and the fade alpha.
+            {
+                ObjectAmbient amb;
+                // Fresh objects are 0xFF/0xFF, and (255*255)>>8 = 254, so the default tint is 254/255, not 1.0.
+                if (amb.tint() != std::array<float, 3>{254.0f / 255.0f, 254.0f / 255.0f, 254.0f / 255.0f})
+                    throw FormatError("default tint is not 254/255");
+                amb.set_tweak(128, 64, 32);
+                const auto raw = amb.tint(false);
+                if (std::fabs(raw[0] - 128.0f / 255.0f) > 1e-6f || std::fabs(raw[1] - 64.0f / 255.0f) > 1e-6f)
+                    throw FormatError("raw tweak path");
+                amb.level = {255, 128, 64};
+                const auto lit = amb.tint(true);
+                // (128*255)>>8 = 127, (64*128)>>8 = 32: the shift truncates, it is not a divide.
+                if (std::fabs(lit[0] - 127.0f / 255.0f) > 1e-6f || std::fabs(lit[1] - 32.0f / 255.0f) > 1e-6f)
+                    throw FormatError("ambient tweak path is not (tweak * ambient) >> 8");
+                amb.set_alpha(64);
+                if (std::fabs(amb.opacity() - 0.5f) > 1e-6f) throw FormatError("fade opacity");
+                tint_checks += 4;
+            }
+        } catch (const std::exception& e) {
+            fail(f.name, "cel/lights/tint", e);
+        }
         // CharacterInstance: blend_to, facial layers + morphs, locomotion sets.
         try {
+            std::set<unsigned> done_families;
             for (const auto& [shash, sk] : bank.skins()) {
+                if (!done_families.insert(sk.skeleton).second) continue;   // one skin per skeleton family per bank
                 if (sk.skeleton > 1 || sk.skinned.empty() || sk.skinned[0].sleeve) continue;
+                const Skeleton* want = bank.skeleton(sk.skeleton);
                 std::vector<const AnimSeq*> body, face;
-                for (const auto& [h, q] : bank.sequences())
-                    (q.facial() ? face : (q.skeleton == sk.skeleton ? body : face)).push_back(&q);
-                face.erase(std::remove_if(face.begin(), face.end(), [](const AnimSeq* q) { return !q->facial(); }), face.end());
+                for (const auto& [h, q] : bank.sequences()) {
+                    if (q.facial()) face.push_back(&q);
+                    else if (bank.clip_fits_skin(q, sk, false)) body.push_back(&q);
+                }
                 if (body.size() >= 2) {
                     CharacterInstance ci(bank, sk);
                     if (!ci.play(body[0]->hash) || !ci.blend_to(body[1]->hash)) throw FormatError("cannot start clips");
@@ -303,7 +464,7 @@ std::size_t validate_chars(GameFiles& gf, const std::filesystem::path& gamedir) 
                                 if (!std::isfinite(c)) throw FormatError("non-finite morph displacement");
                     ++facial_runs;
                 }
-                if (sk.skeleton == 0) {   // locomotion: ramp speed 0 -> max -> 0 for every set whose scripts resolve
+                if (sk.skeleton <= 1) {   // locomotion: ramp speed 0 -> max -> 0 for every set whose scripts resolve
                     for (const auto& set : anim_sets) {
                         CharacterInstance probe(bank, sk);
                         bool ok = true;
@@ -312,8 +473,28 @@ std::size_t validate_chars(GameFiles& gf, const std::filesystem::path& gamedir) 
                             ++sets_unresolved;
                             continue;
                         }
+                        // The walk loop must actually travel (Mp_kiko_combat runs yielded zero root motion while
+                        // skeleton-1 clips were rejected by rig id instead of rig_compatible).
+                        bool expect_travel = false;
+                        if (set.ladder.size() > 1) {
+                            if (const AnimScript* sc = bank.script(set.ladder[1]))
+                                for (auto qh : sc->sequences()) {
+                                    const AnimSeq* q = bank.sequence(qh);
+                                    if (!q || q->facial()) continue;
+                                    const Skeleton* rig = bank.skeleton(q->skeleton);
+                                    if (!rig || !want || !rig_compatible(*rig, *want)) continue;
+                                    const Vec3 t0 = sample_seq(*q, *want, nullptr, 1).translation.at(0);
+                                    const Vec3 t1 =
+                                        sample_seq(*q, *want, nullptr, q->frame_count).translation.at(0);
+                                    float d = 0;
+                                    for (int k = 0; k < 3; ++k) d += (t1[k] - t0[k]) * (t1[k] - t0[k]);
+                                    expect_travel = d > 0.05f * 0.05f;
+                                    break;
+                                }
+                        }
                         CharacterInstance ci(bank, sk);
                         ci.set_anim_set(&set, 1.0f, true);
+                        float travelled = 0;
                         for (int t = 0; t < 240; ++t) {
                             const float phase = float(t) / 240.0f;
                             // forward ramp up and down, with a sideways component in the middle third (strafe layer)
@@ -322,15 +503,19 @@ std::size_t validate_chars(GameFiles& gf, const std::filesystem::path& gamedir) 
                             ci.tick();
                             if (!finite_palette(ci.palette())) throw FormatError("non-finite locomotion palette");
                             const Vec3 rm = ci.root_motion(), rt = ci.root_translation();
-                            for (int k = 0; k < 3; ++k)
-                                if (!std::isfinite(rm[std::size_t(k)]) || !std::isfinite(rt[std::size_t(k)])) throw FormatError("non-finite root motion");
+                            for (int k = 0; k < 3; ++k) {
+                                if (!std::isfinite(rm[std::size_t(k)]) || !std::isfinite(rt[std::size_t(k)]))
+                                    throw FormatError("non-finite root motion");
+                                travelled += std::fabs(rm[std::size_t(k)]);
+                            }
                             ++root_checks;
                         }
+                        if (expect_travel && travelled < 0.01f)
+                            throw FormatError("locomotion walk loop produces no root motion");
                         ++locomotion_runs;
                         if (set.strafe.size() >= 3) ++strafe_runs;
                     }
                 }
-                break;   // one skin per skeleton family per bank
             }
         } catch (const std::exception& e) {
             fail(f.name, "instance", e);
@@ -373,8 +558,16 @@ std::size_t validate_chars(GameFiles& gf, const std::filesystem::path& gamedir) 
     std::printf("            %zu ambient light zones; %zu map lights; instances: %zu blend_to runs, %zu facial+morph runs, %zu locomotion runs "
                 "(%zu AnimSet lookups skipped because their scripts are absent from the bank)\n",
                 light_zones, map_lights, blend_runs, facial_runs, locomotion_runs, sets_unresolved);
+    std::printf("            %zu cel box checks, %zu scripted-ray cel checks, %zu switch off-colour checks, %zu dynamic-light checks, %zu tint checks\n",
+                cel_checks, cel_ray_checks, switch_checks, dyn_checks, tint_checks);
     std::printf("            %zu script events fired by %zu scripts; %zu locomotion runs with the strafe layer enabled (%zu root-motion checks)\n",
                 script_events, event_scripts, strafe_runs, root_checks);
+    // 876 environment-mapped models on the disc (weapons/characters/glass); the count pins the box-flag parser.
+    std::printf("            %zu environment-mapped models decoded\n", env_models);
+    if (env_models != 876) {
+        std::printf("FAIL envmapped model count %zu, want 876\n", env_models);
+        ++failures;
+    }
     std::printf("            %zu frames sampled; %zu sequences for skeletons absent from their bin, %zu script sequence refs absent from their bin\n",
                 frames, seq_no_skeleton, script_missing);
     std::printf("character failures %zu\n", failures);

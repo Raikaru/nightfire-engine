@@ -84,6 +84,16 @@ SoundArchive::SoundArchive(const std::filesystem::path& gamedir)
         defaults_.push_back({f(4), f(8), f(12), f(16), load<std::uint8_t>(defaults, off + 20) != 0,
                              load<std::uint8_t>(defaults, off + 21) != 0});
     }
+    if (auto snd2lbl = elf.symbol("Snd2Lbl")) {
+        // 484 x {u32 label, u32 sfx id}; Sound_DoSubtitle scans for the id and gives up past 0x1E4.
+        constexpr std::size_t kSubtitleEntries = 0x1E4, kSubtitleEntryBytes = 8;
+        if (snd2lbl->size >= kSubtitleEntries * kSubtitleEntryBytes) {
+            Bytes table = elf.at(snd2lbl->value, kSubtitleEntries * kSubtitleEntryBytes);
+            for (std::size_t off = 0; off < table.size(); off += kSubtitleEntryBytes)
+                subtitles_.push_back(
+                    {load<std::uint32_t>(table, off), load<std::uint32_t>(table, off + 4)});
+        }
+    }
 }
 
 std::optional<std::uint32_t> SoundArchive::level_bank_hash(std::uint32_t level_id, bool second_visit) {
@@ -163,6 +173,12 @@ std::optional<std::uint32_t> SoundArchive::sfx_id(std::string_view name) const {
 
 const SfxDefaults* SoundArchive::sfx_defaults(std::uint32_t id) const {
     return id < defaults_.size() ? &defaults_[id] : nullptr;
+}
+
+const SoundArchive::SubtitleEntry* SoundArchive::subtitle_for_sfx(std::uint32_t id) const {
+    for (const SubtitleEntry& e : subtitles_)
+        if (e.sfx == id) return &e;
+    return nullptr;
 }
 
 }  // namespace nf

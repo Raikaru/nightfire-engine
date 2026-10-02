@@ -12,6 +12,7 @@
 #include "game/ladder.hpp"
 #include "game/player_health.hpp"
 #include "game/player_rope.hpp"
+#include "game/player_vehicle.hpp"
 #include "game/player_basis.hpp"
 #include "game/player_scan.hpp"
 #include "game/player_water.hpp"
@@ -55,9 +56,11 @@ struct PlayerParams {
 };
 
 // obj+0xF6. Dead / DeadInWater are the substates Player_CheckForDeath switches to (collbody+0x60 bit 0x100 = in water).
+// SpawnWait is MP_ReSpawn's countdown into the first-person camera; Car / Gun / Driven are the
+// vehicle seats (Car_Activate, GunImp_Activate, GT_TakeControl: input frozen, the vehicle drives).
 enum class SubState : std::int16_t {
     Walk = 0, Climb = 1, Grapple = 2, Swim = 3, Crouch = 4, Scan = 5, Wire = 6, Creep = 7, ZeroG = 8, ZeroGWalk = 9,
-    Dead = 13, DeadInWater = 14, Zipline = 15
+    SpawnWait = 10, Car = 11, Gun = 12, Dead = 13, DeadInWater = 14, Zipline = 15, Driven = 16
 };
 
 // collbody+0x60 status bits the player code communicates through.
@@ -193,6 +196,22 @@ public:
     // Player_Activate took the use action (Cross) this frame: a creep wall was in reach (icon 6). The weapon code
     // must not also reload on that press.
     bool use_action_consumed() const { return use_consumed_; }
+    // --- vehicles (player_vehicle.cpp; docs/gameplay.md "Vehicles") ---
+    // Car_Activate / GunImp_Activate / GT_TakeControl, player halves: links the vehicle object
+    // (BLData+0x878), switches to substate 11 / 12 / 16 with camera mode 0xD / 0xE / 0xF, stows the
+    // weapon (Player_WeaponNone) and freezes input (Player_Disable(obj, 1)). The vehicle-side state
+    // (its own substate, sounds, gun flags) is the Driving slice's; `object` is its object handle.
+    void board_vehicle(VehicleKind kind, std::uint32_t object);
+    // Car_Deactivate / GunImp_Deactivate, player half: first-person camera, back on foot, input released.
+    void leave_vehicle();
+    bool in_vehicle() const { return vehicle_.kind != VehicleKind::None; }
+    BoardedVehicle vehicle() const { return vehicle_; }
+    // Player_SetCamMode (BLData+0x950). Entering a vehicle mode also resets the HUD (nf_ui's Hud::reset;
+    // the caller applies it, see player_vehicle.hpp).
+    void set_cam_mode(CamMode mode);
+    CamMode cam_mode() const { return cam_mode_; }
+    // MP_ReSpawn's countdown (substate 10): after `frames` logic frames the camera returns to first person.
+    void enter_spawn_wait(int frames = kSpawnWaitFrames);
 
     Vec3 pos{};                 // obj+0x30
     float yaw = 0;              // obj+0x54, forward = (sin yaw, 0, cos yaw)
@@ -290,6 +309,7 @@ private:
     void apply_creep_root_motion();                                               // AnimObjectUpdate while creeping
     void leave_climb(std::uint8_t lockout);                                       // Player_ChangeSubState(0) after 1 / 7
     void activate_creep_wall(const ActionInput& input, const CollisionWorld& world);   // Player_Activate, creep walls
+    void update_spawn_wait();                                                          // Player_Update, case 10
 
     PlayerParams params_;
     Vec3 prev_velocity_{};      // BL+0x20
@@ -331,6 +351,11 @@ private:
     std::uint8_t icon_context_ = 0xFF;              // BL+0x95F
     std::uint8_t icon_next_ = 0xFF;                 // what the last collision pass saw; latched by the next update
     bool use_consumed_ = false;
+    // Vehicles (player_vehicle.cpp). BL+0x878 holds the vehicle/gun object while boarded.
+    BoardedVehicle vehicle_;
+    CamMode cam_mode_ = CamMode::FirstPerson;   // BL+0x950
+    std::int16_t spawn_timer_ = 0;              // BL+0x4A2: substate 10 countdown
+    bool spawn_flag_ = false;                   // BL+0x21E: substate 10 camera still to restore
 };
 
 }  // namespace nf

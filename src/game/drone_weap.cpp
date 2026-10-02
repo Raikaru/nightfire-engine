@@ -95,7 +95,9 @@ void opponent_targetting(Drone& d) {
     }
 }
 
-bool do_bullet_accuracy(Drone& d) {
+bool do_bullet_accuracy(Drone& d) { return do_bullet_accuracy(d, d.sys->frand(100.0f)); }
+
+bool do_bullet_accuracy(Drone& d, float rand_draw) {
     // DroneWeap_DoBulletAccuracy 0x179740
     if (!d.opponent.valid()) return false;
     const DroneTuning& t = tuning(d);
@@ -109,7 +111,7 @@ bool do_bullet_accuracy(Drone& d) {
     if (d.opp_moving) p *= t.moving_accuracy;
     p *= t.accuracy[std::size_t(difficulty_index(d.sys->config().difficulty))];
     if (close) p *= t.too_close_accuracy;   // applied twice (4x at close range)
-    bool hit = d.sys->frand(100.0f) < p;
+    bool hit = rand_draw < p;
     if (!close) {
         hit = hit && d.seen_frames >= d.seconds(t.new_sighting_time);
         if (d.lost_since_shot) hit = false;
@@ -118,13 +120,28 @@ bool do_bullet_accuracy(Drone& d) {
     if (hit) {
         d.aim_offset = {0, 0, 0};
     } else {
-        // Correlated Lissajous wobble around the aim point, in the frame of the direction to the opponent.
+        // Correlated Lissajous wobble around the aim point, rotated by RotMatrix(obj+0x1c0 euler angles)
+        // and ApplyMatrixLV into Drone+0x200. Replicated op-for-op in f32 (in game the euler is pure yaw,
+        // which coincides with a yaw rotation; the sin/cos use host libm, whose ulps differ from the VU
+        // polynomial inside the differential tolerance).
         const float tt = float(d.now() + d.rand_phase);
         const float ph = tt * 0.01f;
         const Vec3 v{0.5f * std::sin(ph), 1.5f * std::sin(ph + 1.5707964f), 1.5f * std::sin(tt * 0.02f)};
-        const float yaw = d.opp_bearing;   // RotMatrix(Drone+0x1c0): heading of the opponent
-        const float s = std::sin(yaw), c = std::cos(yaw);
-        d.aim_offset = {v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c};
+        const float rx = d.aim_euler[0], ry = d.aim_euler[1], rz = d.aim_euler[2];
+        const float sx = std::sin(rx), cx = std::sin(rx + 1.5707964f);   // PS2Sinf3 pairs (cos via sin(+pi/2))
+        const float sy = std::sin(ry), cy = std::sin(ry + 1.5707964f);
+        const float sz = std::sin(rz), cz = std::sin(rz + 1.5707964f);
+        const float m0 = cy * cz;
+        const float m1 = sx * sy * cz + cx * sz;
+        const float m2 = cx * -sy * cz + sx * sz;
+        const float m4 = cy * -sz;
+        const float m5 = cx * cz - sx * sy * sz;
+        const float m6 = sx * cz - cx * -sy * sz;
+        const float m8 = sy;
+        const float m9 = -sx * cy;
+        const float m10 = cx * cy;
+        d.aim_offset = {m0 * v[0] + m4 * v[1] + m8 * v[2], m1 * v[0] + m5 * v[1] + m9 * v[2],
+                        m2 * v[0] + m6 * v[1] + m10 * v[2]};
     }
     return hit;
 }

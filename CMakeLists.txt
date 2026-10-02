@@ -48,6 +48,8 @@ add_library(nf_assets STATIC
   src/assets/menu_messages.cpp
   src/assets/menu_validate.cpp
   src/assets/sp_menu.cpp
+  src/assets/mission_data.cpp
+  src/assets/cutscene.cpp
   src/assets/mp_data.cpp
   src/assets/hud_data.cpp
   src/assets/weapon_data.cpp
@@ -71,7 +73,7 @@ target_link_libraries(nf_render PUBLIC nf_assets SDL3::SDL3-static OpenGL::GL)
 target_compile_options(nf_render PRIVATE -Wall -Wextra)
 
 add_executable(nfview src/viewer/main.cpp src/viewer/char_view.cpp)
-target_link_libraries(nfview PRIVATE nf_render)
+target_link_libraries(nfview PRIVATE nf_render nf_game) # nf_game: CollisionWorld for the room-cel ray test
 target_compile_options(nfview PRIVATE -Wall -Wextra)
 
 # Driving missions: EA "Simulation"/CARP side of the game (DRIVING.ELF), see docs/driving.md.
@@ -87,7 +89,7 @@ target_link_libraries(nf_driving PUBLIC nf_driving_sim nf_render)
 target_compile_options(nf_driving PRIVATE -Wall -Wextra)
 
 add_executable(nfdrive src/nfdrive/main.cpp)
-target_link_libraries(nfdrive PRIVATE nf_driving)
+target_link_libraries(nfdrive PRIVATE nf_driving nf_audio)
 target_compile_options(nfdrive PRIVATE -Wall -Wextra)
 
 # Audio: software mixer over the SPU2 ADPCM data (SFX.IRX behaviour), SDL3 output, docs/audio.md.
@@ -119,6 +121,32 @@ add_library(nf_game STATIC ${NF_GAME_SOURCES})
 target_link_libraries(nf_game PUBLIC nf_assets)
 target_compile_options(nf_game PRIVATE -Wall -Wextra)
 
-add_executable(nfgame src/game/main.cpp src/game/nfgame_mp.cpp)
+add_executable(nfgame src/game/main.cpp src/game/nfgame_mp.cpp src/game/nfgame_weapon_hud.cpp
+  src/game/nfgame_weapon_view.cpp src/game/nfgame_effects.cpp src/game/nfgame_quads.cpp)
 target_link_libraries(nfgame PRIVATE nf_game nf_render nf_audio)
 target_compile_options(nfgame PRIVATE -Wall -Wextra)
+
+# EE/R5900 headless interpreter + harness (docs/ee.md). nf_ee needs only
+# zlib/zstd; nfmips additionally links nf_assets for the weapon_data check.
+file(GLOB NF_EE_SOURCES CONFIGURE_DEPENDS src/ee/*.cpp)
+add_library(nf_ee STATIC ${NF_EE_SOURCES})
+target_include_directories(nf_ee PUBLIC src)
+find_package(ZLIB REQUIRED)
+find_library(ZSTD_LIB zstd REQUIRED)
+find_path(ZSTD_INCLUDE zstd.h REQUIRED)
+target_include_directories(nf_ee PRIVATE ${ZSTD_INCLUDE})
+target_link_libraries(nf_ee PUBLIC ZLIB::ZLIB ${ZSTD_LIB})
+target_compile_options(nf_ee PRIVATE -Wall -Wextra)
+
+add_executable(nfmips src/tools/nfmips.cpp)
+target_link_libraries(nfmips PRIVATE nf_ee nf_assets)
+target_compile_options(nfmips PRIVATE -Wall -Wextra)
+
+# The playable game: frontend -> SP / MP / driving sessions with HUD, audio,
+# pause and results (src/app/nightfire.cpp). Reuses nfgame's weapon view/effects
+# translation units; main.cpp itself is untouched (Movement co-owns it).
+file(GLOB NF_APP_SOURCES CONFIGURE_DEPENDS src/app/*.cpp)
+add_executable(nightfire ${NF_APP_SOURCES} src/game/nfgame_weapon_hud.cpp
+  src/game/nfgame_weapon_view.cpp src/game/nfgame_effects.cpp src/game/nfgame_quads.cpp)
+target_link_libraries(nightfire PRIVATE nf_game nf_render nf_audio nf_ui nf_driving)
+target_compile_options(nightfire PRIVATE -Wall -Wextra)

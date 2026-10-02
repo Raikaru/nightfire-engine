@@ -228,6 +228,11 @@ void Player::update(const ActionInput& input, const PlayerSettings& settings, co
         update_scan(input, timing);
     } else if (substate == SubState::ZeroG || substate == SubState::ZeroGWalk) {
         update_zerog(input, timing);
+    } else if (substate == SubState::SpawnWait || substate == SubState::Car || substate == SubState::Gun ||
+               substate == SubState::Driven) {
+        // Cases 10-12 and 16 run no movement handler (case 10 only ticks its camera timer; the vehicle
+        // drives in the Driving slice). Without this they would fall through to the crouch handler.
+        if (substate == SubState::SpawnWait) update_spawn_wait();
     } else if ((substate == SubState::Walk || substate == SubState::Crouch) && in_water()) {
         // Player_InWater switched to swimming and cleared the motion state: the walk handler returns at once.
     } else if (substate == SubState::Walk) {
@@ -271,7 +276,9 @@ void Player::update(const ActionInput& input, const PlayerSettings& settings, co
             if (step <= 0.0002f && step >= -0.0002f && look_state_ == 2) look_state_ = 3;
         }
     }
-    if (substate != SubState::ZeroG && substate != SubState::ZeroGWalk) aim(input, timing);   // Player_Aiming returns for 8..12
+    // Player_Aiming returns at once for substates 8..12 and 16 (flying, riding, driven).
+    const int sub = int(substate);
+    if ((sub < 8 || sub > 12) && sub != 16) aim(input, timing);
     pitch = std::clamp(pitch, -1.0f, 1.0f);   // Player_ViewClamping
 
     pos[1] += stand_height - applied_height_;
@@ -295,9 +302,10 @@ void Player::collision_setup(FrameTiming timing) {
     } else if (substate == SubState::ZeroG || substate == SubState::ZeroGWalk) {
         pos = madd(pos, fall_velocity, timing.rec() * 3.0f);   // Player_Collision cases 7 and 8 (BL+0x50 was zeroed)
     } else if (substate != SubState::Climb && substate != SubState::Grapple && substate != SubState::Wire &&
-               substate != SubState::Zipline &&
-               substate != SubState::Scan && !(rooms && water.room != RoomMap::kNone && water_level() > pos[1])) {
-        // (no gravity while the position is below the room's water level, and none in scan mode)
+               substate != SubState::Zipline && substate != SubState::Gun && substate != SubState::Scan &&
+               !(rooms && water.room != RoomMap::kNone && water_level() > pos[1])) {
+        // (no gravity while the position is below the room's water level, none in scan mode, and none in the
+        // gun seat: Player_Collision's first switch skips gravity for substate 12 like for 1/2/5/6/14/15)
         if ((body_flags & body::kOnGround) == 0 || ground_normal_y < 0.5f) {
             fall_velocity = madd(fall_velocity, params_.gravity, timing.rec());
         } else if (jump_state != 1) {
@@ -379,6 +387,11 @@ void Player::resolve_collisions(const CollisionWorld& world) {
             if (first->point[1] - result.a[1] > 0.0f) body_flags |= body::kHitAbove;
         }
     }
+    // Script-driven platforms carry a standing player by the frame's displacement (ObjectWorld::movers_).
+    if ((body_flags & body::kOnGround) != 0 && object_world_) {
+        const Vec3 anchor = feet.ground ? feet.ground->point : pos;
+        pos += object_world_->ride_displacement(anchor, capsule_radius);
+    }
     if ((body_flags & body::kOnGround) != 0 && jump_state != 1) {
         velocity[1] = 0.0f;
         fall_velocity = {};
@@ -417,6 +430,10 @@ void Player::reset_motion(const Vec3& position, float new_yaw) {
     creep_dir_ = 0;
     creep_script_ = 0;
     icon_context_ = icon_next_ = 0xFF;
+    vehicle_ = BoardedVehicle{};
+    cam_mode_ = CamMode::FirstPerson;
+    spawn_timer_ = 0;
+    spawn_flag_ = false;
 }
 
 void Player::stand_at(const Vec3& position, float new_yaw, const CollisionWorld& world, SubState start) {

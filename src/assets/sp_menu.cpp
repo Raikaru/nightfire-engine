@@ -34,7 +34,8 @@ std::vector<MpMenuItem> load_items(const Elf32& elf, const std::string& name, st
 }  // namespace
 
 SpMenuData load_sp_menu(const Elf32& elf) {
-    return {load_items(elf, "sp_level", 12), load_items(elf, "difficulty", 3)};
+    return {load_items(elf, "sp_level", 12), load_items(elf, "difficulty", 3), load_items(elf, "cn_options", 7),
+            load_items(elf, "ds_options", 4), load_items(elf, "ds_gadgets", 14), load_items(elf, "ds_weapons", 27)};
 }
 
 }  // namespace nf

@@ -66,7 +66,14 @@ EaHeader parse_ea_header(Bytes data, std::size_t offset, std::size_t* end) {
             continue;
         }
         const auto len = load<std::uint8_t>(data, p++);
-        if (len > 8) throw FormatError("EA header: tag " + std::to_string(id) + " has a " + std::to_string(len) + " byte value");
+        // Tag 0x14 of stream headers carries a 24-byte "CNYS" sync word: longer than a u64, and
+        // nothing reads it, so such values are skipped (kept as valueless tags).
+        if (len > 8) {
+            if (p + len > data.size()) throw FormatError("EA header: tag " + std::to_string(id) + " runs past the header");
+            h.tags.push_back({id, false, 0});
+            p += len;
+            continue;
+        }
         std::uint64_t v = 0;
         for (std::uint8_t i = 0; i < len; ++i) v = v << 8 | load<std::uint8_t>(data, p++);
         h.tags.push_back({id, true, v});
@@ -367,8 +374,11 @@ std::vector<MixPreset> parse_mix_ini(std::string_view text) {
         if (vec != std::errc() || vend != vol.data() + vol.size()) throw FormatError("mix ini: bad volume in '" + std::string(line) + "'");
         if (comma != std::string_view::npos) {
             std::string_view grp = trim(rhs.substr(comma + 1));
-            auto [gend, gec] = std::from_chars(grp.data(), grp.data() + grp.size(), m.group);
-            if (gec != std::errc() || gend != grp.data() + grp.size()) throw FormatError("mix ini: bad group in '" + std::string(line) + "'");
+            // `Characters = 0.800,`: the group is optional, default 0.
+            if (!grp.empty()) {
+                auto [gend, gec] = std::from_chars(grp.data(), grp.data() + grp.size(), m.group);
+                if (gec != std::errc() || gend != grp.data() + grp.size()) throw FormatError("mix ini: bad group in '" + std::string(line) + "'");
+            }
         }
         out.push_back(std::move(m));
     }

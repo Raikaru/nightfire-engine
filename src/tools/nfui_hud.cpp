@@ -21,6 +21,7 @@
 #include "assets/hud_data.hpp"
 #include "tools/nfui_scene.hpp"
 #include "ui/hud.hpp"
+#include "ui/mp_feed.hpp"
 
 namespace nf {
 
@@ -181,21 +182,37 @@ private:
         ++message_;
     }
 
+    // The MP scene runs through the Arena->HUD feed (ui/mp_feed.hpp): a demo ArenaHud standing
+    // in for ArenaSession::hud(slot), plus one MatchMessage and the match clock.
     void setup_mp() {
         mp_ = true;
-        HudMp& mp = st_.mp;
-        mp.mode = HudMpMode::Arena;
-        mp.teams = true;
-        mp.team = 0;
-        mp.team_score = {7, 5};
-        mp.kills = 9;
-        mp.deaths = 3;
+        ArenaHud arena;
+        arena.mode = mp_mode::kArena | mp_mode::kTeamFlag;
+        arena.teams = true;
+        arena.team = 0;
+        arena.team_score = {7, 5};
+        arena.kills = 9;
+        arena.deaths = 3;
+        arena.time_left = 305;
+        arena.score_limit = 10;
+        arena.best_score = 9;
+        ArenaHud::Blip b0, b1, b2, b3;
+        b0.x = -15, b0.z = 20, b0.color = 0x7F1010FF, b0.kind = 1;
+        b1.x = 12, b1.z = 5, b1.color = 0x1010FFFF, b1.kind = 1;
+        b1.world = {12, 0, 5};
+        b1.name = "Oddjob";
+        b2.x = 3, b2.z = -25, b2.color = 0x7F7F00FF, b2.kind = 1;
+        b3.x = 35, b3.z = 30, b3.color = 0x10FF10FF, b3.kind = 2;
+        arena.blips = {b0, b1, b2, b3};
+        apply_arena_hud(arena, st_.mp);
+        project_name_tags(arena, {0, 0, 0}, 0, 0, 1.2f, 4.0f / 3.0f, st_.mp);
+        MatchMessage msg;
+        msg.type = MatchMessage::Type::Objective;
+        msg.text = "Uplink captured";
+        msg.frames = 400;
+        hud_->add_message(to_hud_message(msg));
         st_.health = 100;
         st_.armor = 60;
-        // Camera-space offsets: x right, z forward.
-        mp.blips = {{-15, 0, 20, 0x7F1010FF, 1}, {12, 0, 5, 0x1010FFFF, 1}, {3, 0, -25, 0x7F7F00FF, 1},
-                    {35, 0, 30, 0x10FF10FF, 2}};
-        mp.name_tags = {{"Oddjob", 380, 260, false}, {"Xenia", 130, 180, true}};
     }
 
     // Puts the HUD in the named state; returns the number of frames to run so animations settle.

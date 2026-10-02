@@ -29,6 +29,9 @@ Frontend::Impl::Impl(const UiAssets& a, const MenuFile& m, const MpData* d, cons
     register_mp_handlers();
     register_sp_handlers();
     register_pause_handlers();
+    register_options_handlers();
+    register_info_handlers();
+    register_level_handlers();
 }
 
 bool Frontend::Impl::handle(ui::MenuManager&, ui::Control& ctrl, const ui::Msg& msg) {
@@ -202,7 +205,18 @@ const FrontendResult& Frontend::result() const { return impl_->result; }
 std::uint32_t Frontend::page_id() const { return impl_->mgr ? impl_->mgr->current_page_id() : 0; }
 std::vector<ui::MenuSound> Frontend::take_sounds() { return impl_->mgr ? impl_->mgr->take_sounds() : std::vector<ui::MenuSound>{}; }
 void Frontend::set_pause_info(PauseInfo info) { impl_->pause_info = std::move(info); }
+void Frontend::set_dossier(DossierInfo info) { impl_->dossier = std::move(info); }
 PlayerOptions& Frontend::player_options() { return impl_->player_options; }
+void Frontend::set_mission_results(MissionResults results) { impl_->mission_results = std::move(results); }
+void Frontend::set_debriefing(DebriefInfo info) { impl_->debrief = std::move(info); }
+GameOptions& Frontend::game_options() { return impl_->options; }
+const std::string& Frontend::profile_name() const { return impl_->profile_name; }
+bool Frontend::tweak(std::uint32_t control) const { return tweak_value(control) != 0; }
+int Frontend::tweak_value(std::uint32_t control) const {
+    const auto it = impl_->tweaks.find(control);
+    return it == impl_->tweaks.end() ? 0 : it->second;
+}
+void Frontend::set_tweak(std::uint32_t control, int value) { impl_->tweaks[control] = value; }
 ui::MenuManager* Frontend::manager() { return impl_->mgr.get(); }
 MpSetup* Frontend::mp_setup() { return impl_->mp.get(); }
 

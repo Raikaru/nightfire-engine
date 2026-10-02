@@ -152,7 +152,10 @@ aiming (`aiming`, `scope_pane` = weapon flag F1 & 0x40, `aim_x/y`, `crosshair` k
 `night_frames`), lock-on / sun screen positions, air / wire percentages, vehicle readouts and the multiplayer block
 (`HudMp`: scenario, team, scores, flags, uplinks, radar blips in camera space with x right / z forward and
 projected name tags). Timers, fades, the message queue and per-pane animation state live inside `Hud` (the game frame
-rate scales them exactly as `FRAME_RATE` / `FRAME_RATE_MUL` do).
+rate scales them exactly as `FRAME_RATE` / `FRAME_RATE_MUL` do). The game fills the state through two feeds:
+`WeaponSystem::fill_hud(slot, state)` (`game/weapons.hpp`, nfgame side) for weapon / ammo / health / crosshair,
+and the arena feed (`ui/mp_feed.hpp`: `apply_arena_hud`, `project_name_tags`, `to_hud_message`,
+`format_match_clock`) for `HudMp` / messages / the match clock.
 
 What is reproduced (function → behaviour):
 
@@ -204,7 +207,8 @@ The front end and the in-game pause menu are the original menu manager running t
 (`docs/formats.md` "Menu script"). `ui::MenuManager` (`menu.hpp`, `menu_manager.cpp`, `menu_script.cpp`,
 `menu_controls.cpp`) is the generic runtime: pages, controls, skins, scripts, cursor navigation, delayed messages, the
 history stack and overlays. `Frontend` (`frontend.hpp`, handlers in `frontend.cpp`, `frontend_mp.cpp`,
-`frontend_pause.cpp`) is `Handler_HandleMessage`'s `P_*_Handler` / `C_*_Handler` on top of it, plus the `MpSetup` model for
+`frontend_sp.cpp`, `frontend_pause.cpp`, `frontend_options.cpp`, `frontend_info.cpp`, `frontend_level.cpp`) is
+`Handler_HandleMessage`'s `P_*_Handler` / `C_*_Handler` on top of it, plus the `MpSetup` model for
 the multiplayer pages.
 
 ```cpp
@@ -217,10 +221,15 @@ fe.draw(renderer, text);                                        // 640x448 canva
 if (fe.wants_close()) act on fe.result();                       // action, level_bin, level_id, launch (MpLaunch)
 ```
 
-`FrontendResult`: `StartMultiplayer` (`launch` = `MpSetup::start()`: settings, participants, `level_bin`), `Resume`,
-`RestartMission`, `QuitToMenu` (pause menu). `fe.set_pause_info(...)` supplies what only the running game knows (objective
-list, score rows, MP flag), `fe.player_options()` the controller style / Y-inversion the CONTROLS tab edits,
-`fe.set_controller_present(i, on)` which extra controllers are plugged in, `fe.take_sounds()` the `Menu_PlaySound` effects
+`FrontendResult`: `StartMultiplayer` (`launch` = `MpSetup::start()`: settings, participants, `level_bin`),
+`StartMission` (`level_bin` + `difficulty`), `Resume`, `RestartMission` (+ `end_choice` for P_ENDMISSION),
+`QuitToMenu`, `MpRematch` (debriefing Replay: `launch` is the stored match), `MissionDone` (results chain
+finished), `Quit`. `fe.set_pause_info(...)` supplies what only the running game knows (objective
+list, score rows, MP flag), `fe.set_dossier(...)` the encyclopedia content, `fe.set_mission_results(...)`
+the results numbers, `fe.set_debriefing(...)` the sorted match table + banner, `fe.player_options()` the
+controller style / Y-inversion, `fe.game_options()` every other session option (volumes, screen, toggles),
+`fe.profile_name()` the in-memory codename, `fe.tweak(id)` the cheat flags, `fe.set_controller_present(i, on)`
+which extra controllers are plugged in, `fe.take_sounds()` the `Menu_PlaySound` effects
 the menus asked for (accept, back, alt, left/right, move, page back).
 
 ### Pages reproduced
@@ -228,25 +237,62 @@ the menus asked for (accept, back, alt, left/right, move, page back).
 ```
 P_INTRO 0x40000032 -> P_START 0x40000009 (press cross) -> P_PARISENUM 0x4000004a -> P_ESTHERO 0x40000043 -> P_MAIN 0x40000002
 P_MAIN: NightFire | Multiplayer | Codenames
+NightFire: P_NFSELECT 0x40000025 (codename) -> P_NFDFCTY 0x40000023 (difficulty) -> P_NFMAP 0x4000001c (mission)
+            -> StartMission; P_DOSSIER 0x4000002b -> records 0x3a / rewards 0x3b / gadgets 0x3c / weapons 0x3d
+            results: P_NFRESULTS 0x36 -> P_NFBONUS 0x38 (-> P_WINGAME 0x53) or MissionDone; P_NFSTATS 0x37
+Codenames: P_CNSELECT 0x4000001b (new / profile) -> P_CNNAME 0x40000020 (letter grid) or P_CNMENU 0x4000001d hub
+            -> controls 0x40000022 (style list + Y-inversion) / game options 0x4000002d (8 radios) /
+               MP options 0x4000002e / AV options 0x40000031 (music/effects sliders, subtitles, split-screen,
+               speaker, widescreen, screen adjust, defaults, credits, trailer) / screen adjust 0x40000047
 Multiplayer:  P_MPJOIN 0x40000019 -> P_MPSCENARIO 0x4000001a -> P_MPMAP 0x40000013 -> P_MPSETUP 0x40000051 -> P_MPOPTIONS 0x40000012
               Quick Game (scenario row 0) skips to P_MPCONFIRM; P_MPOPTIONS -> P_MPBOTS 0x40000027 -> P_MPBOTCHOOSE 0x4000003f ->
               P_MPBOTSETUP 0x4000002c;  Game Rules 0x40000014 / Player Mods 0x40000017 / Enviro-Mods 0x40000028;
               Continue -> (refusal box 0x4000002f) or P_MPCONFIRM 0x40000049 -> FrontendResult::StartMultiplayer
+              after the match: P_MPDEBRIEFING 0x40000033 (Continue -> QuitToMenu, triangle Replay -> MpRematch)
 Pause (level bin script): P_PAUSE 0x4000004b: tabs MISSION (Continue / Restart / Quit + Yes/No box), OBJECTIVES, CONTROLS
               (controller style list, per-button action list, Y-axis), SCORE
+Level pages: P_ENDMISSION 0x40000042 (retry / base map / quit), P_NIS 0x4000000c (script runs), P_CHEATMEDAL 0x4c,
+              P_TWEAKS 0x44 / 0x46 (C_CH* cheats into Frontend::tweaks)
+Movies (no video: hold, then pop back): P_ATTRACT 0x35, P_FMV 0x4d, P_TRAILER 0x4e, P_FMVTEST 0x4f, P_CREDITS 0x30
 ```
 
-Every page of the front end script (52) renders and navigates through the generic runtime (`nfui menu --page <id>`); the
-handlers above populate the wheels, radios, lists and memos exactly from the original code: the scenario / map / option /
-bot / bot character wheels (`Menu_UpdateWheel`: five label rows around the scroll value, thumbnail dimmed and description
-replaced by the "locked" label when the row is disabled, the iris sprites `0x30000bf..c3` stepped by `Menu_StartIris` /
-`Menu_PlayIris`), the codename / team / character / handicap wheels of the four controllers (per-controller cursor
-controls, manager `0x5a`), the rule radios (`MpSetup::rule_choices`), the message box `Menu_CreateOptionBox` and the
-pause tabs. Simplifications, all deliberate: there is no memory card, so P_PARISENUM/P_ESTHERO/P_INTRO/P_PS2MEMCARDINIT
-pass through at once, the codename wheel offers only the default codename, saved-game unlocks are those of a fresh save;
-the attract movie, the 3D backdrop scene and every movie page have no video (P_MAIN never starts the attract loop);
-single player pages (P_NFSELECT..., codenames, dossier, results, credits, options AV/controller pages) and the cheat /
-tweak pages (checkboxes) render but have no handlers yet.
+Every page of the front end script (51) and of a level script renders and navigates through the generic runtime
+(`nfui menu --page <id>` / `--pause <level.bin> --page <id>`); the handlers above populate the wheels, radios,
+lists, sliders and memos from the original code: the scenario / map / option / bot / bot character wheels, the
+codename / team / character / handicap wheels of the four controllers (per-controller cursor
+controls, manager `0x5a`), the rule radios (`MpSetup::rule_choices`), the game/MP/AV option radios and volume
+sliders (`GameOptions`), the controller style list (`Menu_DisplayControllerStyle`), the screen-adjust scrolls
+(live `psiAdjustScreenPos` into `GameOptions::screen_x/y`), the dossier wheels (`cn_options` / `ds_options`
+M_ITEM tables), the results / stats / bonus / debriefing labels (`MissionResults` / `DebriefInfo`), the
+message box `Menu_CreateOptionBox` and the pause tabs. Simplifications, all deliberate: there is no memory card,
+so P_PARISENUM/P_ESTHERO/P_INTRO/P_PS2MEMCARDINIT pass through at once, the codename wheel offers the typed
+profile plus "new", saved-game unlocks are those of a fresh save, and the card pages (0x2a and friends) stay
+static; the attract movie, the 3D backdrop scene and every movie page have no video (P_MAIN never starts the
+attract loop, movie pages hold then pop back); the TWEAKS tuning values stay script-side (the live game globals
+are unreadable) while every C_CH* accept is recorded for the game.
+
+### Game integration (for the Integration slice)
+
+```cpp
+Frontend fe(assets, menu, &mp, &sp);
+fe.set_pause_info(...); fe.set_dossier(...);           // before open() in Pause / dossier flows
+fe.open(FrontendMode::MainMenu);                        // or Pause with the level's MenuFile
+pump_menu_sounds({}, [](std::uint32_t id) {});          // once: play kMenuAmbientA/B via AudioSystem
+for each 30 Hz frame: fe.update(pad); fe.draw(renderer, text);
+pump_menu_sounds(fe.take_sounds(), [&](std::uint32_t id) { audio.play_sfx(id); });
+if (fe.wants_close()) apply(fe.result());              // launch request below
+```
+
+The frontend returns a launch request and draws over the game: `FrontendResult` is the whole request
+(`action` + `level_bin` / `level_id` / `difficulty` / `launch` / `end_choice`). The game applies
+`GameOptions` after close (volumes via `AudioSystem::set_sfx_volume/set_music_volume`, speaker via
+`set_stereo(speaker != 0)`, screen offset, `PlayerSettings` bits) and reads `tweak(id)` for cheats.
+`Hud` is fed per viewer per tick: `WeaponSystem::fill_hud(slot, state)` (weapon, ammo, health, crosshair),
+then the arena feed (`apply_arena_hud(session.hud(slot), state.mp)`,
+`project_name_tags(...)`, `to_hud_message(...)` from `take_messages()`), then `hud.update(state)` +
+`hud.draw(...)` over the 3D view. Menu sounds flow through `take_sounds()` + `pump_menu_sounds`
+(`ui/menu_audio.hpp`: `menu_sound_sfx` is the `Menu_PlaySound` id map `0x1D8/0x1D9/0x1DA`; menu ambience
+`0x1D7/0x470`, credits music track `0x27`).
 
 ### Runtime notes
 
@@ -270,4 +316,14 @@ hit existing pages and every handler id (`assets/menu_messages.hpp` `menu_handle
 `nfui <gamedir> menu [--page 0x40000002] [--pause <level.bin>] [--trace] [--dump] [--shot out.bmp] [--press up,cross,...]`
 prints the result when a flow finishes (`--trace` lists page changes and input locks, `--dump` the parsed script), e.g.
 `--press wait60,down,cross,wait60,cross,wait20,cross,wait20,cross,wait80` from `--page 0x40000002` joins a game and
-reaches the scenario wheel.
+reaches the scenario wheel. Verified end to end: boot `P_START -> P_MAIN` (press after the 120-frame hint delay);
+`P_MAIN -> P_NFSELECT -> (no-save box) -> P_NFDFCTY -> P_NFMAP -> StartMission (07000005.bin)`; codename
+`P_CNSELECT -> P_CNMENU -> P_CNOPTIONS -> back` (radios stored) and `-> P_CNNAME` (letter grid types, `End`
+confirms); AV sliders move live into `GameOptions`; pause `Start -> Resume`; `P_ENDMISSION` retry/quit;
+`P_MPDEBRIEFING` cross Continue / triangle Replay; movie pages hold then pop back. Every page above was also
+screenshotted (`--shot`) and inspected.
+
+Known gaps: the `P_CNCONTROLS` per-style button diagram keeps the script's `"1"` placeholders (filling it needs
+`Menu_DisplayControllerStyle`'s label map behind an unrecovered jumptable); the `P_ENDMISSION` portrait sprite
+`0x030000db` decodes garbled (needs a sprites-side look); `TWEAKS` tuning values and the `C_NIS` list stay
+script-side (live game globals / raw script pointers).

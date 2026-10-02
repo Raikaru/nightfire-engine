@@ -114,8 +114,10 @@ nav links (grey) and the route (yellow).
 
 ## Known gaps
 
-* Straddle uses room boxes + portals; the original's per-cel `AINodeSearch` neighbour loop and `NavNodeCache`/`NearestNodeDCV`
-  variants are folded into `NavAgent::nearest_node` / `NavNetwork::nearest_node`.
+* Straddle uses room boxes + portals; `NavNetwork::node_search` retries the query cel's portal neighbours
+  (vertical span overlapping the query, first hit wins) like the original's per-cel `AINodeSearch` neighbour
+  loop; `NavNodeCache`/`NearestNodeDCV` variants are folded into `NavAgent::nearest_node` /
+  `NavNetwork::nearest_node`.
 * `LinkCreep_Handler`'s drone-side effects (`drone+0x31c` bits, behaviour 0x36) are the drone layer's; `NavRoute::ignore_bounds` stands for
   the `drone+0xba8 != 0` shortcut.
 * `Door_IsLocked` is a callback (`set_door_locked_callback`) — doors are SP-only objects.
