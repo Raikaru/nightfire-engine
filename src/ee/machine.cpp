@@ -101,6 +101,7 @@ void Machine::load_elf(const std::string& path) {
 
     // $gp / $sp like the game boot: _gp and _stack symbols exist in ACTION.ELF.
     if (auto g = symbol("_gp")) cpu.r[28].d[0] = cpu.r[28].d[1] = 0, cpu.r[28].d[0] = g->value;
+    else std::fprintf(stderr, "nfmips: no _gp symbol in %s ($gp left 0; set it manually)\n", path.c_str());
     cpu.r[29].d[0] = kStackTop;
     cpu.r[29].d[1] = 0;
     cpu.set_pc(0);
@@ -170,11 +171,19 @@ void Machine::setup_call(u32 entry, const CallArgs& args) {
         cpu.r[4 + i].d[0] = args.ints[size_t(i)];
         cpu.r[4 + i].d[1] = 0;
     }
+    for (const auto& [r, v] : args.reg_init) { // explicit presets win (fragment entry regs like s0/v0)
+        if (r >= 0 && r < 32 && r != 29 && r != 31) {
+            cpu.r[r].d[0] = v;
+            cpu.r[r].d[1] = 0;
+        }
+    }
     cpu.r[29].d[0] = kStackTop - 512;  // private frame below the game's stack top
     cpu.r[29].d[1] = 0;
     for (size_t k = 4; k < args.ints.size(); ++k)  // o32: arg5+ at 16(sp)
         mem.write<u32>(u32(cpu.r[29].d[0] + 16 + 4 * (k - 4)), u32(args.ints[k]));
     for (size_t k = 0; k < args.floats.size(); ++k) cpu.f[12 + k] = args.floats[k];
+    for (const auto& [r, v] : args.fpreg_init)
+        if (r >= 0 && r < 32) cpu.f[r] = v;
     cpu.r[31].d[0] = sentinel_;
     cpu.r[31].d[1] = 0;
 }

@@ -28,6 +28,7 @@
 #include "driving/input_script.hpp"
 #include "driving/mission.hpp"
 #include "driving/mission_data.hpp"
+#include "driving/particles.hpp"
 #include "driving/scene_renderer.hpp"
 #include "render/gl.hpp"
 #include "render/window.hpp"
@@ -347,7 +348,10 @@ int run(int argc, char** argv) {
         SceneRenderer::Handle body;
         SceneRenderer::Handle wheels[4];
         std::vector<AiHandles> ai;
-        Run(DrivingLevel& level, SceneRenderer& renderer, const std::string& car) : mission(level, car) {
+        ParticleSystem particles;
+        ParticleRenderer particle_renderer;
+        Run(DrivingLevel& level, SceneRenderer& renderer, const std::string& car)
+            : mission(level, car), particles(ParticleSystem::Config::for_archive(level.desc().viv)) {
             DriveSession& session = mission.session();
             const std::vector<const SshFile*> pools{&session.car_shapes()};
             body = renderer.upload(session.body_mesh(), pools);
@@ -441,11 +445,17 @@ int run(int argc, char** argv) {
         glClearColor(level.fog_colour()[0], level.fog_colour()[1], level.fog_colour()[2], 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         Mat4 vp;
+        Vec3 eye{0, 0, 0}, view_target{0, 0, 0}, view_up{0, 1, 0};
         if (!o.free_camera) {
             const CameraPose& c = session.camera_pose();
             vp = mul(perspective(c.fovy, float(w) / float(h), c.znear, c.zfar), look_at(c.eye, c.target, c.up));
+            eye = c.eye;
+            view_target = c.target;
+            view_up = c.up;
         } else {
             vp = mul(perspective(0.9f, float(w) / float(h), 0.5f, 4000.0f), look_at(o.eye, o.target, {0, 1, 0}));
+            eye = o.eye;
+            view_target = o.target;
         }
         renderer.draw(track_handle, vp);
         if (!o.free_camera) {
@@ -472,6 +482,16 @@ int run(int argc, char** argv) {
                 if (p.respawn > 0) continue;
                 Mat4 m = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, p.pos[0], p.pos[1], p.pos[2], 1};
                 renderer.draw(pickup_handle, mul(vp, m));
+            }
+        }
+        Vec3 fwd = view_target - eye;
+        const float fwd_len = length(fwd);
+        if (fwd_len > 1e-6f) {
+            fwd = fwd * (1.0f / fwd_len);
+            Vec3 right = cross(fwd, view_up);
+            if (length(right) > 1e-6f) {
+                right = right * (1.0f / length(right));
+                run.particle_renderer.draw(run.particles, vp, eye, right, cross(right, fwd));
             }
         }
         // HUD overlay (DrivingHud feed).
@@ -509,6 +529,7 @@ int run(int argc, char** argv) {
         if (o.autodrive) run.mission.set_autodrive(true);
         for (int t = 0; t < ticks; ++t) {
             run.mission.tick(std::size_t(t) < script.size() ? script[std::size_t(t)] : PadState{});
+            run.particles.tick(run.mission.session(), run.mission);
             audio_tick();
         }
         const Vec3& p = run.mission.session().player_position();
@@ -579,6 +600,7 @@ int run(int argc, char** argv) {
         if (!o.free_camera) {
             while (accumulator >= kTickDt) {
                 run.mission.tick(poll_pad(gamepad));
+                run.particles.tick(run.mission.session(), run.mission);
                 audio_tick();
                 accumulator -= kTickDt;
             }

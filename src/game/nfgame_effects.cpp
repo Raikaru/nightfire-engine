@@ -72,7 +72,8 @@ void WeaponEffects::consume(const WeaponEvents& events) {
         } else {
             // Smoke / stun / flash grenades (no blast): a lingering grey puff; the stun adds a white-out flash.
             puffs_.push_back({x.position, Vec3{0, 0.05f, 0}, 1.1f, 0.03f, 0, 90, {0.6f, 0.6f, 0.6f, 0.55f}, 0, false});
-            if (x.weapon == 53) glow(x.position, {1.0f, 1.0f, 1.0f}, 12.0f, 40);
+            // The F3 & 0x2000 fuse block lights white for every row (stun 53, smoke 54/105).
+            if (x.weapon == 53 || x.weapon == 54 || x.weapon == 105) glow(x.position, {1.0f, 1.0f, 1.0f}, 12.0f, 40);
         }
     }
 }

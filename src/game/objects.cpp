@@ -16,9 +16,16 @@ namespace {
 
 // Param keys: Create functions read `level_tag+0x2c+4*key`, i.e. StaticInstance::param(key).
 std::uint32_t uparam(const StaticInstance& s, std::int32_t key) { return s.param(key); }
-std::uint16_t uparam16(const StaticInstance& s, std::int32_t key) {
-    return std::uint16_t(s.param(key) & 0xFFFF);
-}
+ std::uint16_t uparam16(const StaticInstance& s, std::int32_t key) {
+     return std::uint16_t(s.param(key) & 0xFFFF);
+ }
+ // `Mine_Create` reads damage/radius as ints: exact float conversion, except negative odds
+ // round up (`(v & 1 | v >> 1) * 2`, arithmetic shift). Params are non-negative on the disc.
+ float mine_param_float(std::int32_t v) {
+     if (v >= 0) return float(v);
+     const std::int32_t h = (v & 1) | (v >> 1);
+     return float(h) + float(h);
+ }
 
 float dist2(const std::array<float, 3>& a, const std::array<float, 3>& b) {
     const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
@@ -232,13 +239,14 @@ void SpObjects::build() {
             volumes_.push_back(v);
             break;
         }
-        case 254: {  // Mine_Create: proximity explosive, sound = p5
+        case 254: {  // Mine_Create: damage = float(p0), blast radius = float(p1); p5 is the
+            // explosion script (0x06000052 on the disc: the grenade blast NIS, whose
+            // visual/sound the shared explosion event covers like every weapon blast)
             Volume v;
             v.placement = i;
             v.kind = cls;
-            v.damage = 50.0f;
-            v.radius = 2.5f;
-            v.sound = uparam(s, 5);
+            v.damage = mine_param_float(std::int32_t(uparam(s, 0)));
+            v.radius = mine_param_float(std::int32_t(uparam(s, 1)));
             volumes_.push_back(v);
             break;
         }
@@ -607,34 +615,63 @@ void SpObjects::update_script_entities(const std::vector<ScriptEntity>& ents) {
             std::array<float, 16> base = st ? instance_transform(*st) : p.transform;
             const Mat4 world = mul(base, local);
             ScriptSolid& solid = sit->second;
-            const bool first = solid.last_max.size() != solid.leaves.size();
-            if (first) solid.last_max.assign(solid.leaves.size(), Vec3{});
-            for (std::size_t li = 0; li < solid.leaves.size(); ++li) {
-                Mover m;
+            // World-space box per leaf, then back together: adjacent leaves of one deck
+            // (tops within 0.25, XZ touching) merge into their union. The BVH split leaves
+            // phantom internal edges that shove the capsule sideways (seen: the 0700004a
+            // car deck grazed Bond off at its z = -4.69 leaf seam); the original tests
+            // triangles, where coplanar neighbours form one continuous floor. Union is a
+            // superset of the solids, so this only removes false edges; the top rounds up
+            // by at most the bucket epsilon (inside the ride window).
+            std::vector<std::pair<Vec3, Vec3>> boxes;
+            boxes.reserve(solid.leaves.size());
+            for (const auto& leaf : solid.leaves) {
+                Vec3 mn{}, mx{};
                 bool init = true;
                 for (int cx = 0; cx < 8; ++cx) {
-                    const Vec3 corner{cx & 1 ? solid.leaves[li].second[0] : solid.leaves[li].first[0],
-                                      cx & 2 ? solid.leaves[li].second[1] : solid.leaves[li].first[1],
-                                      cx & 4 ? solid.leaves[li].second[2] : solid.leaves[li].first[2]};
+                    const Vec3 corner{cx & 1 ? leaf.second[0] : leaf.first[0],
+                                      cx & 2 ? leaf.second[1] : leaf.first[1],
+                                      cx & 4 ? leaf.second[2] : leaf.first[2]};
                     const Vec3 v = transform_point(world, corner);
                     if (init) {
-                        m.min = v;
-                        m.max = v;
+                        mn = v;
+                        mx = v;
                         init = false;
                     } else {
                         for (int k = 0; k < 3; ++k) {
-                            m.min[std::size_t(k)] = std::min(m.min[std::size_t(k)], v[std::size_t(k)]);
-                            m.max[std::size_t(k)] = std::max(m.max[std::size_t(k)], v[std::size_t(k)]);
+                            mn[std::size_t(k)] = std::min(mn[std::size_t(k)], v[std::size_t(k)]);
+                            mx[std::size_t(k)] = std::max(mx[std::size_t(k)], v[std::size_t(k)]);
                         }
                     }
                 }
+                // Greedy first-fit over leaf order (deterministic, rigid-invariant grouping).
+                bool placed = false;
+                for (auto& g : boxes) {
+                    if (std::abs(g.second[1] - mx[1]) > 0.25f) continue;
+                    const float xgap = std::max(g.first[0] - mx[0], mn[0] - g.second[0]);
+                    const float zgap = std::max(g.first[2] - mx[2], mn[2] - g.second[2]);
+                    if (xgap > 0.6f || zgap > 0.6f) continue;
+                    for (int k = 0; k < 3; ++k) {
+                        g.first[std::size_t(k)] = std::min(g.first[std::size_t(k)], mn[std::size_t(k)]);
+                        g.second[std::size_t(k)] = std::max(g.second[std::size_t(k)], mx[std::size_t(k)]);
+                    }
+                    placed = true;
+                    break;
+                }
+                if (!placed) boxes.emplace_back(mn, mx);
+            }
+            const bool first = solid.last_max.size() != boxes.size();
+            if (first) solid.last_max.assign(boxes.size(), Vec3{});
+            for (std::size_t bi = 0; bi < boxes.size(); ++bi) {
+                Mover m;
+                m.min = boxes[bi].first;
+                m.max = boxes[bi].second;
                 m.id = std::uint32_t(i);
                 if (first) {
-                    solid.last_max[li] = m.max;
+                    solid.last_max[bi] = m.max;
                 } else {
-                    m.displacement = {m.max[0] - solid.last_max[li][0], m.max[1] - solid.last_max[li][1],
-                                      m.max[2] - solid.last_max[li][2]};
-                    solid.last_max[li] = m.max;
+                    m.displacement = {m.max[0] - solid.last_max[bi][0], m.max[1] - solid.last_max[bi][1],
+                                      m.max[2] - solid.last_max[bi][2]};
+                    solid.last_max[bi] = m.max;
                 }
                 movers_.push_back(m);
             }
@@ -1181,13 +1218,23 @@ void SpObjects::tick_damage(const std::vector<Toucher>& touchers, const WeaponEv
         for (const Toucher& t : touchers) {
             if (!t.is_player || t.slot < 0) continue;
             if (dist2(pp, t.pos) > v.radius * v.radius) continue;
-            if (!hurt) continue;
-            if (v.kind == 254) {  // mine: one blast, then gone
+            if (v.kind == 254) {  // mine: one blast through the shared path, then gone
+                // `Mine_Update` ~ `Explode_Create`: authored radius/damage with falloff,
+                // shake, boom and chain-detonation; Remote Mine row for the sound flag and
+                // kill credit, world attacker (an environment kill in MP).
                 v.spent = true;
                 hides_.push_back(v.placement);
-                hurt(t.slot, v.damage, DamageType::Bullet, pp);
-                if (v.sound != 0 && v.sound != 0xFFFF) sounds_.push_back({v.sound, pp, true});
+                if (weapons) {
+                    WeaponDef def = weapons->table().weapon(55);
+                    def.blast_radius = v.radius;
+                    def.damage = v.damage;
+                    weapons->explode_at(pp, def, -1);
+                } else if (hurt) {
+                    hurt(t.slot, v.damage, DamageType::Bullet, pp);
+                }
+                break;  // one blast per mine (`Mine_Update` dies with obj+254 |= 1)
             } else {  // hurt volume: damage per tick while inside
+                if (!hurt) continue;
                 hurt(t.slot, v.damage * 0.5f * dt_frames, DamageType::HurtVolume, pp);
             }
         }

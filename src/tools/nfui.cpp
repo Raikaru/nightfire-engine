@@ -1,9 +1,9 @@
 // nfui: preview the 2D UI of Nightfire (PS2): fonts, HUD and front-end menus.
-//   nfui <gamedir> <mode> [--shot out.bmp] [--press a,b,...] [mode options]
+//   nfui <gamedir> <mode> [--shot out.bmp] [--press a,b,...] [--frames N] [mode options]
 // Modes: font | hud | menu (see docs/ui.md). With --shot the frame is rendered headless into a BMP
-// (1280x960, 4:3); otherwise a window opens (Esc quits). `mp [flow]` is a text mode: it prints the
+// (1280x960, 4:3); --frames N runs N idle frames after --press and exits (also headless, no window
+// loop); otherwise a window opens (Esc quits). `mp [flow]` is a text mode: it prints the
 // multiplayer setup model to stdout and never opens a window.
-//
 // Keys: arrows = D-pad, Z/Enter = Cross, X = Circle, A = Square, S = Triangle, Space = Start,
 // Backspace = Select, Q/E = L1/R1, 1/2 = L2/R2.
 // --press replays pad input before the shot, one 30 Hz frame per token; tokens are button names
@@ -85,16 +85,18 @@ std::unique_ptr<Scene> make_scene(const std::string& mode, SceneArgs& args) {
 
 int run(int argc, char** argv) {
     if (argc < 3) {
-        std::fprintf(stderr, "usage: %s <gamedir> <mode> [--shot out.bmp] [--press a,b,...] [mode options]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <gamedir> <mode> [--shot out.bmp] [--press a,b,...] [--frames N] [mode options]\n", argv[0]);
         return 2;
     }
     const std::string gamedir = argv[1], mode = argv[2];
     std::string shot, press;
+    long frames = -1;
     std::vector<std::string> extra;
     for (int i = 3; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--shot" && i + 1 < argc) shot = argv[++i];
         else if (a == "--press" && i + 1 < argc) press = argv[++i];
+        else if (a == "--frames" && i + 1 < argc) frames = std::strtol(argv[++i], nullptr, 10);
         else extra.push_back(a);
     }
 
@@ -112,7 +114,8 @@ int run(int argc, char** argv) {
         for (const std::string& a : extra)
             if (a == "--stats") return run_movie_stats(gamedir, extra);
     }
-    Window window("nfui - " + mode, kWindowW, kWindowH, !shot.empty());
+    const bool headless = !shot.empty() || frames >= 0;
+    Window window("nfui - " + mode, kWindowW, kWindowH, headless);
     ui::Renderer renderer(assets.sprites);
     ui::TextRenderer text(renderer, assets.fonts);
     SceneArgs args{files, assets, gamedir, extra};
@@ -126,9 +129,17 @@ int run(int argc, char** argv) {
         renderer.end();
     };
     PadHistory pad;
-    if (!shot.empty()) {
+    if (headless) {
+        // --press replays first; --frames N then runs N more idle frames so a bare
+        // --press/--trace run terminates instead of falling into the window loop.
         replay(*scene, pad, press);
+        for (long i = 0; i < frames; ++i) {
+            pad.push({});
+            scene->update(pad);
+            if (scene->finished()) break;
+        }
         frame();
+        if (shot.empty()) return 0;
         bool ok = window.save_bmp(shot);
         std::printf("%s -> %s\n", mode.c_str(), ok ? shot.c_str() : SDL_GetError());
         return ok ? 0 : 1;

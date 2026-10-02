@@ -69,6 +69,8 @@ public:
     const CollisionWorld& collision() const { return collision_; }
     Player* player(int index) { return players_[std::size_t(index)].get(); }
     const Player* player(int index) const { return players_[std::size_t(index)].get(); }
+    // Camera_Shake broadcast (ACTION.ELF loops the 4 viewers): every live player takes the hit.
+    void camera_shake(const Vec3& pos, float radius);
     const ActionInput& input(int index) const { return inputs_[std::size_t(index)]; }
     PlayerSettings& settings(int index) { return settings_[std::size_t(index)]; }
     const PlayerParams& params() const { return params_; }

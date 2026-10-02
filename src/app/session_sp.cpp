@@ -163,6 +163,7 @@ struct SpSession::Impl {
         bank = open_character_bank(ctx.files, launch.bin);
         auto weapons_owned =
             std::make_unique<WeaponSystem>(WeaponTable::from_elf(ctx.action_elf), params.health.damage);
+        weapons_owned->set_autoaim(AutoaimTuning::load(tuning_text, ""));
         weapons_owned->set_bank(bank.get());
         weapons = weapons_owned.get();
         world->add_system(std::move(weapons_owned));
@@ -680,7 +681,7 @@ SpResult SpSession::run_interactive() {
         }
         if (finished) break;
         const Player& p = *s.world->player(0);
-        s.draw_frame(camera_for_eye_yaw_pitch(p.eye(), p.yaw, p.view_pitch()));
+        s.draw_frame(camera_for_eye_yaw_pitch(p.shaken_eye(), p.yaw, p.view_pitch()));
         s.window.swap();
     }
     if (s.gamepad) SDL_CloseGamepad(s.gamepad);
@@ -744,7 +745,7 @@ SpResult SpSession::run_headless(const SpHeadless& headless) {
     std::printf("%s: %ld frames, pos %.2f,%.2f,%.2f yaw %.3f alive %d npcs %zu %s\n", s.launch.bin.c_str(), ran,
                 p.pos[0], p.pos[1], p.pos[2], p.yaw, int(p.alive()), s.spsys->spawned(), mstate);
     if (!headless.shot.empty()) {
-        s.draw_frame(camera_for_eye_yaw_pitch(p.eye(), p.yaw, p.view_pitch()));
+        s.draw_frame(camera_for_eye_yaw_pitch(p.shaken_eye(), p.yaw, p.view_pitch()));
         const bool ok = s.window.save_bmp(headless.shot);
         std::printf("shot -> %s\n", ok ? headless.shot.c_str() : SDL_GetError());
         if (!ok) throw std::runtime_error("cannot write shot");

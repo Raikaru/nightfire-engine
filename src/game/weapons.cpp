@@ -165,7 +165,9 @@ bool WeaponSystem::give_armour(int slot, float amount) {
     PlayerWeapons* p = state(slot);
     Player* pl = world_ ? world_->player(slot) : nullptr;
     if (!p || !pl || p->dead || pl->armor() >= 50.0f) return false;
-    pl->set_armor(std::min(50.0f, pl->armor() + amount));
+    // Pickup_Handler (armour): refused at 50+, otherwise armour is set to 50 (not raised by `amount`).
+    (void)amount;
+    pl->set_armor(50.0f);
     return true;
 }
 
@@ -237,6 +239,7 @@ void WeaponSystem::weapon_none(PlayerWeapons& p) {
     p.zoom = p.zoom_target = 1.0f;
     p.muzzle_frames = 0;
     p.aim = false;
+    p.lock_victim = -1;   // no gun, no lock (BLData+276 cleared with the aim state)
     p.anim.reset();
     p.anim_weapon = -1;
 }
@@ -247,7 +250,10 @@ void WeaponSystem::damage_player(int slot, const HitInfo& hit) {
     Player* pl = world_ ? world_->player(slot) : nullptr;
     if (!pl || !pl->alive()) return;
     if (rules_ && !rules_->hit_applies(hit.attacker, slot)) return;
-    pl->hurt(hit);
+    HitInfo h = hit;
+    // Assassination: damage = victim health, set pre-armour like Player_DealWithObjHit (armour still absorbs).
+    if (rules_ && h.damage > 0.0f && rules_->assassin_lethal(hit.attacker, slot, hit.part)) h.damage = pl->health();
+    pl->hurt(h);
 }
 
 void WeaponSystem::hurt_player(int slot, float damage, DamageType type, int attacker) {
@@ -839,6 +845,7 @@ void WeaponSystem::weapon_input(int slot, PlayerWeapons& p, World& world, FrameT
     if (in.pressed(kActGunNext)) weapon_change(p, 1, 0);
     else if (in.pressed(kActGunPrev)) weapon_change(p, -1, 0);
     update_zoom(p, in, timing);
+    update_autoaim(slot, p, world);   // Player_AutoAim tail-calls after Player_Zoom
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -852,7 +859,9 @@ void WeaponSystem::weapon_firing(int slot, PlayerWeapons& p, World& world, Frame
         if (!held) p.fire_blocked = false;
         held = pressed = false;
     }
-    if (p.muzzle_frames > 0) p.muzzle_frames = std::max(0, p.muzzle_frames - int(std::lround(timing.mul())));
+    // BLData+2360 ticks down 1 per logic frame (unscaled, like the original's --timer in the collision
+    // handler): 3 frames of flicker per shot (7 for id 51), each drawing 3 shared-stream flicker values.
+    if (p.muzzle_frames > 0) --p.muzzle_frames;
     if (p.current == kNoWeapon) return;
 
     const int need = d.rounds_per_shot;
@@ -916,33 +925,98 @@ Vec3 WeaponSystem::head_pos(int slot, const World& world) const {
 Vec3 WeaponSystem::aim_direction(int slot, const World& world) const {
     const Player* pl = world.player(slot);
     if (!pl) return Vec3{0, 0, 1};
-    const Vec3 fwd = view_forward(pl->yaw, pl->view_pitch());
     const PlayerWeapons* p = state(slot);
-    if (!p || p->aim) return fwd;   // Player_AutoAim runs only while not aiming
-    // Check_AutoAim [INFERENCE: strength, not camera]: bend the shot toward the best live victim inside the
-    // aim cone (Autoaim_Range 25.0, half-angle ~0.22 rad), weighted by the weapon's autoaim percent.
-    const WeaponDef& d = table_.weapon(p->current);
-    if (d.autoaim <= 0.0f) return fwd;
-    const Vec3 eye = pl->eye();
-    const std::vector<Victim> victims = collect_victims(world);
-    const Victim* best = nullptr;
-    float best_score = 0.0f;
-    for (const Victim& v : victims) {
-        if (v.id == slot) continue;
-        const Vec3 to = (v.a + v.b) * 0.5f - eye;
-        const float dist = length(to);
-        if (dist > 25.0f || dist < 1e-4f) continue;
-        const float cosang = dot(to * (1.0f / dist), fwd);
-        if (cosang < 0.976f) continue;   // ~12.6 deg half-angle
-        const float score = d.autoaim * 0.01f * (1.0f - dist / 25.0f) * cosang;
-        if (score > best_score) {
-            best_score = score;
-            best = &v;
-        }
+    // Player_GetAimingPoint: while hip-firing with a lock, the shot follows the auto-aim cursor
+    // (Check_AutoAim steers BLData+288/+292, lock_yaw/lock_pitch here); aiming or unlocked = body forward.
+    if (!p || p->aim || p->lock_victim < 0) return view_forward(pl->yaw, pl->view_pitch());
+    return view_forward(pl->yaw + p->lock_yaw, pl->view_pitch() + p->lock_pitch);
+}
+
+void WeaponSystem::update_autoaim(int slot, PlayerWeapons& p, World& world) {
+    // Player_AutoAim + Check_AutoAim: while hip-firing, the nearest live victim inside the angular windows
+    // locks the cursor (BLData+276/288/292); the cursor decays while aiming or when auto-aim is off, and
+    // Check_Target (interactables) still runs there in the original but is not modelled.
+    Player* pl = world.player(slot);
+    if (!pl) {
+        p.lock_victim = -1;
+        return;
     }
-    if (!best) return fwd;
-    const Vec3 want = normalized((best->a + best->b) * 0.5f - eye);
-    return normalized(fwd + want * std::min(best_score * 0.5f, 0.5f));
+    const WeaponDef& d = table_.weapon(p.current);
+    const bool grapple = p.current == 80 || p.current == 81;   // ids 80/81 always scan, weight 1.0
+    if (p.aim || (!autoaim_.enabled && !grapple)) {
+        p.lock_yaw *= 0.5f;
+        p.lock_pitch *= 0.5f;
+        if (std::fabs(p.lock_yaw) < 1e-4f && std::fabs(p.lock_pitch) < 1e-4f) p.lock_victim = -1;
+        return;
+    }
+    // Difficulty weight (dword_2A3790): 1 easy, 2 normal, 3/4 hard (0 disables), anything else normal.
+    float diff_mul = autoaim_.normal;
+    if (tuning_.difficulty == 1) diff_mul = autoaim_.easy;
+    else if (tuning_.difficulty == 3 || tuning_.difficulty == 4) diff_mul = autoaim_.hard;
+    if (grapple) diff_mul = 1.0f;
+    const Vec3 eye = pl->eye();
+    const float yaw = pl->yaw, pitch = pl->view_pitch();
+    float best = autoaim_.range;   // Check_AutoAim scans under the range; nearer wins, ties re-tested
+    int best_id = -1;
+    float best_yaw = 0, best_pitch = 0;
+    for (const Victim& v : collect_victims(world)) {
+        if (v.id == slot) continue;
+        if (rules_ && rules_->teammates(slot, v.id)) continue;   // MP_areObjectsOnSameTeam
+        // Check_AutoAim aims at the torso-bone world pos (AnimGetBoneWorldTrans bone 0x80000002) for live
+        // combatants: the capsule centre for registered targets, eye height minus chest drop for players
+        // (no bone access in gameplay code; ±15 cm).
+        const Vec3 aim_at = v.target != nullptr
+                                ? (v.a + v.b) * 0.5f
+                                : Vec3{v.blast_ref[0], v.blast_ref[1] - 0.35f, v.blast_ref[2]};
+        const Vec3 to = aim_at - eye;
+        const float dist = length(to);
+        if (dist > best || dist < 1e-4f) continue;   // Check_AutoAim rejects only when best < dist
+        float w = d.autoaim * 0.01f * (1.0f - dist / autoaim_.range) * diff_mul;
+        if (v.id == p.lock_victim) w *= autoaim_.lock_mul;   // already locked: wider window
+        if (w == 0.0f) continue;   // hard difficulty, or a zero-autoaim weapon: no lock
+        float dy = std::atan2(to[0], to[2]) - yaw;   // Vec_AngleDifference(yaw)
+        dy = std::atan2(std::sin(dy), std::cos(dy));
+        const float dp = std::asin(std::clamp(to[1] / dist, -1.0f, 1.0f)) - pitch;
+        if (std::fabs(dy) >= autoaim_.angle_h * w || std::fabs(dp) >= autoaim_.angle_v * w) continue;
+        // Line of sight (Collide_LineOfSight). The original also requires the point on screen
+        // (View_3DPoint2Screen); the cone here is far narrower than the frustum, so it is implied.
+        if (world.collision().ray(eye, eye + to, pick::kIgnoreGhost | pick::kIgnoreMaterial10)) continue;
+        best = dist;
+        best_id = v.id;
+        best_yaw = dy;
+        best_pitch = dp;
+    }
+    p.lock_victim = best_id;   // none found: +276 = 0, the cursor holds its last angles while decaying
+    if (best_id >= 0) {
+        p.lock_yaw = best_yaw;
+        p.lock_pitch = best_pitch;
+    }
+}
+
+void WeaponSystem::update_target(int slot, PlayerWeapons& p, World& world) {
+    // Check_Target: every 6th logic frame the gun beam is scanned for an interactable or target. Only
+    // combatant classes exist in this port (doors/triggers/ladders/wires are SP-only with no world model),
+    // so the scan reduces to the nearest live victim along the view ray within 50. Fists and the dart gun
+    // (ids 1/67/68) never target. No MP consumer reads the result yet (PDA/Activate gadgets are not
+    // MP-obtainable; the taser and grapple run their own per-shot traces); the victim marking (+42/+708)
+    // and the SP door/trigger/ladder branches have no port counterpart by design.
+    if (world.frame() % 6 != 0) return;
+    p.target_id = -1;
+    p.target_valid = false;
+    p.target_kind = 0;
+    if (p.current == 1 || p.current == 67 || p.current == 68) return;
+    Player* pl = world.player(slot);
+    if (!pl || !pl->alive()) return;
+    const Vec3 head = pl->eye();
+    const Vec3 fwd = view_forward(pl->yaw, pl->view_pitch());
+    const SegmentHit hit = trace_segment(world, head, head + fwd * 50.0f, slot, collect_victims(world));
+    if (hit.victim < 0) return;
+    // Enemy gate (MP_areObjectsOnSameTeam / hostile flag). The original also consults friendly fire and
+    // per-level SP weapon rules on this path; neither matters without an MP consumer.
+    if (rules_ && rules_->teammates(slot, hit.victim)) return;
+    p.target_id = hit.victim;
+    p.target_valid = true;
+    p.target_kind = hit.victim < World::kMaxPlayers ? 3 : 2;
 }
 
 // Player_WeaponInitBullet
@@ -955,10 +1029,26 @@ void WeaponSystem::init_bullet(int slot, PlayerWeapons& p, World& world) {
     const Vec3 fwd = aim_direction(slot, world);
     const float reach = 1000.0f;
     Vec3 origin = head;
-    const bool launcher = d.has(wf1::kLauncherOrigin) && !(p.aim && d.has(wf1::kScope));
+    // Launcher midpoint (Player_WeaponInitBullet): haveModel starts as def+220 != 0 and is cleared for base
+    // ids {1, 82, 84, 88, 89, 91} (fists, Ronin-deploy, micro-camera, shaver throws), for aim+scope, and
+    // without F1&kLauncherOrigin. (Bases 85-87/90 also reach the flag checks but carry no such flag row.)
+    const bool launcher = d.model_gfx != 0 && d.has(wf1::kLauncherOrigin) && !(p.aim && d.has(wf1::kScope)) &&
+                          d.base != 1 && d.base != 82 && d.base != 84 && d.base != 88 && d.base != 89 &&
+                          d.base != 91;
     if (launcher) {   // midpoint of the head and the gun bone: about half a metre ahead and below the eye
         const Vec3 left = {std::cos(pl->yaw), 0.0f, -std::sin(pl->yaw)};
         origin = head + fwd * 0.5f + left * -0.1f + Vec3{0, -0.15f, 0};
+    }
+    // Taser gate (ids 74/76): the ray must strike a combatant within range or the shot never spawns: the
+    // round is refunded (clamped to the clip) instead of leaking a projectile into the air. Valid shots
+    // spawn the beam projectile below as before (speed/range/damage carry the stun).
+    if (d.id == 74 || d.id == 76) {
+        const SegmentHit pre = trace_segment(world, head, head + fwd * d.range, slot, collect_victims(world));
+        if (pre.victim < 0) {
+            auto& clip = p.weapon[std::size_t(ammo_index(d.id))].clip;
+            clip = std::int16_t(std::min<int>(clip + d.rounds_per_shot, d.clip_size));
+            return;
+        }
     }
     // Player_GetAimingPoint: the crosshair point (world hit, else far along the view axis).
     Vec3 aim = head + fwd * reach;
@@ -968,9 +1058,7 @@ void WeaponSystem::init_bullet(int slot, PlayerWeapons& p, World& world) {
     s.origin = origin;
     s.direction = normalized(aim - origin);
     s.owner_aiming = p.aim;
-    s.shots_in_burst = std::max(0, p.cycle_start - p.shots_left);
-    const std::size_t ai = std::size_t(ammo_index(d.id));
-    s.shots_in_burst = int(std::min<float>(float(s.shots_in_burst), float(p.weapon[ai].clip + s.shots_in_burst)));
+    s.shots_in_burst = std::max(0, p.cycle_start - p.shots_left);   // fired_in_cycle; spawn clamps by clipSize
     fire(s, d.id);
     if (d.model_gfx != 0 && d.muzzle_script != 0) p.muzzle_frames = d.id == 51 ? 7 : 3;
     p.rumble = d.rumble;
@@ -1009,6 +1097,25 @@ void WeaponSystem::tick_player(int slot, World& world, FrameTiming timing) {
     // Player_Weapon's aim state as the player code sees it: no walking while aiming, look speed divided by the zoom.
     pl.zoom = p.zoom;
     pl.body_flags = std::uint16_t(p.aim ? (pl.body_flags | body::kZoomed) : (pl.body_flags & ~body::kZoomed));
+    // Player_LaserPointer (CollisionHandler phase, after firing): a sighted gun draws once per frame. The
+    // branch (FRand vs Rand(9)) advances the shared stream identically either way, so one draw replicates it.
+    // No dot is rendered yet; only the stream position matters.
+    {
+        const WeaponDef& d = table_.weapon(p.current);
+        const int pair = p.current + d.alt;
+        const bool sighted = d.has(wf1::kLaserSight) ||
+                             (d.alt != 0 && pair > 0 && pair < WeaponTable::kWeaponCount &&
+                              table_.weapon(pair).has(wf1::kLaserSight));
+        if (sighted) game_rng().frand(1.0f);
+    }
+    // Draw_MuzzleFlash (same phase, after the laser): while the muzzle timer is live the flicker quad draws
+    // 3 shared-stream values per frame (only when the row has a muzzle script; the timer implies it).
+    if (p.muzzle_frames > 0) {
+        game_rng().frand(1.0f);
+        game_rng().frand(1.0f);
+        game_rng().frand(1.0f);
+    }
+    update_target(slot, p, world);   // Check_Target runs every 6th frame internally
 }
 
 void WeaponSystem::tick(World& world, FrameTiming timing) {
@@ -1033,7 +1140,9 @@ ViewModel WeaponSystem::viewmodel(int slot) const {
     v.sleeve = p->sleeve;
     v.aiming = p->aim;
     v.zoom = p->zoom;
-    v.visible = !(p->aim && d.has(wf1::kScope));
+    // Aiming hides the viewmodel unless an aim-transition anim exists (scoped AimIn plays visibly while
+    // p.aim is clear; weapons without one lower out of frame instead — PCSX2 L1-aim ref).
+    v.visible = !(p->aim && (d.has(wf1::kScope) || d.anim_aim == 0));
     const bool mp = tuning_.mode == GameMode::Multiplayer;
     const auto& hip = mp ? d.gun_offset_aim : d.gun_offset;
     const float ph = p->recoil_phase;

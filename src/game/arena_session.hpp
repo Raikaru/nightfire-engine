@@ -27,9 +27,10 @@ struct MatchOptions {
     int handicap = 0;                           // --handicap N: health bonus of every human (100 + N)
     bool side_by_side = false;                  // --split-vertical: two players side by side (DrawInfo == 1)
     std::uint32_t seed = 0x4E46;                // --seed
+    bool rng_override = false;                  // --mp-rng X Y: seed the Rand stream from oracle frame-0 words
+    std::uint32_t rng_x = 0, rng_y = 0;         // (lockstep/diff runs; skips the --seed fold)
     bool log = false;                           // --mp-log: print the match events to stdout
 
-    // Parses `args[i]` (and its value) when it is a match option; advances `i` past the value. Throws on a bad value.
     bool parse(const std::vector<std::string>& args, std::size_t& i);
     static std::vector<std::pair<const char*, std::uint32_t>> mode_names();
     ArenaSettings settings() const;

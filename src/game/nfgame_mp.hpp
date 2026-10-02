@@ -17,6 +17,7 @@ struct MatchLaunch {
     std::string shot;                             // --shot out.bmp: render the split screen once after the scripted frames
     long frames = -1;                             // --frames N: scripted length without input files
     std::array<std::string, 4> inputs;            // --inputs, --inputs2 .. --inputs4: scripted pads per player
+    std::string mp_trace;                     // --mp-trace out.jsonl: per-frame oracle-comparable state dump
     bool collision_wireframe = false;
     // MP bots (--bots N is in `options`): --bot-char a,b,c, --bot-log, --bot-log-states.
     std::string bot_characters;

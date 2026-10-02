@@ -215,7 +215,7 @@ int cmd_validate(GameFiles& gf) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::fprintf(stderr, "usage: %s <gamedir> files|maps|validate|collision|chars|sounds|sp|script|nav|ssh|arena|weapons|diff-acc|diff-refind|diff-combat|coder-spawn\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <gamedir> files|maps|validate|collision|chars|sounds|sp|script|nav|ssh|arena|weapons|diff-acc|diff-refind|diff-combat|diff-mpweap|coder-spawn\n", argv[0]);
         return 2;
     }
     try {
@@ -284,6 +284,13 @@ int main(int argc, char** argv) {
                 return 2;
             }
             return cmd_diff_combat(gf, argv[1], argv[3], argc > 4 ? argv[4] : "07000001.bin");
+        }
+        if (cmd == "diff-mpweap") {
+            if (argc < 4) {
+                std::fprintf(stderr, "usage: %s <gamedir> diff-mpweap <csv>\n", argv[0]);
+                return 2;
+            }
+            return cmd_diff_mpweap(argv[3]);
         }
         std::fprintf(stderr, "unknown command %s\n", cmd.c_str());
         return 2;

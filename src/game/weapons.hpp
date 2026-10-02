@@ -87,7 +87,14 @@ struct PlayerWeapons {
     bool anim_reverse = false;         // aim-out plays the aim-in script backwards
     float reverse_frame = 0;
     float zoom = 1.0f, zoom_target = 1.0f;   // +2256 / +2260
+    int lock_victim = -1;              // BLData+276: auto-aim target (Victim::id), -1 = none
+    float lock_yaw = 0, lock_pitch = 0;   // +288/+292 cursor: yaw/pitch offsets (radians) to the lock.
+                                          // The original stores screen-space pixels and converts back in
+                                          // Player_GetAimingPoint; angles are that round trip to first order.
     int muzzle_frames = 0;             // +2360: frames left of the muzzle flash quad
+    int target_id = -1;                // BLData+2176: Check_Target object under the gun beam (-1 = none)
+    bool target_valid = false;         // +306: usable as an Activate/gadget target
+    std::uint8_t target_kind = 0;      // +307: target class (2 drone/bot, 3 player)
     float recoil_phase = 0;
     bool dead = false;                 // mirrors !Player::alive(): the gun is put away and stops firing
     std::uint32_t rumble = 0;
@@ -127,6 +134,8 @@ public:
 
     const WeaponTable& table() const { return table_; }
     DamageTuning& tuning() { return tuning_; }
+    AutoaimTuning& autoaim() { return autoaim_; }
+    void set_autoaim(AutoaimTuning t) { autoaim_ = t; }   // from TuningVars.txt (GLOBAL + level section)
 
     // Weapon skins and animation scripts (a level's CharacterBank). Without it weapons have no animation
     // timing: every anim counts as finished at once and there is no view model.
@@ -153,6 +162,8 @@ public:
     void fire(const Shooter& shooter, int weapon_id);
     // Explode_Create at `position` with the weapon's radius and damage.
     void explode(const Vec3& position, int weapon_id, int attacker);
+    // Same, with an explicit def (map mines author their own radius/damage per placement).
+    void explode_at(const Vec3& pos, const WeaponDef& def, int attacker, float scale = 1.0f);
 
     // --- players (slot 0..3) ----------------------------------------------------------------------
     void spawn_player(int slot, const SpawnLoadout& loadout = {});   // MP_EquipPlayer, done lazily by tick()
@@ -212,6 +223,8 @@ private:
         Vec3 a, b;
         float radius;
         DamageTarget* target;   // null for players
+        Vec3 blast_ref{};       // Explode_Propagate's obj+128: the eye for players (savestate-measured:
+                               // +128 == +0x70 bit-exact), the centre for targets
     };
     struct SegmentHit {
         bool world = false;     // false: a victim
@@ -247,6 +260,8 @@ private:
     float script_frame(const PlayerWeapons& p) const;
     void advance_anim(int slot, PlayerWeapons& p, const World& world);
     void update_zoom(PlayerWeapons& p, const ActionInput& in, FrameTiming timing);          // Player_Zoom
+    void update_autoaim(int slot, PlayerWeapons& p, World& world);                          // Player_AutoAim
+    void update_target(int slot, PlayerWeapons& p, World& world);                           // Check_Target
     void reset_zoom_for_weapon(PlayerWeapons& p);
     void clamp_zoom_target(PlayerWeapons& p);
     bool owned(const PlayerWeapons& p, int weapon_id) const;
@@ -262,14 +277,15 @@ private:
     void detonate_owned(int owner, int weapon_id);  // explode every live projectile of the pair (detonators)
     void update_owner_locks(World& world);           // guided / weapon-lock projectiles freeze their owner
     SegmentHit trace_segment(const World& world, const Vec3& from, const Vec3& to, int owner,
-                             const std::vector<Victim>& victims) const;
+                             const std::vector<Victim>& victims, bool solid_water = false) const;
     void bullet_hit(Projectile& b, const SegmentHit& hit, const WeaponDef& def, const Vec3& dir);
     void hurt_victim(int victim_id, const HitInfo& hit);
     void damage_player(int slot, const HitInfo& hit);
-    void explode_at(const Vec3& pos, const WeaponDef& def, int attacker, float scale = 1.0f);
+    void stun_blast(const Vec3& pos, const WeaponDef& def, int attacker, FrameTiming timing);
 
     WeaponTable table_;
     DamageTuning tuning_;
+    AutoaimTuning autoaim_;
     CharacterBank* bank_ = nullptr;
     const drone::DroneSystem* drones_ = nullptr;   // threat gate for idle fidgets (Bots-2 any_visible_threat)
     MatchRules* rules_ = nullptr;

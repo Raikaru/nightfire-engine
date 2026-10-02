@@ -66,6 +66,10 @@ bool MatchOptions::parse(const std::vector<std::string>& args, std::size_t& i) {
         seed = std::uint32_t(std::strtoul(value().c_str(), nullptr, 0));
     } else if (a == "--mp-log") {
         log = true;
+    } else if (a == "--mp-rng") {
+        rng_x = std::uint32_t(std::strtoul(value().c_str(), nullptr, 0));
+        rng_y = std::uint32_t(std::strtoul(value().c_str(), nullptr, 0));
+        rng_override = true;
     } else {
         return false;
     }
@@ -148,7 +152,10 @@ ArenaSession::ArenaSession(World& world, WeaponTable table, const MatchOptions& 
     };
 
     auto weapons = std::make_unique<WeaponSystem>(std::move(table), tuning);
-    weapons->seed_match(options.seed);   // seeds the global Rand stream for the whole match (weapons and arena)
+    weapons->set_autoaim(AutoaimTuning::load(tuning_vars_txt, "MULTIPLAYER"));
+    // Seeds the global Rand stream for the whole match (weapons and arena).
+    if (options.rng_override) game_rng().seed(options.rng_x, options.rng_y);
+    else weapons->seed_match(options.seed);
     weapons_ = weapons.get();
     world_.add_system(std::move(weapons));
     // Match randomness comes from the global Rand stream (seeded above); the arena draws spawn picks, target

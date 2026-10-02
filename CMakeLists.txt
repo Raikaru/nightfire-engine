@@ -85,11 +85,12 @@ target_compile_options(nfview PRIVATE -Wall -Wextra)
 # nf_driving_sim: everything without GL (formats, collision, physics, camera, session); nfdump links it.
 file(GLOB NF_DRIVING_SOURCES CONFIGURE_DEPENDS src/driving/*.cpp)
 list(FILTER NF_DRIVING_SOURCES EXCLUDE REGEX "scene_renderer\\.cpp$")
+list(FILTER NF_DRIVING_SOURCES EXCLUDE REGEX "particle_render\\.cpp$")
 add_library(nf_driving_sim STATIC ${NF_DRIVING_SOURCES})
 target_include_directories(nf_driving_sim PUBLIC src)
 target_link_libraries(nf_driving_sim PUBLIC nf_assets)
 target_compile_options(nf_driving_sim PRIVATE -Wall -Wextra)
-add_library(nf_driving STATIC src/driving/scene_renderer.cpp)
+add_library(nf_driving STATIC src/driving/scene_renderer.cpp src/driving/particle_render.cpp)
 target_link_libraries(nf_driving PUBLIC nf_driving_sim nf_render)
 target_compile_options(nf_driving PRIVATE -Wall -Wextra)
 

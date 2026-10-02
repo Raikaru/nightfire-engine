@@ -137,6 +137,7 @@ namespace {
 bool can_move_to_relative_impl(Drone& d, const Vec3& local_offset) {
     const Vec3 from = d.nav_pos();
     const Vec3 to = from + to_world(local_offset, d.yaw);
+    d.mv.reach_check_pos = to;   // DroneReachCheckPos side effect (BOTSTATE_checkAttackMove KOTH veto reads it)
     if (NavNetwork* nav = d.sys->nav()) return nav->move_test(nav->locate(from), nav->locate(to)) == 1;
     // No nav network: a knee-high ray.
     const Vec3 up{0, 0.5f, 0};

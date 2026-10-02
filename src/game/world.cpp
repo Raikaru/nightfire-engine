@@ -116,4 +116,9 @@ void World::tick(const PadInputs& pads, FrameTiming timing) {
     for (auto& s : systems_) s->tick(*this, timing);
 }
 
+void World::camera_shake(const Vec3& pos, float radius) {
+    for (auto& p : players_)
+        if (p) p->camera_shake(pos, radius);
+}
+
 }  // namespace nf

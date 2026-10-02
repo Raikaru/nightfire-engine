@@ -172,15 +172,14 @@ geometry are told apart only by texel/vertex alpha. `TEST_1`: `0x5001B` (alpha >
 `0x507FD` (alpha > 0x7F, i.e. only fully opaque texels: cut-out foliage/fences, 658), `0x5000B` (always, 6);
 `ZTE = 1`, `ZTST = GEQUAL` throughout. `ZMSK = 1` on 10,063 batches (glass, sky, effects).
 
-Colour: file vertex colours run `0x00..0xFF` with `0xFF` = full brightness (a disc-wide census finds 30%
-of all 5.67M level vertices at pure white and almost none at `0x80`; foliage gradients use the full
-`0x00..0xFF` range, e.g. tree billboards fade black to pure green). The GS computes
-`Cs = Ct * Cf >> 7`, `As = At * Af >> 7` clamped to 0..255 with alpha `0x80` = 1.0, so on the wire
-`0x80` = 1.0; the file bytes are halved upstream (by the VU1 program, which also adds up to two dynamic
-point lights from `Light` objects and the `psiSetTweakARGB` object tint) [INFERENCE: the halving is
-unseen in the files; what matters is that file `0xFF` renders as texture unchanged]. Texel alpha is the
-palette alpha (`0x80` max). World vertices are prelit for static level geometry, so the viewer applies
-the file vertex colour alone as `byte / 255` (alpha stays in GS units).
+Colour: the GS computes `Cs = Ct * Cf >> 7`, `As = At * Af >> 7` clamped to 0..255 with `0x80` = 1.0, and
+the VIF colour stream reaches it unscaled (the EE draw path uploads matrices and DMA chains only, so the
+viewer applies `byte / 128`). File bytes run `0x00..0xFF`: fully-lit surfaces clamp at `0xFF` (~2x, usually
+harmless on mid-tone textures; hot on bright texels such as foliage) — matched-surface PCSX2 comparisons
+(turbine tank, sky, garage pillars) show a uniform ~2.2x ratio versus byte/255 rendering, confirming the
+wire scale. A disc-wide census finds 30% of all 5.67M level vertices at pure white: hot-clamped lit
+surfaces, not proof of a /255 authoring scale. Texel alpha is the palette alpha (`0x80` max). World
+vertices are prelit for static level geometry, so the viewer applies the vertex colour alone.
 
 `decode_ps2_gfx` returns per batch `GsRegs` (raw) and `Material` (blend factors, alpha test, depth write).
 `nfdump validate` prints the histograms above.
@@ -253,6 +252,10 @@ particles-block def (`u32` id `0x0C0000xx`, `u32` sprite hash `0x03xxxxxx` or `-
 ramp. `Emitter_Draw` billboards textured defs (additive soft blobs) and instances mesh defs per particle.
 Switch-gated emitters run only while their A channel is on / B channel off; the viewer reads live
 mission channels. Emitter levels: `02`, `14`, `15`, `46`.
+Mesh-particle defs (model hash set, sprite `-1`: `0x020001FE`, `0x020002CA`, `0x020006E0`) are referenced
+by placed `0xF2` instances only on `07000046.bin` (3 of its 17 emitters); every other level uses billboard
+defs. Falling leaves (case `0x2B`, `LeafGen_Create`: 2 in `07000004`, 1 in `07000041`) instance the shared
+Leaf mesh (`0x020002CA`) around the generator; the viewer synthesizes an 8-particle slow-sink def for them.
 
 ### Collision (`parsemap_block_Coll_Data_New`, `Intersect_RayGeom`, `Intersect_CylGeom`)
 
@@ -339,7 +342,7 @@ Static params are `{i32 key; u32 value}` pairs; `Create` functions read `level_t
 | 49 fusebox | 0 spark script, 1..4 channels, use powers p1 [INFERENCE] |
 | 51 hint | 0 Txt label, 1 SFX, 3 gate ch; 46/48 lock/monitor: use sets param 1 [INFERENCE] |
 | 240 pickup | 0 kind (1 weapon / 3 ammo / 6 weapon-empty [INFERENCE]), 1 id, 2 rounds, 4 SFX, 6 respawn frames |
-| 228 hurt | 0 damage per tick (kill-planes use 6); 254 mine: proximity blast (damage 50 [INFERENCE]) |
+ | 228 hurt | 0 damage per tick (kill-planes use 6); 254 mine: 0 damage (int→float), 1 blast radius, 5 explosion script (0x06000052 on the disc); proximity detonates like `Explode_Create` |
 | 231 thirdcam | 0 camera id; 217 script player: 0 script hash, 2 == 1 auto-plays, 6 trigger ch |
 | 47 copter / 52 turret / 210 shooter / 224 creature | scripted shooters (range + timed shots [INFERENCE]) |
 

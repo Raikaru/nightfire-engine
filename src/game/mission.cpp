@@ -124,11 +124,14 @@ void MissionSystem::ram_load(int slot, const Inventory& inv) {
     weapons_.select_weapon(slot, inv.selected);
 }
 
-void MissionSystem::pre_tick(World& world, const std::vector<bool>& use) {
-    // NOTE: the drone-channel import lives after `objects_->tick` below: the multiplex
-    // re-eval unconditionally stores its outputs (e.g. OR-34/164), so importing before the
-    // tick would let it stomp drone one-shot writes (deaths, spawner completion) on shared
-    // numbers. Import-after + export-merged keeps drone 1-bits sticky in both stores.
+ void MissionSystem::pre_tick(World& world, const std::vector<bool>& use) {
+     // Mines detonate through `WeaponSystem::explode_at` below, which needs the world for its
+     // victim gather and shake; the weapon tick (which binds it) runs after this.
+     weapons_.attach(world);
+     // NOTE: the drone-channel import lives after `objects_->tick` below: the multiplex
+     // re-eval unconditionally stores its outputs (e.g. OR-34/164), so importing before the
+     // tick would let it stomp drone one-shot writes (deaths, spawner completion) on shared
+     // numbers. Import-after + export-merged keeps drone 1-bits sticky in both stores.
     std::vector<SpObjects::Toucher> touchers;
     for (int i = 0; i < World::kMaxPlayers; ++i) {
         Player* p = world.player(i);

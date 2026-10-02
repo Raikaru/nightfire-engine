@@ -22,7 +22,8 @@ struct HitInfo {
     int attacker = -1;       // shooter id: 0..3 player slot, >= 4 bots / drones, -1 environment
     int weapon = 0;          // weapon_data id
     Vec3 point{};            // where it hit
-    Vec3 direction{};        // unit travel direction of the projectile (zero for explosions)
+    Vec3 direction{};        // unit travel direction of the projectile (zero for explosions); the pain
+                             // indicator reads this (HITDATA+48, proven by disassembly: normalized ray dir)
     int part = bodypart::kNone;
 };
 
@@ -38,6 +39,8 @@ public:
     // The damage is already the raw weapon damage (bullet: def+12, explosion: distance scaled); modifiers that
     // depend on the victim (armour, head multipliers, difficulty) belong to the implementor.
     virtual void hurt(const HitInfo& hit) = 0;
+    // Stun-grenade blast (Bullet_DoTrails message 24): bots enter ImpactStunGrenade; default ignores.
+    virtual void stun() {}
 };
 
 // Game-mode rules that decide whether damage counts (team / friendly fire) and what a kill triggers.
@@ -46,6 +49,11 @@ public:
     virtual ~MatchRules() = default;
     // Called before damaging a player; false skips the damage (friendly fire off). attacker -1 = environment.
     virtual bool hit_applies(int attacker, int victim) = 0;
+    // Side-effect-free team test for gates that must not record hits (auto-aim): MP_areObjectsOnSameTeam.
+    virtual bool teammates(int, int) const { return false; }
+    // Assassination: the assassin's hits on the target are lethal (Player_DealWithObjHit sets the bullet
+    // damage to the victim's health). The caller applies it pre-armour, exactly like the original.
+    virtual bool assassin_lethal(int, int, int) const { return false; }
     // Once, when the victim's health reached 0 (Player_CheckForDeath). attacker -1 = suicide / environment.
     virtual void player_killed(int victim, int attacker, int weapon_id) = 0;
     virtual void environment_kill(int victim) = 0;
@@ -66,6 +74,21 @@ struct DamageTuning {
 
     // Applies [GLOBAL] then `section` (a level name such as "MULTIPLAYER") of a TuningVars.txt.
     void load(std::string_view tuning_vars_txt, std::string_view section);
+};
+// Player_AutoAim / Check_AutoAim tunables (ELF .sdata Autoaim_*; TuningVars.txt [GLOBAL] then the level
+// section override them). Defaults are the MULTIPLAYER-tuned values (docs/spec-weapons.md 9).
+struct AutoaimTuning {
+    float range = 25.0f;    // Autoaim_Range: scan starts here, best distance only shrinks
+    float angle_h = 0.12f;  // Autoaim_Angle_H: yaw half-window, scaled by the target weight
+    float angle_v = 0.22f;  // Autoaim_Angle_V: pitch half-window, scaled by the target weight
+    float lock_mul = 1.4f;  // Autoaim_LockOnMul: window of the already-locked target
+    float easy = 1.9f;      // Autoaim_EasyMul: weight at difficulty 1 (forced in MP)
+    float normal = 1.0f;    // Autoaim_NormalMul: difficulty 2 (and anything but 1/3/4)
+    float hard = 0.0f;      // Autoaim_HardMul: difficulty 3-4 disables auto-aim
+    bool enabled = true;    // PlayerSetting+1 (SP) / +2 (MP); the port has no options menu yet, default on
+
+    // Applies [GLOBAL] then `section` of a TuningVars.txt (same section pass as DamageTuning::load).
+    static AutoaimTuning load(std::string_view tuning_vars_txt, std::string_view section);
 };
 
 // Health and armour of a player (BLData+2196 / +2224) and the pain feedback fields.

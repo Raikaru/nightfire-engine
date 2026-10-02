@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/rng.hpp"
 #include "game/object_world.hpp"
 
 namespace nf {
@@ -379,10 +380,17 @@ void Player::resolve_collisions(const CollisionWorld& world) {
     }
     const Vec3 up = orientation()[1];
     const FeetResult feet = world.feet_on_point(pos, result.b, up, stand_height, result.contact);
-    if (feet.on_ground) body_flags |= body::kOnGround;
+    // Player_FeetOnPoint's ray hits script solids too: with no static floor, a mover top
+    // under the sole still grounds the player (the 4a lift platform has no static collision).
+    const Vec3 sole = {pos[0] - up[0] * stand_height, pos[1] - up[1] * stand_height,
+                       pos[2] - up[2] * stand_height};
+    const bool mover_ground =
+        !feet.on_ground && object_world_ && object_world_->standing_on_mover(sole, capsule_radius);
+    const bool grounded = feet.on_ground || mover_ground;
+    if (grounded) body_flags |= body::kOnGround;
     ground_normal_y = feet.ground_normal_y;
     ground_history = std::uint16_t(std::int16_t(ground_history) >> 1);
-    if (feet.on_ground) ground_history |= 8;
+    if (grounded) ground_history |= 8;
     fall_damage(timing_);
 
     if (!result.hits.empty()) {
@@ -403,7 +411,7 @@ void Player::resolve_collisions(const CollisionWorld& world) {
     }
     // Script-driven platforms carry a standing player by the frame's displacement (ObjectWorld::movers_).
     if ((body_flags & body::kOnGround) != 0 && object_world_) {
-        const Vec3 anchor = feet.ground ? feet.ground->point : pos;
+        const Vec3 anchor = feet.ground ? feet.ground->point : sole;
         pos += object_world_->ride_displacement(anchor, capsule_radius);
     }
     // Foot-height follow (see update) is already in pos; a non-transitioning crouch that ends the
@@ -490,6 +498,36 @@ void Player::update_camera(FrameTiming timing) {
     if (substate == SubState::Crouch) crouch_dip = std::min(crouch_dip + mul * 0.0225f, 0.45f);
     else crouch_dip = std::max(crouch_dip - mul * 0.0225f, 0.0f);
     if (life == LifeState::Dead || life == LifeState::DeadHold) crouch_dip = 0.0f;   // Player_PositionCamera, mode 0
+    // Camera_Update shake block (viewer+0x200): fresh render offset while the magnitude is
+    // positive, then decay. fGpffff8a6c is REC_FRAME_RATE. RNG order (shared stream): three
+    // Rand_FRand_MVar2 draws (one per axis), then one Rand_FRand decay draw.
+    if (shake_ > 0.0f) {
+        const float k = shake_ * timing.rec();
+        for (int a = 0; a < 3; ++a) shake_offset_[std::size_t(a)] += game_rng().mvar2(k, k);
+        shake_ -= game_rng().frand(shake_ * 0.25f);
+        if (shake_ < 0.0f) shake_ = 0.0f;
+    } else {
+        shake_offset_ = {};
+    }
+}
+
+void Player::camera_shake(const Vec3& pos, float radius) {
+    // Camera_Shake: Explode_Create zeroes sub-0.5 radii; radius doubles; viewers past the
+    // radius keep their magnitude; strength falls off 1-(d/r)^2 and caps at 10 (overwrites).
+    if (radius < 0.5f) return;
+    const float r = radius + radius;
+    const Vec3 e = eye();
+    const float dx = e[0] - pos[0], dy = e[1] - pos[1], dz = e[2] - pos[2];
+    const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (d > r) return;
+    const float scaled = d / r;
+    const float s = r * (1.0f - scaled * scaled);
+    if (s > 0.0f) shake_ = std::min(s, 10.0f);
+}
+
+Vec3 Player::shaken_eye() const {
+    const Vec3 e = eye();
+    return {e[0] + shake_offset_[0], e[1] + shake_offset_[1], e[2] + shake_offset_[2]};
 }
 
 Vec3 Player::eye() const {

@@ -81,7 +81,8 @@ bool BotBrain::goto_goal(int slot, int return_state) {
     } else {
         body->setup_goal_position(g.pos, speed_mul());
     }
-    v.goto_stamp = std::uint32_t(self->state());
+    v.goto_stamp = std::uint32_t(self->state());   // BOT_vars+0x730 = current state
+    self->pre_state = return_state;                // Drone+0x5a0 = returnState (with +0x5a2 below)
     self->initial_state = return_state;
     float limit = 0;
     if (slot == 1) {
@@ -92,12 +93,11 @@ bool BotBrain::goto_goal(int slot, int return_state) {
         case 9: limit = float(env->rand(500)) + 250.0f; break;
         default: break;
         }
+        // TeamPlayer +1500 only holds in team games; Berserker commits to nothing in any mode (EE §T sweep:
+        // pers 5 zeroes the budget with teams both off and on; the spec prose only mentioned FFA).
         const Personality p = v.personality();
-        if (!env->teams_on()) {
-            if (p == Personality::Berserker) limit = 0;
-        } else if (p == Personality::TeamPlayer) {
-            limit += 1500.0f;
-        }
+        if (env->teams_on() && p == Personality::TeamPlayer) limit += 1500.0f;
+        if (p == Personality::Berserker) limit = 0;
     }
     g.distraction_limit = limit;
     v.bits &= ~bitflag::kCommitted;

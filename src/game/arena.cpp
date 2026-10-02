@@ -97,6 +97,13 @@ bool ArenaSystem::same_team(int a, int b) const {
     return ta != kTeamNone && tb != kTeamNone && ta == tb;
 }
 
+bool ArenaSystem::teammates(int a, int b) const { return same_team(a, b); }
+bool ArenaSystem::assassin_lethal(int a, int b, int /*part*/) const {
+    // Player_DealWithObjHit (dword_2A4944 == 1024, MP_IsAssasin(a) && MP_IsTarget(b)): the damage becomes the
+    // victim's health on every zone (head outright, other zones at any angle in the decompile as read).
+    return settings_.mode == mp_mode::kAssassination && a == assassin_ && b == target_ && valid(a) && valid(b);
+}
+
 int ArenaSystem::object_team(int slot) const {
     // MP_getObjectTeam: 2 when teams are off (and the mode is not Assassination).
     if (!settings_.uses_teams() || !valid(slot)) return kTeamNone;
@@ -260,7 +267,8 @@ void ArenaSystem::player_killed(int victim, int attacker, int /*weapon_id*/) {
                 ++k.streak;
             }
             v.last_killer = killer;
-            delta = 1.0f;
+            // Vengeful revenge: a bot (slot 4..7) whose trait opponent (+0x76b) is the victim scores +2.
+            delta = (vengeful_bonus_ && vengeful_bonus_(killer, victim)) ? 2.0f : 1.0f;
         }
         // Points are only awarded for kills in Arena and Team Arena (the KOH ids in the original's list are dead code).
         if (!settings_.objective_scored() && (settings_.mode == mp_mode::kArena || settings_.mode == mp_mode::kTeamArena))
@@ -523,7 +531,9 @@ ArenaHud ArenaSystem::hud(int viewer, const Vec3& eye, float yaw) const {
     h.score_limit = settings_.score_limit;
     h.best_score = best_score_;
 
-    // MP_GetRadarObjects: everything is reported in the viewer's camera space.
+    // MP_GetRadarObjects: everything is reported in the viewer's camera space. With the viewer's +0x28
+    // flag off the call produces nothing at all.
+    const bool radar = !valid(viewer) || settings_.slots[std::size_t(viewer)].hud;
     const Vec3 forward{std::sin(yaw), 0, std::cos(yaw)}, right{-std::cos(yaw), 0, std::sin(yaw)};
     auto blip = [&](const Vec3& p, std::uint32_t color, int kind) {
         const Vec3 rel = p - eye;
@@ -532,6 +542,7 @@ ArenaHud ArenaSystem::hud(int viewer, const Vec3& eye, float yaw) const {
         b.color = color, b.kind = kind, b.world = p;
         h.blips.push_back(b);
     };
+    if (radar) {
     for (int i = 0; i < int(kMpSlots); ++i) {
         if (i == viewer || !alive(i)) continue;
         std::uint32_t color = 0x7F7F7FFF;
@@ -561,6 +572,7 @@ ArenaHud ArenaSystem::hud(int viewer, const Vec3& eye, float yaw) const {
             case K::EspionageBase: blip(o.pos, by_team, 7); break;
             default: break;
         }
+    }
     }
     return h;
 }

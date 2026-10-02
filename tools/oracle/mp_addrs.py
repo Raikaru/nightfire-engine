@@ -1,0 +1,179 @@
+"""MP ground-truth address map (ACTION.ELF USA, SLUS-20579).
+
+Single source of truth for tools/oracle/mp_*.py. Every address was probed live
+over PINE on 2026-10-02 unless marked [SPEC] (from docs/spec-arena-ai.md, not
+yet re-verified this session). Struct notes cite the spec section.
+"""
+
+# ---- global timebase -------------------------------------------------------
+GAMESTATE = 0x2A3768
+GS_DONE = GAMESTATE + 0x30      # ++ at END of each logic update
+GS_FRAME = GAMESTATE + 0x34     # frame counter (verified == +0x3C here)
+GS_FRAME_START = GAMESTATE + 0x3C  # ++ at START of each logic update
+FRAME_RATE = 0x30D0D0          # float, 60 / vsyncs per logic frame
+FRAME_RATE_INT = 0x30D0CC       # int, 30 or 60
+REC_FRAME_RATE = 0x30D0DC       # float dt
+
+# ---- RNG (bit-exact stream, src/core/rng.hpp) -------------------------------
+RNG_X = 0x30D0A0
+RNG_Y = 0x30D0A4
+RNG_NWORDS = 4
+
+RNG_WORDS = 0x30D0A0           # 4 u32 reads (X, Y, +8, +0xC) [SPEC: 4 words]
+MPSETTINGS = 0x2A47A0          # 0x1dc bytes (spec 1.3)
+MPGAME = 0x2A4980              # 0x1d0 bytes (spec 1.4)
+MP_SLOT_STRIDE = 0x30
+MP_NSLOTS = 8
+# MPSettings offsets
+MPS_MP_ACTIVE = 0x180
+MPS_TEAMS = 0x18C
+MPS_OBJECTIVE = 0x190
+MPS_PARTICIPANTS = 0x194
+MPS_FRIENDLY_FIRE = 0x198
+MPS_SCORE_LIMIT = 0x19C
+MPS_TIME_LIMIT_MIN = 0x1A0     # minutes in menu, seconds after confirm
+MPS_SCENARIO_MASK = 0x1A4
+MPS_MAP = 0x1A8
+MPS_HUMANS = 0x1AC
+MPS_BOTS = 0x1B0
+MPS_WEAPON_SET = 0x1B4
+MPS_PICKUP_COUNT = 0x1D8       # u16 live MPpickups entries
+# MPGame slot offsets
+MPG_KILLS = 0x04
+MPG_DEATHS = 0x08
+MPG_STREAK = 0x10
+MPG_POINTS = 0x18             # float
+MPG_OBJ = 0x1C                # obj_tag*
+MPG_LAST_ATTACKER = 0x20       # i16
+MPG_FF_COOLDOWN = 0x22        # u16
+MPG_COUNTDOWN = 0x24          # u16
+MPG_STATUS = 0x26             # u16
+MPG_LAST_KILLER = 0x28        # i16
+# MPGame globals
+MPG_TEAM0 = 0x180              # float team scores
+MPG_TEAM1 = 0x184
+MPG_STATE = 0x188              # 0 running 1 score 2 time 3 hold 4 results 5 idle 6 restart
+MPG_BEST = 0x18C
+MPG_ELAPSED = 0x190            # float seconds
+MPG_LIMIT = 0x194              # float time limit seconds
+MPG_TOTAL = 0x19C              # float total seconds (pickup-visit clock)
+
+# ---- players / bots ---------------------------------------------------------
+GLB_PLAYERS = 0x2D88E0         # obj_tag*[4] humans
+# obj_tag (verified live 2026-10-02)
+OBJ_POS = 0x30                 # vec3
+OBJ_POS2 = 0x40                # vec3 copy
+OBJ_YAW = 0x54                 # f32 rad, forward = (sin, 0, cos)
+OBJ_COLL = 0xDC                # collbody* (humans; +0xCC foot height, +96 aim, +98 weapon)
+OBJ_BL = 0xE0                  # BLData*
+OBJ_STAMP = 0xEC               # i32 spawn/death frame
+OBJ_STATE = 0xF4               # u16: humans 1 alive; bots = drone state id
+OBJ_TYPE = 0xFF                # u8: 2 bot 3 human 0x11/0x12 dead 0x2f pickup
+# BLData (verified)
+BL_HEALTH = 0x894              # f32 humans
+BL_ARMOUR = 0x8B0              # f32 humans
+BL_PITCH = 0x8A8               # f32 humans, units of pi/2
+# collbody (verified; MpCombat correction: BLData=*(obj+0xE0), weapon=*(obj+0xDC)+98)
+CB_AIM = 0x96                  # u8 aim bit
+CB_WEAPON = 0x98               # s8 current weapon id
+CB_FOOT = 0xCC                 # f32 animated foot height
+
+# ---- bot brain (spec Part 2, §1.5/1.6; slot layout verified, rest [SPEC]) ---
+BOT_VARS = 0x26D660            # 4 x 0x780, index = slot-4
+BOT_VARS_STRIDE = 0x780
+BOT_GOAL0 = 0x000              # 2 x 0x50 goal records
+BOT_STATS = 0x0A0              # 14 B copy; +0xA4 u16 maxhp, +0xAA weappref, +0xAB personality
+BOT_OTHER = 0x0B0              # 8 x 0x10 perception cache
+BOT_WEAPONS = 0x140            # 0x55 x 0xC weapon records (clip u16 +4, has u8 +6)
+BOT_RESERVE = 0x698            # 0x21 x u16 ammo reserve
+BOT_DISTRACT = 0x728           # f32
+BOT_DRONE = 0x750              # ptr &MPSettings[slot] at +0x750, Drone* at +0x754
+BOT_PIDX = 0x75C               # s16 player index
+BOT_BIDX = 0x75E               # s16 bot index
+BOT_NODE = 0x760               # u16 nearest nav node
+BOT_GOALSLOT = 0x765           # u8 active goal slot
+BOT_STYPE = 0x766              # u8 current state type
+BOT_CURWEAP = 0x768            # u8
+BOT_ARMOUR = 0x769             # u8
+BOT_TRAIT = 0x76B              # s8 preferred trait opponent slot
+# Drone struct (via BOT_vars+0x754; +0xd1c back-pointer verified)
+DRONE_BOTVARS = 0xD1C
+DRONE_HEALTH = 0xAC            # f32 bot health
+DRONE_LASTDMG = 0x150          # f32 last damage taken
+# goal record (0x50)
+GOAL_POS = 0x00                # CelPos 0x20
+GOAL_DISTRACT_LIM = 0x20       # f32
+GOAL_TSET = 0x24               # f32 clock when set
+GOAL_TIMEOUT = 0x28            # f32
+GOAL_TARGET = 0x3C             # ptr
+GOAL_RETSTATE = 0x40
+GOAL_TYPE = 0x45               # 0 none 1 pickup 2 objective 3 chase
+GOAL_KIND = 0x4A               # 0 pickup 1 flag 2 base 3 GE 4 bp 5 base 6 uplink 7 hill 8 demo 9 chase
+
+# ---- pickups (spec 1.10) ----------------------------------------------------
+MPPICKUPS = 0x2A4B50           # 64 x 0xA0
+MPPICKUP_STRIDE = 0xA0
+MPPICKUP_POS = 0x10            # vec4
+PICKUPINFO_OFF = 0xE0          # obj+0xE0 for type-0x2f objs
+PI_STATE = 0x20                # s16 0 settling 1 active 2 respawning
+PI_CAT = 0x22                  # u16 category
+PI_ITEM = 0x24                 # u16 item/weapon id
+PI_RESPAWN_FLAG = 0x2C         # u16 0 delete ... 0xffff hide+respawn
+PI_RESPAWN = 0x2E              # u16 respawn value (seconds = 10 x units [SPEC])
+PI_INDEX = 0x30                # s16 MPpickups index
+
+# ---- objectives (spec 1B; ext blobs for the recorder) -----------------------
+MPOBJECTS = 0x2A47D0           # obj*[64] (overlaps MPSettings tail; see spec)
+FLAGS = 0x317210               # 2 x 0x90
+BASES = 0x317330               # 2 x 0x90
+UPLINKS = 0x317450             # 8 x 0x90
+DEMOLITION = 0x3178D0          # 0x90
+PROTECTION = 0x317C60          # 0x90
+GOLDENEYE = 0x317FF0           # 4 x 0x90 (key, crystal, effect-handle, target)
+BLUEPRINT = 0x318830           # 0x90
+ESPONAGE_BASE = 0x3188C0       # 2 x 0x90
+HILL = 0x318CE0                # 0x90
+SPAWNPOINTS = 0x2A7350         # 64 x 0x30
+SWITCH_FD = 0x26FD8D           # score-limit channel
+SWITCH_FE = 0x26FD8E           # time-up channel
+
+# ---- menu / unlock ----------------------------------------------------------
+MENU_UNLOCK_EVERYTHING = 0x30D2A7  # u8 cheat flag; bypasses scenario row checks
+SP_LEVEL = 0x2DF2E0            # 12 x 0x18 SP mission unlock rows, +0x10 flag
+
+# ---- input (trace.py compat) ------------------------------------------------
+TSLOT0 = 0x245680
+TSLOT_PADW = 0x122              # Sony button word (active-high)
+TSLOT_STICKS = 0x128           # rx ry lx ly post-deadzone
+PLAYER_SETTING = 0x2A38C8
+
+# ---- MP maps ----------------------------------------------------------------
+MP_MAPS = [
+    (0x07000024, "Skyrail"),
+    (0x07000027, "Fort Knox"),
+    (0x07000029, "Snow Blind"),
+    (0x07000026, "Phoenix Base"),
+    (0x07000023, "Atlantis"),
+    (0x07000028, "Missile Silo"),
+    (0x07000025, "Sub Pen"),
+    (0x0700004B, "Ravine"),
+]
+# scenario wheel order (down from Quick Game), masks in spec 1.2
+MP_SCENARIOS = [
+    (0x00000000, "Quick Game"),
+    (0x00000001, "Arena"),
+    (0x20000002, "Team Arena"),
+    (0x20000004, "Capture The Flag"),
+    (0x60000008, "Uplink"),
+    (0x00000010, "Top Agent"),
+    (0x20000040, "Demolition"),
+    (0x20000080, "Protection"),
+    (0x20000100, "Industrial Espionage"),
+    (0x20000200, "GoldenEye Strike"),
+    (0x00000400, "Assassination"),
+    (0x40000800, "King of the Hill"),
+    (0x60001000, "Team King of the Hill"),
+]
+
+# PINE savestate slots owned by the MP oracle (1-9 belong to Movement-2).
+MP_SLOT_FIRST = 10

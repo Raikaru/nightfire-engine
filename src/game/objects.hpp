@@ -262,13 +262,12 @@ private:
         float range = 30, damage = 10, period = 60, timer = 0;
         std::uint32_t sound = 0;
     };
-    struct Volume {  // Hurt volumes and mines
+    struct Volume {  // Hurt volumes (damage per tick) and mines (authored blast damage/radius)
         std::size_t placement = 0;
         std::uint32_t kind = 0;
         std::uint16_t gate_channel = 0;
         float damage = 10, radius = 2;
-        std::uint32_t sound = 0;  // Mine explosion sound (param 5)
-        bool spent = false;  // mines
+        bool spent = false;  // mines: detonated once, then hidden
     };
     struct Switch {
         std::size_t placement = 0;
@@ -328,8 +327,8 @@ private:
     // World-space bounds per placement with collision (touch tests + movers).
     std::unordered_map<std::size_t, std::pair<std::array<float, 3>, std::array<float, 3>>> bounds_;
     // Model-space solid leaves per script-driven placement (parsed once from the model's
-    // collision BVH, pass-through tris skipped) and the last published world max per leaf
-    // (for the mover displacement).
+    // collision BVH, pass-through tris skipped) and the last published world max per merged
+    // group (for the mover displacement; regrouping resets it, which is benign).
     struct ScriptSolid {
         std::vector<std::pair<std::array<float, 3>, std::array<float, 3>>> leaves;
         std::vector<std::array<float, 3>> last_max;

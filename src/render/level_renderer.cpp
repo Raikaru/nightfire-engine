@@ -11,9 +11,11 @@ using namespace gl;
 
 namespace {
 
-// Vertex colour: file bytes run 0x00..0xFF with 0xFF = full brightness (a disc-wide census finds
-// 30% of all level vertices at pure white and almost none at 0x80, so 0xFF is the authored white).
-// The viewer applies file units directly (v_color = byte / 255); alpha stays in GS units (0x80 = 1.0).
+// Vertex colour: the GS modulates (TFX = MODULATE, TCC = 1) as Cs = Ct * Cf >> 7 with 0x80 = 1.0 per
+// channel, and the VIF colour stream reaches it unscaled (the EE draw path uploads matrices and DMA
+// chains only). File bytes run 0x00..0xFF with fully-lit surfaces clamped at 0xFF (~2x, usually harmless
+// on mid-tone textures; hot on bright texels such as foliage) — matched-surface PCSX2 comparisons show
+// a uniform ~2.2x ratio versus byte/255 rendering, confirming the wire scale. Alpha stays in GS units.
 const char* kVertexShader = R"(#version 330 core
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec2 a_uv;
@@ -25,7 +27,7 @@ out float v_alpha;
 out float v_depth;
 void main() {
     v_uv = a_uv;
-    v_color = a_rgba.rgb;
+    v_color = a_rgba.rgb * (255.0 / 128.0);
     v_alpha = floor(a_rgba.a * 255.0 + 0.5);
     gl_Position = u_mvp * vec4(a_pos, 1.0);
     v_depth = gl_Position.w;

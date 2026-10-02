@@ -18,13 +18,15 @@ namespace {
 constexpr std::uint32_t kClassEnv = 0xDF;
 constexpr std::uint32_t kClassRainBox = 0x32;
 constexpr std::uint32_t kClassEmitter = 0xF2;
+constexpr std::uint32_t kClassLeafGen = 0x2B;
 constexpr std::uint32_t kSnowTex0 = 0x3000045;
 constexpr std::uint32_t kSnowTex2 = 0x3000087;
 constexpr std::int32_t kRainModel = 0x2000290;    // 'Raindrop' streak mesh
 constexpr std::int32_t kDustModel = 0x2000039;    // 'smoke_1_dust', drawn per drop on levels 09-0B
 constexpr std::size_t kMaxDrops = 0x1000;
 
-// Billboard shader: textured quad, file-unit vertex colour, GS-style alpha test.
+// Billboard shader: GS wire-scale vertex colour (x/128, matching the level shader). CPU particle
+// colours are packed pre-halved (mirroring Emitter_LoadDefs), so they render unchanged.
 const char* kVertexShader = R"(#version 330 core
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec2 a_uv;
@@ -35,7 +37,7 @@ out vec3 v_color;
 out float v_alpha;
 void main() {
     v_uv = a_uv;
-    v_color = a_rgba.rgb;
+    v_color = a_rgba.rgb * (255.0 / 128.0);
     v_alpha = floor(a_rgba.a * 255.0 + 0.5);
     gl_Position = u_mvp * vec4(a_pos, 1.0);
 }
@@ -45,13 +47,27 @@ in vec2 v_uv;
 in vec3 v_color;
 in float v_alpha;
 uniform sampler2D u_tex;
+uniform int u_atest;
+uniform float u_aref;
 out vec4 o_color;
 void main() {
     vec4 t = texture(u_tex, v_uv);
-    vec3 rgb = t.rgb * v_color;
-    float a = t.a * v_alpha / 128.0;
-    if (a < 0.5 / 255.0) discard;
-    o_color = vec4(rgb, min(a, 1.0));
+    // GS alpha in 0..128 units (0x80 = 1.0); the decoder stores min(255, 2 * a).
+    float texel_alpha = floor(t.a * 127.5 + 0.5);
+    float a = min(floor(texel_alpha * v_alpha / 128.0), 255.0);
+    if (u_atest >= 0) {
+        bool pass = false;
+        if (u_atest == 1) pass = true;
+        else if (u_atest == 2) pass = a < u_aref;
+        else if (u_atest == 3) pass = a <= u_aref;
+        else if (u_atest == 4) pass = a == u_aref;
+        else if (u_atest == 5) pass = a >= u_aref;
+        else if (u_atest == 6) pass = a > u_aref;
+        else if (u_atest == 7) pass = a != u_aref;
+        if (!pass) discard;
+    }
+    vec3 rgb = clamp(t.rgb * v_color, 0.0, 1.0);
+    o_color = vec4(rgb, min(a / 128.0, 1.0));
 }
 )";
 
@@ -79,10 +95,12 @@ WeatherRenderer::WeatherRenderer(Level& level) : level_(level) {
     if (!level_.map()) return;
     const auto& statics = level_.map()->chunk.statics;
     const auto& chunks = level_.chunks();
+    std::vector<const Placement*> leaf_points;
     for (const Placement& p : level_.placements()) {
         const StaticInstance& si = statics[p.instance];
         if (si.flags & 0x8000) continue;
         const std::uint32_t cls = si.object_class();
+        if (cls == kClassLeafGen) leaf_points.push_back(&p);
         if (cls == kClassEnv && type_ < 0) {
             type_ = int(si.param(0, 0));
         } else if (cls == kClassRainBox) {
@@ -103,8 +121,11 @@ WeatherRenderer::WeatherRenderer(Level& level) : level_(level) {
     }
     parse_emitter_defs();
     build_emitters();
+    build_leaf_emitters(leaf_points);
     program_ = compile_program(kVertexShader, kFragmentShader);
     u_mvp_ = glGetUniformLocation(program_, "u_mvp");
+    u_atest_ = glGetUniformLocation(program_, "u_atest");
+    u_aref_ = glGetUniformLocation(program_, "u_aref");
     glUseProgram(program_);
     glUniform1i(glGetUniformLocation(program_, "u_tex"), 0);
     // Shared dynamic quad buffer for snow and billboard emitters.
@@ -188,6 +209,8 @@ void WeatherRenderer::parse_emitter_defs() {
             }
         }
     }
+    // Room for the synthetic leaf def: Emitter.def pointers must stay stable.
+    defs_.reserve(defs_.size() + 1);
 }
 
 void WeatherRenderer::build_emitters() {
@@ -236,6 +259,47 @@ void WeatherRenderer::build_emitters() {
             }
         }
         if (e.tex != 0 || e.mesh_vao != 0) emitters_.push_back(std::move(e));
+    }
+}
+// Falling leaves (LeafGen_Create/Leaf_Create, class 0x2B): mesh instances of the shared Leaf model
+// (0x020002CA) drifting down around the generator. No 0x30 def exists, so build_emitters synthesizes
+// one (8 particles, slow sink + drift, 8 s life).
+void WeatherRenderer::build_leaf_emitters(const std::vector<const Placement*>& points) {
+    if (points.empty()) return;
+    EmitterDef def;
+    def.id = 0;
+    def.tex_hash = 0;
+    def.model_hash = 0x020002CA;
+    def.count = 8;
+    def.budget = 1;
+    def.f[0] = 0.02f;   // gravity scale (sinks gently)
+    def.f[1] = 6.0f;    // life base (s)
+    def.f[2] = 4.0f;    // life rand
+    def.f[3] = 0.0f;    // azimuth base
+    def.f[4] = 6.2831f; // azimuth range (all directions)
+    def.f[5] = 2.0f;    // polar base (outward-down)
+    def.f[6] = 0.02f;   // speed + polar range (slow drift)
+    def.f[7] = 1.0f;    // size scale (model size)
+    def.keys = {{{1, 1, 1}, 1, 1}, {{1, 1, 1}, 1, 1}};
+    defs_.push_back(def);
+    const EmitterDef* leaf = &defs_.back();
+    const auto& chunks = level_.chunks();
+    for (const Placement* pp : points) {
+        Emitter e;
+        e.def = leaf;
+        e.origin = {(*pp).transform[12], (*pp).transform[13], (*pp).transform[14]};
+        e.up = {0, 1, 0};
+        e.parts.resize(std::size_t(leaf->count));
+        for (std::size_t c = 0; c < chunks.size() && e.mesh_vao == 0; ++c) {
+            for (std::size_t m = 0; m < chunks[c].chunk.models.size(); ++m) {
+                if (chunks[c].chunk.models[m].hash != leaf->model_hash) continue;
+                const GfxMesh& mesh = level_.mesh(c, m);
+                if (mesh.batches.empty()) break;
+                build_model_mesh(mesh, chunks[c].chunk.textures, e.mesh_vao, e.mesh_batches, owned_gl_);
+                break;
+            }
+        }
+        if (e.mesh_vao != 0) emitters_.push_back(std::move(e));
     }
 }
 
@@ -428,6 +492,12 @@ void WeatherRenderer::update(const Vec3& viewer, const std::function<bool(int)>&
     
     for (int n = 0; n < 0x15; ++n) add_drop(viewer);
 }
+namespace {
+void apply_alpha(GLint u_atest, GLint u_aref, const Material& m) {
+    glUniform1i(u_atest, m.alpha_test ? int(m.alpha_method) : -1);
+    glUniform1f(u_aref, float(m.alpha_ref));
+}
+}  // namespace
 
 void WeatherRenderer::draw(const Camera& cam, const Mat4& vp) {
     if (type_ < 0 && emitters_.empty()) return;
@@ -451,6 +521,7 @@ void WeatherRenderer::draw(const Camera& cam, const Mat4& vp) {
             if (rain_vao_ != 0) {
                 glBindVertexArray(rain_vao_);
                 for (const MeshBatch& b : rain_batches_) {
+                    apply_alpha(u_atest_, u_aref_, b.material);
                     glBindTexture(GL_TEXTURE_2D, b.texture);
                     glDrawArrays(GL_TRIANGLES, b.first, b.count);
                 }
@@ -458,6 +529,7 @@ void WeatherRenderer::draw(const Camera& cam, const Mat4& vp) {
             if (dust) {
                 glBindVertexArray(dust_vao_);
                 for (const MeshBatch& b : dust_batches_) {
+                    apply_alpha(u_atest_, u_aref_, b.material);
                     glBindTexture(GL_TEXTURE_2D, b.texture);
                     glDrawArrays(GL_TRIANGLES, b.first, b.count);
                 }
@@ -472,7 +544,8 @@ void WeatherRenderer::draw(const Camera& cam, const Mat4& vp) {
         constexpr float size = 0.2f;
         std::vector<Vertex> verts;
         verts.reserve(max_drops_ * 6);
-        std::uint32_t white = 0xFF808080;  // R=0x80 G=0x80 B=0x80 A=0xFF (DrawDrops colour)
+        // DrawDrops colour pre-halved to wire units (0x40 -> 0.5 effective, as measured).
+        std::uint32_t white = 0xFF404040;
         for (std::size_t i = 0; i < max_drops_; ++i) {
             const Drop& d = drops_[i];
             if (!d.live) continue;
@@ -494,6 +567,7 @@ void WeatherRenderer::draw(const Camera& cam, const Mat4& vp) {
         glEnable(GL_BLEND);
         glBlendEquation(GL_FUNC_ADD);
         glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ONE, GL_ONE);
+        glUniform1i(u_atest_, -1);
         glDrawArrays(GL_TRIANGLES, 0, GLsizei(verts.size()));
         glDisable(GL_BLEND);
     }
@@ -523,9 +597,10 @@ void WeatherRenderer::draw(const Camera& cam, const Mat4& vp) {
                     float rgb[3], a, s;
                     key_at(def, pt.age / pt.life, rgb, &a, &s);
                     const float size = std::max(0.01f, def.f[7] * s);
-                    const std::uint32_t rgba = (std::uint32_t(std::clamp(rgb[0], 0.0f, 1.0f) * 255.0f)) |
-                                               (std::uint32_t(std::clamp(rgb[1], 0.0f, 1.0f) * 255.0f) << 8) |
-                                               (std::uint32_t(std::clamp(rgb[2], 0.0f, 1.0f) * 255.0f) << 16) |
+                    // Key rgb pre-halved to wire units (mirrors Emitter_LoadDefs); alpha is file-scale.
+                    const std::uint32_t rgba = (std::uint32_t(std::clamp(rgb[0] * 0.5f, 0.0f, 1.0f) * 255.0f)) |
+                                               (std::uint32_t(std::clamp(rgb[1] * 0.5f, 0.0f, 1.0f) * 255.0f) << 8) |
+                                               (std::uint32_t(std::clamp(rgb[2] * 0.5f, 0.0f, 1.0f) * 255.0f) << 16) |
                                                (std::uint32_t(std::clamp(a, 0.0f, 1.0f) * 255.0f) << 24);
                     float ax = (r[0] + u[0]) * size, ay = (r[1] + u[1]) * size, az = (r[2] + u[2]) * size;
                     float bx = (r[0] - u[0]) * size, by = (r[1] - u[1]) * size, bz = (r[2] - u[2]) * size;
@@ -544,6 +619,7 @@ void WeatherRenderer::draw(const Camera& cam, const Mat4& vp) {
                 glBindTexture(GL_TEXTURE_2D, e.tex);
                 // Emitter sprites are soft blobs on opaque black cards: they add like snow.
                 glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ONE, GL_ONE);
+                glUniform1i(u_atest_, -1);
                 glDrawArrays(GL_TRIANGLES, 0, GLsizei(verts.size()));
             } else if (e.mesh_vao != 0) {
                 glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_SRC_ALPHA,
@@ -555,6 +631,7 @@ void WeatherRenderer::draw(const Camera& cam, const Mat4& vp) {
                     Mat4 mvp = mul(vp, model);
                     glUniformMatrix4fv(u_mvp_, 1, GL_FALSE, mvp.data());
                     for (const MeshBatch& b : e.mesh_batches) {
+                        apply_alpha(u_atest_, u_aref_, b.material);
                         glBindTexture(GL_TEXTURE_2D, b.texture);
                         glDrawArrays(GL_TRIANGLES, b.first, b.count);
                     }

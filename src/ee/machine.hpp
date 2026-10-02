@@ -47,6 +47,12 @@ struct CallArgs {
         floats.push_back(b);
         return *this;
     }
+    CallArgs& reg(int r, u64 v) {
+        reg_init[r] = v;
+        return *this;
+    }
+    std::map<int, u64> reg_init; // initial GPR values by MIPS number (applied after a0-a3)
+    std::map<int, u32> fpreg_init; // initial FPU regs by number (fragment entry floats like f20/f21)
 };
 
 struct CallResult {

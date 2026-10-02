@@ -812,7 +812,7 @@ So sustained fire rate = 1 shot per `max(1, def[+64])` frames (`FRAME_RATE_MUL` 
 3. If `pellets(+24) == 0` skip to step 10.
 4. `Player_GetHeadPos`, `Player_GetAimingPoint`; ray mask `522` (`520` when F2&0x800) `Collide_RayIntersect(head, aim, cel, player, …)` for the taser test.
 5. Taser (ids 74/76): valid if the hit object is type 2/3 and within `def[+28]` (`BLData+2397`); if not valid: set `+2395=1`, refund `clip = min(clip + def[+145], clipSize)` and stop.
-6. Otherwise `+2395 = 1`; `haveModel = def[+220] != 0`; forced false when the base id ∈ {84, 1, 82, 85..87, 88..90, 91} or aiming with F1&0x40 or `!(F1&0x10000)`; when true the origin = midpoint(head, weapon bone 0 world pos).
+6. Otherwise `+2395 = 1`; `haveModel = def[+220] != 0`; forced false when the base id ∈ {1, 82, 84, 88, 89, 91} or aiming with F1&0x40 or `!(F1&0x10000)`; when true the origin = midpoint(head, weapon bone 0 world pos). (Bases 85..87/90 reach the same flag checks but no table row with those bases carries F1&0x10000, so the net is identical; nfmips-verified branch order.)
 7. `dir = normalize(aim − origin)`.
 8. For `i < pellets`: if `cls & 0xF8`: `PlrStat_LogShotFired`; id 84: `Sound_Play(236)`; id 82: `GT_DeployMiniGun(origin, matrix, player)` (if it fails `BLData+1424++`); else `Bullet_init(pad, player, player, def, origin, dir, sound=0xFFFF)`.
 9. If `def[+220] != 0` and F2&0x40 and not MP: `Bullet_init_casing`.
@@ -855,7 +855,8 @@ k      = 1.0                                                          # 0.0 if (
 A      = (def[+36] + shots) * k
 r      = (2*A*U1 - A) * 0.0014                                        # Rand_FRand_MVar2(2A, A), U1 in [0,1)
 theta  = Rand_FRand(2*pi);  phi = Rand_FRand(pi)
-offset = Vec_Spherical_2_Cartesian(r, theta, phi)
+offset = Vec_Spherical_2_Cartesian(r, theta, phi)   # Y-elevation: (r·sinθ·cosφ, r·sinφ, r·cosθ·cosφ),
+                                                    # proven by nfmips diff-mpweap (18 vectors, max err 1.2e-7)
 dir    = normalize(dir + offset)
 ```
 For drone owners `k` comes from the drone's accuracy field (`owner+0xC0`) when F1&0x400000 (unused for player).
@@ -888,14 +889,42 @@ So `def[+36]` = base spread in 0.0014-rad units (100 ⇒ ±0.14 rad ≈ 8°), `d
 * `Explode_Create(bulletObj, pos, normal, scriptHash, radiusA, radiusB, damage, r,g,b, source, kind)`: **radius = `def[+8]`** (both radius args), **damage = `def[+12]`**. If radius ≥ 0.5: `Camera_Shake(pos, …)`. Creates an explosion object (type **15**, flags `0x30`, size `radius*0.0666667`), data `+32 cel`, `+36 source`, `+40 damage`, `+44 radius`, `+48 lifetime` (script duration `u16 @ script+2736`, else 15), `+52` SCRIPTINFO loaded from `scriptHash` (`Script_Load`, scale `script+148 = radius`, oriented by −(vector to nearest player)…), `+56 kind`, `+58 propagated`.
   `Explode_Update` (0x17C350) runs the script; when it stops the object is freed. While alive (age < `lifetime>>2`, and not MP) every `(Rand(5)+10)`th tick (`dword_2A379C % n`) it spawns debris by `kind`: 5,6 → `MetalHash_132`; 8,10,11 → stone (`StoneHash_133`, only in level `0x07000008` with `byte_26FCE3`); 7,9 none (`Debris_CreateEx(pos, …, count 3, …, 4)`).
 * `Explode_CollisionHandler` (0x17CDE0): first tick only (`+58==0`): set 1 and call `Explode_Propagate(pos, cel, source, radius, damage)`.
-* `Explode_Propagate` (0x17C518): `Collide_SphereIntersect(pos, radius, cel, …, flags 192, 4)`; for every non-deleted object `dmg_i = damage * (1 − max(dist(obj+128, pos),0)/radius)`, ignored if `< 0.00019999999`. By `obj+255` type:
+* `Explode_Propagate` (0x17C518): `Collide_SphereIntersect(pos, radius, cel, …, flags 192, 4)`; for every non-deleted object `dmg_i = damage * (1 − max(dist(obj+128, pos),0)/radius)`, ignored if `< 0.00019999999` (obj+128 is the eye for players: measured bit-equal to +0x70 in a slot-2 Skyrail savestate). By `obj+255` type:
   0 → Copter body: add `dmg_i` to `Copter+100` and `+108`; 2 → `Drone_ExplosiveHit(obj, {dmg_i, radius, source})`; 3 → `Player_Hurt(obj, dmg_i, pos)` (→ `Player_HandlePain` type 0; in MP with damage ≤0 also registers the hit); 5 → other projectiles of weapon ids 43, 52–55, 58 are detonated (`Bullet_handle_object_destruction`); 0x20 → `Break_ApplyDamage` (`breakable.hp −= dmg`, `Break_Kill` when <0); 0x21 → `Destroy_Smash` when `dmg_i ≥ 1.0` and not flagged; 0x28 → `+248 += dmg_i`; 0x35 → `MP_ApplyDamage`; 0x36 → `GT_ApplyDamage` (`hp −= dmg`) + `GT_Disable`; 0x37 `Sensor_ApplyDamage`; 0x38 `Monitor_ApplyDamage`; 0x3D (74) `Sub_ApplyDammage`; 0x4B → hit list entry with `+8 = dmg_i`.
 * `Bullet_handle_object_destruction(b)` (0x12CD98): if `b` is a bullet whose weapon has F1&0x4000 and F3 ∩ {0x4, 0x200, 0x80000}: set its delete flag and `Explode_Create(script 0x06000052, pos, up)`; also deletes the attached beam.
+* Stun block (F3 & 0x2000: stun grenade 53, smoke 54/105 — `Bullet_DoTrails` fuse expiry, **not** an
+  explosion: these rows lack F3 & 0x4): gas puff + shake + sound 22 + white light, then a 30.0 sphere gather.
+  Type 3 (players): head pos, `s = clamp01(1 − (dist − 5)/85)`; skip when below the current flash; facing:
+  same XZ → full, else `w = 1 − (|dyaw| − π/6)·0.81851107`, `s = s·min(w,1)` when `w ≥ current` else 0; skip
+  when below current; LOS (mask 10) halves without re-gating; `Player_SetFlashBang(BLData, (u8)(s·255),
+  s·10·FRAME_RATE)` (colour +2403, duration +2332/+2328, ticks down 1/frame). Type 2 (drones): message 24
+  (stun-grenade impact) when team-MP (`dword_2A4924`, = MP flag at `MP_Start`) or the owner is a player; no
+  falloff/facing gate. Type 0x36 turrets: `GT_Disable`; other types skipped. (Disassembly-verified incl. the
+  duration/colour setup and the 30.0 radius; no `Explode_Create`, no hit registration.)
 
 ### 7.8 Filtering / summing hits
 * `Collide_FilterBullets(listPtr, mask)`: any hit whose victim is a bullet (type 5) whose weapon `def[+16] & mask != 0` gets distance `1e8`; entries with `1e8` are returned to `HitHeap`, the rest re-sorted by distance (`QuickSort`, `SrtList`) and relinked.
 * `Collide_GetDamageNObjects(hit, outObjs, outCount, cap)` = Σ `hit.+8` over the whole list; optionally collects `hit.+88` up to `cap`; used by `SP_GetHitDamage` (`SP_GetHitDamage__FP7obj_tagPP7obj_tagUsPUsUsPSc`; scripted breakable objects: filter with the given mask, sum damage, count players that shot them).
 * `Collide_Filter(hitFlags = HITDATA+80, extra, mask, &dist)` (0x1ED888): sets `dist = 1e8` (reject) when `hitFlags&0x40` and `mask&0x800`; when `mask&1` and surface class ∈ {13,14}; when `mask&2` and class `0x10`; when `mask&8` and (`extra`|2 from `hitFlags&0xC0`)&2. Returns `dist == 1e8`.
+
+### 7.9 Shared RNG stream order (MP lockstep)
+All `Rand_*` variants advance the two seed words identically; only the call count and order matter, never
+the function or its argument. Per logic frame, per live player, in `Player_Update` order:
+1. `Player_WeaponFiring` → `Player_WeaponInitBullet` → per pellet `Bullet_init`: `MVar2(2A,A)`,
+  `FRand(2pi)`, `FRand(pi)`; `SetFiringAnim` coin `Rand_Rand(100)` for F1&0x80000 (49 % alt hand);
+2. `Player_CollisionHandler`: `Player_LaserPointer` 1 draw iff sighted (F1&8 on the row or its `+5`
+  variant; `FRand` vs `Rand_Rand(9)` by viewer, same advance), then `Draw_MuzzleFlash` 3 draws per frame
+  while `BLData+2360` is live (3 frames/shot, 7 for id 51; needs `def[+72]`, set with the model check);
+3. per bullet step: first-frame `(FRand(1)+0.5)`; per world hit with F3&0x10: `Rand_Rand(EffectInfo[surf].+26)`
+  iff nonzero, ricochet iff nonzero; per pain event: `Rand_Rand(4)` grunt coin.
+Draws that do NOT happen in MP: muzzle smoke (`Gas_Init` velocity, skipped when MP), shell casings
+(`Bullet_init_casing[_ex]`, SP / non-team drones only), explosion debris (`Explode_Update`, `not MP`),
+trail sound `Rand_Rand(5)` (`Bullet_DoTrails`, SP only via F2&0x40000 + `!MP`), taser/laser beams
+(`Draw_TaserBeam` 5/frame, `Draw_LaserBeam`; no MP-obtainable weapon fires them). Movement, reload,
+rumble, guiding, homing and the stun block draw nothing. Bot shots go through the same `fire()` (accuracy
+roll first, then the 3 spread draws); bot casings likewise draw nothing in MP. Not replicated: the
+0x80-surface 50 % pass-through coin (`Rand_Rand(63)&1`, needs surface-flag plumbing through
+`CollisionWorld`) and drone-vs-drone SP paths.
 
 ## 8. Damage application
 
@@ -904,14 +933,14 @@ Pipeline: bullet HITTEST (`+144 = def+12`) → mirror `HITDATA` on the player �
 * `Player_DealWithObjHit(obj, BLData, hit)`:
   - surface class 13/14 water splash ripple handling (`Env_WaterRipple`).
   - victim type **39 (hurt volume)**: `dmg = hit.+8 + Hurt_GetDamage(volume)` (`vol+16` f32), `type = Hurt_GetType(volume)` (`vol+20` u8) → `Player_HandlePain(type, part −1, dmg)`.
-  - victim type **5 (bullet)**: MP: when the shooter is a **bot** (`Control_Plr2Ind(shooter) >= 4`), damage is scaled by the bot's skill bits (`shooter.data+3356 → +172`): weapon ids 1/100/101/102 ×1.5 when bit 4, other weapons ×1.25 when bit 2; assassin mode (`dword_2A4944==1024`): head/upper-body shot on the target = lethal (`damage = health`) unless angle <70°; `MP_RegisterBulletHit`; SP: `Drone_ModPlayerHitDamage` (drone bullet damage modifiers: skipped in MP/team; `Drone_ModBulletDamage` conditions on drone type/level) → `Player_HandlePain(type 0, part = hit.+82, dmg = hit.+8)`. Then pain direction: hit normal → view space (`ApplyMatrixLVI`), `BLData+2407` bit0/1 (y<0/y>0), bit2/3 (x<0/x>0) when |component|≥0.5, default 12; hit sound 1536 (head) else 1042 unless F3&0x180; SP non-MP weapons with cls&1 (ids 99–102): camera shake `BLData+2320 = ∓0.1`, sound 369.
+  - victim type **5 (bullet)**: MP: when the shooter is a **bot** (`Control_Plr2Ind(shooter) >= 4`), damage is scaled by the bot's skill bits (`shooter.data+3356 → +172`): weapon ids 1/100/101/102 ×1.5 when bit 4, other weapons ×1.25 when bit 2; assassin mode (`dword_2A4944==1024`): attacker-is-assassin + victim-is-target = lethal (`damage = health`); `MP_RegisterBulletHit`; SP: `Drone_ModPlayerHitDamage` → `Player_HandlePain(type 0, part = hit.+82, dmg = hit.+8)`. Then pain direction: the HITDATA+48 vector → view space (`ApplyMatrixLVI`), `BLData+2407` bit0/1 (y<0/y>0), bit2/3 (x<0/x>0) when |component|≥0.5, default 12 (+48 is the bullet's normalized ray direction on the long probe: `Collide_Intersect` writes it when HITTEST+148&0x200, the victim mirror copies it); hit sound 1536 on head (part 5) else 1042; SP-only NPC profiles (shooter base 99/101/102 with class&1) also tilt `BLData+2320` and play 369.
   - types 44 wire, 45 ladder → climbing handlers.
 * `Player_Hurt(obj, dmg, pos)` (0x196060) = `Player_HandlePain(obj, BLData, 0, −1, dmg)` (explosions, scripts).
 * `Player_HandlePain(obj, BLData, type, part, dmg)`: return if cheat `byte_26FCEF`, health ≤ 0, or `dmg ≤ 0`; MP-team: only when `GameFlow_GetState()==2`. Steps:
   1. `BLData+2236 = 1.0` (damage flash).
   2. **SP difficulty** (`dword_2A3790`): 1 → `dmg *= Plr_DMod_Easy`; 3 → `*= Plr_DMod_Hard`; 4 → `dmg *= 2`; 2/other → `*= Plr_DMod_Normal`. **MP** (`dword_2A4920`): if `part != −1` `dmg *= Plr_DMod_Multi` (4.0); if `dword_2A4968` (location damage on): part 5 (head) `*Plr_DMod_Head` (4.0); parts 20, 21, 32, 35 `*Plr_DMod_UpperLimb` (0.8); parts 49–56 `*Plr_DMod_LowerLimb` (0.8); if `dword_2A495C` (rapid/one-hit style mode) `dmg *= 3.0`.
   3. types 5–7 in team MP: `MPGame[pad].lastAttacker = −2` (environment).
-  4. **Armour absorbs first**: `a = min(armour, dmg)`; `armour −= a`; `dmg −= a` (`BLData+2224`); `health = max(0, health − dmg)` via `Player_SetHealth` (unless `CheatInfo`); 25 % (`Rand(4)==0`) pain grunt sound 136; `Input_RumbleStart(pad, 5, (int)dmg)`; `BLData+2407 = 12` (2 when type 6); overlay alpha `BLData+2408 = (int)min(255, min(128, …))` (exact derivation lost in decompile).
+  4. **Armour absorbs first** (type 0 only: types 1–7 leave armour untouched, proven by nfmips diff-mpweap): `a = min(armour, dmg)`; `armour −= a`; `dmg −= a` (`BLData+2224`); `health = max(0, health − dmg)` via `Player_SetHealth` (unless `CheatInfo`, and only when `PlrStat_OkToUpdate` i.e. a mission is loaded); a remainder under 1.0 kills (`health = 0`); 25 % (`Rand_Rand(4)==0` on the shared stream) pain grunt sound 136; `Input_RumbleStart(pad, 5, (int)dmg)`; `BLData+2407 = 12` (2 when type 6); overlay alpha `BLData+2408 = (int)min(255, old + min(21.3333*dmg, 128))` (proven by diff-mpweap: accumulation + 255 cap + truncation).
   Damage `type`: 0 bullet/explosion, 1–4 scripted hurt volumes, 5–7 env (**6 = fall**: in `Player_CollisionHandler`, when the accumulated fall value `BLData+2344 > 60.0` and the player lands, `dmg = max(fall,0)` truncated, applied only if ≥ 10; **7 = drowning**: `Player_MonitorAir` every N frames when air < 1.0: sound 1547 + `dmg = 2.0`).
 * `Player_CheckForDeath(obj, type)` (0x190810), called each frame from the collision handler (`type = 3`): skipped if substate 2..3 already or `CheatInfo`; `Player_SetHealth`; dies if `health ≤ 0` and `obj+255 == type`. On death: `Car_/GunImp_/GT_PlayerHasDied`; MP: if the current weapon has a pickup (`def[+128] != 0`) drop it (`Pickup_CreateSimple(gunMatrix, weaponBase, clip, 0)`; AIMS-20 (id 26) also drops the grenade-ammo pickup id 27 (clip from `word_2C0D94`) flagged `obj+240|=0x10`); SP: `byte_26FCEE = 1` and `Music_Event(6,1)`. Then `Player_ClearInertia`, `HUD_Update`, `obj+255 = 18` (dead player), `Player_WeaponNone`, aim bit cleared, camera mode 0, `obj+244 = 2` (dead), MP kill message (labels 33554487/33554488), sound 137, `Player_ChangeSubState(obj, 14 if flags&0x100 else 13)`, `MP_PlayerKilled`, free hit list.
 * Health regeneration/continue: `ContinueHealthBoost{Easy,Medium,Hard}` = 50.0 (GLOBAL tuning).
@@ -971,7 +1000,7 @@ Additional per-level start values: level 0x18–1B and 0x07 set armour; `Player_
 `Player_InitAmmoWeapons` then `EquipWeapon` are the only entry points that create inventory; there is **no** weapon-definition file on disc.
 
 ## 11. Known gaps (need runtime tracing, not derivable from the decompile)
-* Exact derivation of the pain overlay alpha (`BLData+2408`) and recoil phase offsets (float registers dropped by IDA).
+* Recoil phase offsets (float registers dropped by IDA). (The pain overlay alpha is proven since 2026-10-02: `old + min(21.3333*dmg, 128)` capped at 255, via nfmips diff-mpweap.)
 * Fields flagged **unknown** in §2.1 (+52, +80, +88, +96, +100, +140, +156) are populated but not read by any function examined; `Check_Target`, `Draw_LaserBeam`, `Draw_TaserBeam`, `Bullet_DoTrails`, `Effect_*` internals and drone/BOT weapon paths were not decompiled here.
 * `Player_WeaponHasAmmo` return expression is lost in the decompile (semantics inferred).
 * Emulated static-initializer output was validated for internal consistency (ids, bases, labels resolving to sensible names, clip sizes matching `Player_EquipWeapon` use) but no runtime memory dump was available.

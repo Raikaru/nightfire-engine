@@ -29,9 +29,10 @@ constexpr float kDroppedItemSeconds = 30.0f;    // 30 * FRAME_RATE_INT ticks bef
 constexpr float kFlagCaptureDistance2 = 2.0f;   // Vec_SqDist3D(flag, base + (0,1,0)) < 2.0
 constexpr float kHillPointsPerSecond = 0.2f;    // REC_FRAME_RATE * 0.2 per tick (KOH and Uplink)
 constexpr float kTargetHitPoints = 2000.0f;
-// Length of the GoldenEye strike effect (SP effect 0x600003E, a scripted particle whose end the original polls with
-// SP_GetState == 2; its duration lives in map script data) [INFERENCE: 3 s].
-constexpr float kGoldenStrikeSeconds = 3.0f;
+// The GoldenEye strike effect (SP_Create fx 0x600003E) ends when its script stream ends. Every MP map's 0600003E
+// script runs 299 stream-frames (StreamEnd at t=299 on all 8 maps); Script_Update advances the stream clock by
+// FRAME_RATE_MUL per tick, so the strike resolves after 299 / mul ticks (150 ticks = 5.0 s at 30 Hz).
+constexpr float kGoldenStrikeStreamFrames = 299.0f;
 constexpr float kProtectThrottle = 1.5f;        // seconds between "protect the target" hints
 constexpr int kTouchSettleFrames = 4;           // MP_HitBy ignores touchers that respawned less than 4 ticks ago
 constexpr float kPlayerHalfWidth = 0.55f, kPlayerFeet = 1.05f, kPlayerHead = 0.55f;   // capsule radius, pos->feet, pos->top
@@ -59,7 +60,7 @@ std::optional<int> ArenaSystem::touching(const MpObjective& o, int team_filter, 
     // that respawned within 4 ticks voids the whole call; dead / eliminated ones do not count.
     for (int i = 0; i < int(kMpSlots); ++i) {
         const SlotState& s = slots_[std::size_t(i)];
-        if (!valid(i) || !s.body || s.dead || s.out) continue;
+        if (!valid(i) || !s.body || !s.body->alive() || s.dead || s.out) continue;
         const int team = settings_.slots[std::size_t(i)].team;
         if (team_filter != kTeamNone && team != team_filter) continue;
         const Vec3 p = s.body->position();
@@ -303,8 +304,8 @@ void ArenaSystem::flag_update(std::size_t i, bool force) {
             // Dropped where the carrier fell (build_PointOnFloor under it).
             Vec3 at = valid(carrier) && slots_[std::size_t(carrier)].body ? slots_[std::size_t(carrier)].body->position() : flag.pos;
             if (auto floor = world_.collision().point_on_floor(at, 3.0f)) at = *floor;
-            set_status(carrier, 1, true);
-            team_status_[std::size_t(std::clamp(object_team(carrier), 0, 1))] &= std::uint16_t(~3);
+            set_status(carrier, 1, true);   // code 0x30 clears the team's bit 0 only
+            team_status_[std::size_t(std::clamp(object_team(carrier), 0, 1))] &= std::uint16_t(~1);
             flag.state = 2;
             flag.carrier = -1;
             flag.pos = at;
@@ -528,8 +529,8 @@ void ArenaSystem::blueprint_update(std::size_t i, bool force) {
     if (force || !alive(carrier)) {
         Vec3 at = valid(carrier) && slots_[std::size_t(carrier)].body ? slots_[std::size_t(carrier)].body->position() : bp.pos;
         if (auto floor = world_.collision().point_on_floor(at, 3.0f)) at = *floor;
-        set_status(carrier, 2, true);
-        team_status_[std::size_t(std::clamp(object_team(carrier), 0, 1))] &= std::uint16_t(~3);
+        set_status(carrier, 2, true);   // code 0x33 clears the team's bit 0 only
+        team_status_[std::size_t(std::clamp(object_team(carrier), 0, 1))] &= std::uint16_t(~1);
         bp.state = 2;
         bp.carrier = -1;
         bp.pos = at;
@@ -631,14 +632,14 @@ void ArenaSystem::golden_strike(FrameTiming timing) {
                 play(kSoundGoldenActivated);
                 key->state = crystal->state = 3;
                 key->visible = crystal->visible = false;
-                golden_effect_ = kGoldenStrikeSeconds;
+                golden_effect_ = kGoldenStrikeStreamFrames;
                 note_message(-1, MatchMessage::Type::Objective, label_text(kLabelGeActivated, team_name(*this, key->team, strings_)), 45);
             }
         }
         return;
     }
-    // Strike in progress: it resolves when the effect ends (3 s here).
-    golden_effect_ -= timing.rec();
+    // Strike in progress: the script stream clock advances by FRAME_RATE_MUL per tick (Script_Update).
+    golden_effect_ -= timing.mul();
     if (golden_effect_ > 0) return;
     golden_effect_ = -1;
     const int target = golden_target_;
