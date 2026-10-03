@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "assets/elf.hpp"
 #include "assets/game_files.hpp"
@@ -52,9 +53,12 @@ struct AppConfig {
     int crosshair_style = 0;        // 0 the game's crosshair, else ui::CrosshairStyle
     bool high_contrast = false;     // HUD text and menu prompts on dark plates with a solid outline
     bool colorblind_teams = false;  // team colours from a colour-blind-safe pair, plus team shapes
+    std::vector<std::string> favourite_servers;   // server browser favourites (IPv4:port), one config line each
     // Last used profile / SP difficulty (convenience, not on the disc).
     std::string profile;
     int difficulty = 1;  // 0 Agent, 1 Secret Agent, 2 00 Agent
+    // Fixed gameplay logic rate for this process; selected by --logic-hz and not persisted.
+    int logic_hz = 60;
 };
 
 std::filesystem::path config_path();

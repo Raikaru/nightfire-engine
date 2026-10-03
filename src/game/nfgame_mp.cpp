@@ -207,7 +207,11 @@ int run_match(const MatchLaunch& request) {
     World world(level, InputTables::from_elf(action_elf), params);
     MatchOptions options = launch.options;
     options.enabled = true;
-    options.bots = std::min(options.bots, int(mp_rule_slot_limit(options.rules) - kMpMaxHumans));
+    const std::size_t first_bot_slot = options.rules == MpRuleSet::Extended
+                                           ? std::size_t(options.humans)
+                                           : kMpMaxLocalHumans;
+    const std::size_t available_bots = mp_rule_slot_limit(options.rules) - first_bot_slot;
+    options.bots = std::min(options.bots, int(available_bots));
     std::unique_ptr<bots::BotMatch> bot_match;
     if (options.bots > 0) {
         bots::BotMatchOptions bo;
@@ -279,9 +283,10 @@ int run_match(const MatchLaunch& request) {
             } else {
                 for (int i = 0; i < options.humans; ++i) pads[std::size_t(i)] = scripts[std::size_t(i)].at(f);
             }
-            session.tick(pads, FrameTiming{tick_rate});
+            const FrameTiming timing{tick_rate};
+            session.tick(pads, timing);
             if (shot_weather) {
-                shot_weather->update(world.player(0)->eye(),
+                shot_weather->update(world.player(0)->eye(), timing.FRAME_RATE_MUL, timing.REC_FRAME_RATE,
                                      [&world](int ch) { return world.objects().channel(unsigned(ch)); });
                 shot_renderer->set_time(double(world.frame()) / World::kTickHz);
             }
@@ -375,8 +380,9 @@ int run_match(const MatchLaunch& request) {
             for (int i = 0; i < options.humans; ++i) prev[std::size_t(i)] = view_of(*world.player(i));
             PadInputs in{};
             for (int i = 0; i < options.humans; ++i) in[std::size_t(i)] = pads[std::size_t(i)].sample();
-            session.tick(in);
-            weather.update(world.player(0)->eye(),
+            const FrameTiming timing{};
+            session.tick(in, timing);
+            weather.update(world.player(0)->eye(), timing.FRAME_RATE_MUL, timing.REC_FRAME_RATE,
                            [&world](int ch) { return world.objects().channel(unsigned(ch)); });
             renderer.set_time(double(world.frame()) / World::kTickHz);
             session.messages().clear();

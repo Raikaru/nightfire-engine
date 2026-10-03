@@ -75,7 +75,7 @@ BotVoice death_voice(bool female);
 
 // One entry of MPBOTS (`mpbots` +2 + i*0x12) in the shape a match is started from.
 struct BotSpec {
-    int slot = 4;                    // MPSettings/MPGame slot 4..7 (= 4 + bot index)
+    int slot = 4;                    // MPSettings/MPGame participant slot; legacy bots start at 4.
     int character = 1;               // 0..28
     BotStats stats{};                // BOT_stats_t (default_bot_stats[character] unless customised)
     int team = 2;                    // MPSettings[slot]+0x20 after BOT_init: 0 Phoenix, 1 MI6, 2 no team

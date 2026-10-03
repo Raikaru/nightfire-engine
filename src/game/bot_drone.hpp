@@ -13,7 +13,7 @@ namespace nf::bots {
 
 class DroneBotBody : public BotBody {
 public:
-    // `slot_ref` maps an MP slot (0..3 players, 4..7 bots) to the core's target reference.
+    // `slot_ref` maps an MP participant slot to the core's player-or-drone target reference.
     using SlotRef = std::function<drone::TargetRef(int slot)>;
     using DropWeapon = std::function<void(drone::Drone&)>;
     DroneBotBody(drone::DroneSystem& sys, SlotRef slot_ref, DropWeapon drop_weapon)

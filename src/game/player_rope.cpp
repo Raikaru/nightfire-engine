@@ -260,7 +260,7 @@ void Player::update_wire(const ActionInput& input, FrameTiming timing) {
     const Vec3 closest = closest_point_on_segment(flat.a, flat.b, pos);
     const float to_a = dist_2d_sq(flat.a, pos), to_b = dist_2d_sq(flat.b, pos);
 
-    if (rope_.wire_state != kMounting) rope_.wire_timer += 100.0f / (timing.rate * 30.0f);
+    if (rope_.wire_state != kMounting) rope_.wire_timer += 100.0f / (timing.FRAME_RATE * 30.0f);
     if (input.pressed(kActJump) || rope_.wire_timer > kWireGripTime) {
         release_rope(kWireReleaseLockout);
         return;
@@ -329,8 +329,7 @@ void Player::update_wire(const ActionInput& input, FrameTiming timing) {
 void Player::update_zipline(FrameTiming timing) {
     const WireObject& w = *rope_.wire;
     if (rope_.wire_state == kZipLeaving) {
-        if (rope_script_stopped()) release_rope(std::uint8_t(int(timing.rate)));
-        return;
+        if (rope_script_stopped()) release_rope(std::uint8_t(timing.FRAME_RATE_INT));
     }
     wire_channel(true);
     if (rope_script_stopped()) play_rope_script(script::kZipSlide, 1.0f);

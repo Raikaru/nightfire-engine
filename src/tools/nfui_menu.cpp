@@ -195,7 +195,8 @@ private:
     }
 
     static void report(const FrontendResult& r) {
-        static const char* const names[] = {"none", "start-multiplayer", "start-mission", "resume", "restart-mission",
+        static const char* const names[] = {"none", "start-multiplayer", "start-online-join", "start-listen-server",
+                                            "open-settings", "start-mission", "resume", "restart-mission",
                                             "quit-to-menu", "mp-rematch", "mission-done", "quit"};
         std::printf("result: %s level=%s (0x%08x)", names[int(r.action)], r.level_bin.c_str(), r.level_id);
         if (r.launch) {

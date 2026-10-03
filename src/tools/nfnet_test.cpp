@@ -72,8 +72,10 @@ int main() {
     info.match_revision = 0x8877665544332211ull;
     info.bots = 12;
     info.slot_count = 16;
-    info.modified_rules = true;
     ServerInfo decoded_info;
+    ok &= check(decode_server_info(encode_server_info(info), decoded_info) && !decoded_info.modified_rules,
+                "default server info leaves modified-rules flag clear");
+    info.modified_rules = true;
     ok &= check(decode_server_info(encode_server_info(info), decoded_info), "server info decode");
     ok &= check(decoded_info.query_id == info.query_id && decoded_info.name == info.name &&
                     decoded_info.map == info.map && decoded_info.mode == info.mode &&

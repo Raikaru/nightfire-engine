@@ -24,8 +24,7 @@ constexpr float kRestartBanner = 2.5f, kRestartDelay = 5.0f;
 constexpr std::uint32_t kLabelHurtByTeammate = 0x2000029, kLabelYouHurtTeammate = 0x200002A, kLabelKilled = 0x200004D,
                         kLabelTimeUp = 0x2000028, kLabelRestarting = 0x2000049;
 
-// Human slots first, then bots (glb_players[0..3], MPGame slots 4..7).
-constexpr int kFirstBot = 4;
+// Legacy rulesets reserve slots 0..3 for humans and begin bots at slot 4.
 
 std::string format_name(std::string text, const std::string& arg) {
     const auto pos = text.find("%s");
@@ -46,11 +45,18 @@ int ArenaSettings::bot_count() const {
     for (const Slot& s : slots) n += s.present && s.bot;
     return n;
 }
+std::size_t ArenaSettings::first_bot_slot() const {
+    if (rules != MpRuleSet::Extended) return kMpMaxLocalHumans;
+    std::size_t first = 0;
+    for (std::size_t i = 0; i < slots.size(); ++i)
+        if (slots[i].present && !slots[i].bot) first = i + 1;
+    return first;
+}
 
 ArenaSystem::ArenaSystem(World& world, ArenaSettings settings, const WeaponSets& sets, PickupWeaponFn weapon,
                          const StringTable* strings)
     : world_(world), settings_(std::move(settings)), sets_(sets), weapon_info_(std::move(weapon)), strings_(strings) {
-    settings_.slot_count = std::clamp<std::size_t>(settings_.slot_count, kMpMaxHumans,
+    settings_.slot_count = std::clamp<std::size_t>(settings_.slot_count, kMpMaxLocalHumans,
                                                    mp_rule_slot_limit(settings_.rules));
     // MP_Init: the round timer of Demolition / Protection is 60 s when the match is untimed.
     if ((settings_.mode == mp_mode::kDemolition || settings_.mode == mp_mode::kProtection) && settings_.time_limit < 0)
@@ -158,18 +164,53 @@ void ArenaSystem::restore_snapshot(const ArenaSeedSnapshot& snapshot) {
         } else if (pickup.state == Pickup::State::Waiting && rate_ > 0.0f) {
             const double lifetime = 10.0 * double(pickup.respawn_units);
             const double age = std::max(0.0, (lifetime - double(source.respawn_remaining)) * double(rate_));
-            const std::uint64_t age_frames = std::min(frame_, std::uint64_t(std::llround(age)));
-            pickup.stamp = frame_ - age_frames;
+            const std::uint64_t now = world_.timer_frame();
+            const std::uint64_t age_frames = std::min(now, std::uint64_t(std::llround(age)));
+            pickup.stamp = now - age_frames;
         } else {
-            pickup.stamp = frame_;
+            pickup.stamp = world_.timer_frame();
         }
         pickup.radar_hidden = source.radar_hidden;
         if (source.has_lifetime) pickup.lifetime_total_frames = source.lifetime_total_frames;
+        pickup.visit_until = source.visit_until;
     }
 }
 
 void ArenaSystem::register_body(int slot, ArenaBody* body) {
     if (slot < 0 || slot >= int(settings_.slot_count) || !settings_.slots[std::size_t(slot)].present) return;
+    slots_[std::size_t(slot)].body = body;
+    slots_[std::size_t(slot)].spawn_frame = frame_;
+}
+void ArenaSystem::clear_participant(int slot) {
+    if (slot < 0 || slot >= int(settings_.slot_count)) return;
+    settings_.slots[std::size_t(slot)] = {};
+    slots_[std::size_t(slot)] = {};
+    for (std::size_t i = 0; i < objectives_.size(); ++i) {
+        MpObjective& objective = objectives_[i];
+        ObjectiveRuntime& runtime = runtime_[i];
+        if (objective.carrier == slot) {
+            objective.state = 0;
+            objective.carrier = -1;
+            objective.pos = objective.home;
+            objective.visible = true;
+        }
+        if (runtime.capturer == slot) runtime.capturer = -1;
+        if (runtime.last_damager == slot) runtime.last_damager = -1;
+    }
+}
+
+void ArenaSystem::activate_human_slot(int slot, std::string name, ArenaBody* body) {
+    if (slot < 0 || slot >= int(settings_.slot_count) || slot >= int(settings_.slots.size()))
+        throw std::out_of_range("human participant slot is outside the match capacity");
+    if (settings_.slots[std::size_t(slot)].present && settings_.slots[std::size_t(slot)].bot)
+        throw std::logic_error("cannot activate a human while a bot occupies the participant slot");
+    ArenaSettings::Slot participant = settings_.slots[std::size_t(slot)];
+    participant.present = true;
+    participant.bot = false;
+    participant.name = std::move(name);
+    settings_.slots[std::size_t(slot)] = std::move(participant);
+    slots_[std::size_t(slot)] = {};
+    if (settings_.mode == mp_mode::kTopAgent) slots_[std::size_t(slot)].points = float(settings_.score_limit);
     slots_[std::size_t(slot)].body = body;
     slots_[std::size_t(slot)].spawn_frame = frame_;
 }
@@ -297,7 +338,7 @@ void ArenaSystem::respawn(int slot) {
 
 float ArenaSystem::respawn_in(int slot) const {
     const SlotState& s = slots_.at(std::size_t(slot));
-    if (!s.dead || s.out || slot >= kFirstBot) return -1;
+    if (!s.dead || s.out || settings_.slots[std::size_t(slot)].bot) return -1;
     return std::max(0.0f, kHumanRespawnDelay - float(frame_ - s.died_frame) / rate_);
 }
 
@@ -372,7 +413,7 @@ void ArenaSystem::player_killed(int victim, int attacker, int /*weapon_id*/) {
                 ++k.streak;
             }
             v.last_killer = killer;
-            // Vengeful revenge: a bot (slot 4..7) whose trait opponent (+0x76b) is the victim scores +2.
+            // Vengeful revenge: a bot's trait opponent (+0x76b) is the victim.
             delta = (vengeful_bonus_ && vengeful_bonus_(killer, victim)) ? 2.0f : 1.0f;
         }
         // Points are only awarded for kills in Arena and Team Arena (the KOH ids in the original's list are dead code).
@@ -520,7 +561,8 @@ void ArenaSystem::update_pickups(World& world, FrameTiming timing) {
         touchers.push_back({i, settings_.slots[std::size_t(i)].bot, s.body->position(), s.body});
     }
     pickup_events_.clear();
-    pickups_->update(world.collision(), touchers, frame_, timing.rate, timing.rec(), pickup_events_);
+    pickups_->update(world.collision(), touchers, frame_, world.timer_frame(), timing.FRAME_RATE,
+                     timing.REC_FRAME_RATE, pickup_events_);
     for (const PickupEvent& ev : pickup_events_) {
         std::string text;
         if (ev.count > 0) text = std::to_string(ev.count) + "x " + (strings_ ? std::string(strings_->label(ev.arg_label)) : std::string());
@@ -533,18 +575,19 @@ void ArenaSystem::update_pickups(World& world, FrameTiming timing) {
 void ArenaSystem::tick(World& world, FrameTiming timing) {
     ++frame_;
     dt_ = timing.rec();
-    rate_ = timing.rate;
+    rate_ = timing.FRAME_RATE;
 
     for (SlotState& s : slots_) {
         if (s.friendly_cooldown > 0) --s.friendly_cooldown;
         if (s.demolition_cooldown > 0) --s.demolition_cooldown;
     }
 
-    // Bodies that came back to life on their own (BOT_respawn) are alive again; humans are respawned below.
+    // Bodies that came back to life on their own (bots) are alive again; human participants respawn below.
     for (int i : present_slots()) {
         SlotState& s = slots_[std::size_t(i)];
         if (!s.body) continue;
-        if (s.dead && i >= kFirstBot && !s.out && s.body->alive() && frame_ > s.died_frame + 1) {
+        const bool bot = settings_.slots[std::size_t(i)].bot;
+        if (s.dead && bot && !s.out && s.body->alive() && frame_ > s.died_frame + 1) {
             s.dead = false;
             s.streak = 0;
             s.status = 0;
@@ -552,7 +595,7 @@ void ArenaSystem::tick(World& world, FrameTiming timing) {
             s.spawn_frame = frame_;
         }
         // Player_HandleDeath: 5 s after the death the human respawns (MP_ReSpawn refuses while the match is not running).
-        if (s.dead && i < kFirstBot && !s.out && float(frame_ - s.died_frame) >= kHumanRespawnDelay * rate_) respawn(i);
+        if (s.dead && !bot && !s.out && float(frame_ - s.died_frame) >= kHumanRespawnDelay * rate_) respawn(i);
     }
 
     switch (state_code_) {
@@ -655,6 +698,7 @@ ArenaHud ArenaSystem::hud(int viewer, const Vec3& eye, float yaw) const {
         if (lineal) color = settings_.slots[std::size_t(i)].team == kTeamPhoenix ? 0xD22D35FF : 0x2D61D2FF;
         blip(slots_[std::size_t(i)].body->position(), color, 0);
         ArenaHud::Blip& b = h.blips.back();
+        b.slot = i;
         if (settings_.radar_names) b.name = settings_.slots[std::size_t(i)].name;   // HUD_RadarUpdate name tags
         b.same_team = valid(viewer) && lineal && settings_.slots[std::size_t(i)].team == settings_.slots[std::size_t(viewer)].team;
     }

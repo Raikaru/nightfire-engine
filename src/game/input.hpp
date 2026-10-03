@@ -43,6 +43,6 @@ struct PadHistory {
     bool released(PadButton b) const { return !now.held(b) && prev.held(b); }
 };
 
-using PadInputs = std::array<PadState, 4>;
+using PadInputs = std::array<PadState, 16>;
 
 }  // namespace nf

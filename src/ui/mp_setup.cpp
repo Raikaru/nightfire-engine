@@ -16,7 +16,7 @@ constexpr std::size_t kAll = 0xff;              // Menu_UnlockMPSkins(0xff): the
 
 std::string numbered(std::string_view label, std::size_t n) { return std::string(label) + " " + std::to_string(n); }
 
-std::uint64_t all_bonuses(const std::array<std::uint64_t, kMpMaxHumans>& b) { return b[0] | b[1] | b[2] | b[3]; }
+std::uint64_t all_bonuses(const std::array<std::uint64_t, kMpMaxLocalHumans>& b) { return b[0] | b[1] | b[2] | b[3]; }
 
 // Menu_UnlockMPSettings / Menu_UnlockMPSkins walk every level's four rewards (PlrStarts_ProcessRewardCounter)
 // and act on the earned ones; bit `id` of the bonus mask is the earned flag of reward `id` (type != 4).
@@ -47,7 +47,7 @@ MpSetup::MpSetup(const MpData& data, const StringTable& strings) : data_(data), 
         s.team = i & 1;
         s.handicap = 0;
         s.character = 0;
-        s.name = i < kMpMaxHumans ? numbered(strings_.label(kPlayerLabel), i + 1) : numbered(kBotName, i - 3);
+        s.name = i < kMpMaxLocalHumans ? numbered(strings_.label(kPlayerLabel), i + 1) : numbered(kBotName, i - kMpMaxLocalHumans + 1);
     }
     begin_join();
     stored_settings_ = settings_;
@@ -79,7 +79,7 @@ bool MpSetup::character_available(std::size_t slot, std::uint32_t character) con
     if (unlock_everything_) return true;
     if (character < 12) return data_.characters[character].large.enabled;
     // Menu_UnlockMPSkins clears rows 12..28 and re-enables the earned ones.
-    std::uint64_t bonus = slot < kMpMaxHumans ? bonus_[slot] : all_bonuses(bonus_);
+    std::uint64_t bonus = slot < kMpMaxLocalHumans ? bonus_[slot] : all_bonuses(bonus_);
     bool earned = false;
     for_earned_rewards(data_, bonus, [&](const MpReward& r) { earned |= r.type == 1 && mp_reward_character(r.id) == character; });
     return earned;
@@ -106,7 +106,8 @@ void MpSetup::begin_join() {
     // P_MPJOIN 0x4c: bonuses cleared, mpjoin cleared with the per-controller defaults, states reset.
     bonus_ = {};
     join_ = {};
-    for (std::size_t i = 0; i < kMpMaxHumans; ++i) {
+    settings_.human_count = 0;
+    for (std::size_t i = 0; i < kMpMaxLocalHumans; ++i) {
         join_[i].character = std::uint32_t(i);
         join_[i].controller = std::uint8_t(i);
         join_[i].side = i % 2 == 0 ? kMpTeamMi6 : kMpTeamPhoenix;
@@ -118,8 +119,10 @@ void MpSetup::set_controller_present(std::size_t slot, bool present, bool reset)
     MpJoinSlot& j = join_.at(slot);
     j.controller_present = present;
     if (!present) {
-        // "Insert analog controller ..." prompt; with `reset` the controller drops out of the join.
-        if (reset) j.joined = j.ready = false;
+        if (reset) {
+            j.joined = j.ready = false;
+            settings_.human_count = std::uint32_t(joined_count());
+        }
         controller_absent_[slot] = true;
         return;
     }
@@ -133,6 +136,7 @@ bool MpSetup::join(std::size_t slot) {
     j.state = MpJoinState::Codename;
     j.joined = true;
     j.ready = false;
+    settings_.human_count = std::uint32_t(joined_count());
     return true;
 }
 
@@ -163,6 +167,7 @@ void MpSetup::join_back(std::size_t slot) {
         j.state = MpJoinState::Codename;
         j.ready = false;
     }
+    settings_.human_count = std::uint32_t(joined_count());
 }
 
 std::size_t MpSetup::joined_count() const {
@@ -173,7 +178,7 @@ bool MpSetup::are_we_ready() {
     // Menu_MPAreWeReady: `gap` = a joined controller follows an empty one, `unready` = a joined controller
     // is not ready; ready needs at least one joined, all of them ready, and no gap.
     bool gap = false, seen_empty = false, unready = false, any_joined = false;
-    for (std::size_t i = 0; i < kMpMaxHumans; ++i) {
+    for (std::size_t i = 0; i < kMpMaxLocalHumans; ++i) {
         join_[i].controller = std::uint8_t(i);
         if (!join_[i].joined) {
             seen_empty = true;
@@ -218,7 +223,7 @@ bool MpSetup::select_scenario(std::size_t index, std::uint32_t random) {
     // Rand_Random() % 7: the seven levels before Ravine.
     settings_.level_id = data_.maps[random % 7].item.value;
     std::uint32_t humans = 0;
-    for (std::size_t i = 0; i < kMpMaxHumans; ++i) {
+    for (std::size_t i = 0; i < kMpMaxLocalHumans; ++i) {
         if (!join_[i].joined) continue;
         ++humans;
         if (i == 0) {
@@ -229,6 +234,7 @@ bool MpSetup::select_scenario(std::size_t index, std::uint32_t random) {
             join_[i].character = 5 + std::uint32_t(i);  // Snow Guard, Black Ops, Yakuza
         }
     }
+    settings_.human_count = humans;
     static constexpr std::uint8_t kQuickBots[3] = {1, 3, 2};  // Drake, Kiko, Rook
     settings_.prepared_bot_count = settings_.bot_count = 3;
     for (std::size_t i = 0; i < 3; ++i) {
@@ -238,9 +244,8 @@ bool MpSetup::select_scenario(std::size_t index, std::uint32_t random) {
         b.enabled = true;
         b.edited = false;
         b.stats = data_.characters[b.character].stats;
-        set_slot_name_from_character(kMpMaxHumans + i, b.character);
+        set_slot_name_from_character(bot_slot_base() + i, b.character);
     }
-    settings_.human_count = humans;
     quick_game_ = true;
     return true;
 }
@@ -258,7 +263,7 @@ void MpSetup::begin_setup() {
     // Reservations taken by controllers are dropped, those held by bots (>= 10) stay.
     if (good_owner_ < 10) good_owner_ = 0;
     if (bond_owner_ < 10) bond_owner_ = 0;
-    for (std::size_t i = 0; i < kMpMaxHumans; ++i) {
+    for (std::size_t i = 0; i < kMpMaxLocalHumans; ++i) {
         MpJoinSlot& j = join_[i];
         j.controller = std::uint8_t(i);
         j.ready = false;
@@ -431,9 +436,10 @@ void MpSetup::prepare_bots() {
     for (std::size_t i = 0; i < settings_.bot_limit(); ++i) {
         if (!settings_.bots[i].enabled) continue;
         if (i != out) {
-            std::string name = settings_.slots[kMpMaxHumans + i].name;
+            const std::size_t first_bot = bot_slot_base();
+            std::string name = settings_.slots[first_bot + i].name;
             std::swap(settings_.bots[i], settings_.bots[out]);
-            settings_.slots[kMpMaxHumans + out].name = name;
+            settings_.slots[first_bot + out].name = name;
         }
         ++out;
     }
@@ -501,7 +507,7 @@ bool MpSetup::choose_bot_character(std::size_t bot, std::uint32_t character) {
     std::uint8_t me = std::uint8_t(bot + 10);
     if (!team_game() && c.good()) good_owner_ = me;
     if (c.bond()) bond_owner_ = me;
-    set_slot_name_from_character(kMpMaxHumans + bot, character);
+    set_slot_name_from_character(bot_slot_base() + bot, character);
     b.enabled = true;
     return true;
 }
@@ -549,7 +555,7 @@ void MpSetup::commit_bot(std::size_t bot) {
 
 std::vector<MpParticipant> MpSetup::participants() const {
     std::vector<MpParticipant> out;
-    for (std::size_t i = 0; i < kMpMaxHumans; ++i) {
+    for (std::size_t i = 0; i < kMpMaxLocalHumans; ++i) {
         const MpJoinSlot& j = join_[i];
         if (!j.joined) continue;
         MpParticipant p;
@@ -566,8 +572,8 @@ std::vector<MpParticipant> MpSetup::participants() const {
         const MpBot& b = settings_.bots[i];
         MpParticipant p;
         p.bot = true;
-        p.slot = std::uint32_t(kMpMaxHumans + i);
-        p.name = settings_.slots[kMpMaxHumans + i].name;
+        p.slot = std::uint32_t(bot_slot_base() + i);
+        p.name = settings_.slots[bot_slot_base() + i].name;
         p.character = b.character;
         p.team = b.team;
         p.stats = b.stats;
@@ -599,9 +605,9 @@ MpLaunch MpSetup::start() {
         MpJoinSlot join;
     };
     std::vector<Joined> joined;
-    for (std::size_t i = 0; i < kMpMaxHumans; ++i)
+    for (std::size_t i = 0; i < kMpMaxLocalHumans; ++i)
         if (join_[i].joined) joined.push_back({settings_.slots[i], join_[i]});
-    for (std::size_t i = 0; i < kMpMaxHumans; ++i) {
+    for (std::size_t i = 0; i < kMpMaxLocalHumans; ++i) {
         if (i < joined.size()) {
             settings_.slots[i] = joined[i].slot;
             settings_.slots[i].team = joined[i].join.side;
@@ -632,7 +638,7 @@ MpLaunch MpSetup::start() {
         launch.participants.push_back(std::move(p));
     }
     for (std::uint32_t i = 0; i < settings_.bot_count; ++i) {
-        std::size_t slot = kMpMaxHumans + i;
+        std::size_t slot = bot_slot_base() + i;
         MpParticipant p;
         p.bot = true;
         p.slot = std::uint32_t(slot);
@@ -695,6 +701,10 @@ void MpSetup::apply_codename(std::size_t slot, const MpCodename& c, unsigned mas
     if (mask) bonus_.at(slot) = c.bonus;
 }
 
+
+std::size_t MpSetup::bot_slot_base() const {
+    return settings_.rules == MpRuleSet::Extended ? settings_.human_count : kMpMaxLocalHumans;
+}
 void MpSetup::set_slot_name_from_character(std::size_t slot, std::uint32_t character) {
     settings_.slots.at(slot).name = strings_.label(data_.characters.at(character).large.name);
 }

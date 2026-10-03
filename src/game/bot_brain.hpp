@@ -126,7 +126,7 @@ struct BotGoal {
 namespace goaltype { constexpr int kNone = 0, kPickup = 1, kObjective = 2, kPlayer = 3; }
 namespace goalflag { constexpr std::uint8_t kFirstPassOnly = 2, kIgnoreRespawning = 4, kValidateRoute = 8, kNoInterrupt = 0x10, kIgnoreVisitLocks = 0x20; }
 
-// BOT_vars other[8]: per participant perception cache.
+// The serialized BOT_vars cache has eight participants; Extended slots use an in-memory extension.
 struct OtherInfo {
     float stamp = 0;               // +0 concealment timestamp
     float sq_dist = 0;             // +4
@@ -157,7 +157,7 @@ struct BotVars {
     std::uint32_t recovery_end = 0;               // +0x748
     std::uint32_t hat_tick = 0;                   // +0x74c
     int friend_slot = -1;                         // +0x758 guard target
-    int slot = 4;                                 // +0x75c participant slot 4..7
+    int slot = 4;                                 // +0x75c participant slot (legacy first bot slot is 4)
     int bot_index = 0;                            // +0x75e
     int state_override = 0;                       // +0x762
     int character = 1;                            // +0x764
@@ -187,7 +187,7 @@ struct BotVars {
 
 class BotBrain : public drone::DroneExt {
 public:
-    BotBrain(const BotSpec& spec, BotEnv& env, BotBody& body, const WeaponTable& weapons,
+    BotBrain(const BotSpec& spec, BotEnv& env, BotBody& body, const WeaponTable& weapons, int bot_index,
              BotArmoury::LoadedFn loaded = {});
 
     BotVars v;
@@ -255,7 +255,7 @@ public:
     bool has_opponent() const { return opponent_slot_ >= 0; }
     int team() const { return team_; }
     void set_team(int t) { team_ = t; }
-    const OtherInfo* opponent_info() const { return opponent_slot_ >= 0 ? &v.other[std::size_t(opponent_slot_)] : nullptr; }
+    const OtherInfo* opponent_info() const { return opponent_slot_ >= 0 ? &v.other_info(opponent_slot_) : nullptr; }
     bool opponent_seen() const;                         // other[opp].flags & 6 == 6 or Drone+0x228 & 4
     bool alive_participant(int slot) const;
 

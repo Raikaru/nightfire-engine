@@ -7,7 +7,10 @@
 // Dossier content comes from DossierInfo (set_dossier); mission content from MissionResults;
 // without them the pages show the script's static text. There is no video playback, so the movie
 // pages hold their first frame, then pop back (the original waits for the movie to finish).
+#include "ui/accessibility.hpp"
+#include "ui/art_sheet.hpp"
 #include "ui/frontend_impl.hpp"
+#include "ui/menu_chrome.hpp"
 
 namespace nf {
 
@@ -208,11 +211,18 @@ bool Frontend::Impl::p_nf_bonus(ui::Control&, const ui::Msg& m) {
 // P_WINGAME is a movie page (p_movie requests 0x73F0048, then goes to the credits).
 
 // P_MPDEBRIEFING: the sorted table from DebriefInfo (best first). Unused rows hide, like the
-// original's 0x2b pass. Cross continues (QuitToMenu), triangle replays (MpRematch).
+// original's 0x2b pass. Cross continues (QuitToMenu), triangle replays (MpRematch). More than the page's four
+// columns (GC/Xbox and Extended rule sets, up to 16 agents) hides the columns and the row captions and draws
+// draw_debrief_table instead.
 bool Frontend::Impl::p_mp_debriefing(ui::Control&, const ui::Msg& m) {
     if (m.type == kPageShown) {
         constexpr const char* rank_labels[] = {"1st", "2nd", "3rd", "4th"};
-        const std::size_t n = std::min<std::size_t>(debrief.rows.size(), 4);
+        const bool table = debrief.table();
+        const std::size_t n = table ? 0 : debrief.rows.size();
+        if (table)
+            if (ui::Page* page = mgr->find_page(kPageDebrief))
+                for (const auto& c : page->controls)
+                    if (c->id == 0x10000001 && c->def->x == 52) mgr->send_to(*c, ui::Msg{kSetFlags, 1, 0});
         for (std::uint32_t i = 0; i < 4; ++i) {
             if (i < n) {
                 const DebriefRow& r = debrief.rows[i];
@@ -257,6 +267,66 @@ bool Frontend::Impl::p_mp_debriefing(ui::Control&, const ui::Msg& m) {
         m.veto = true;
     }
     return true;
+}
+
+// The debriefing for more than four agents (GC/Xbox and Extended rule sets): a table from just under the title
+// (script y 68) to the banner box (y 350), widened to the page margins, so 16 rows keep a 15-unit pitch: rank,
+// the agent's colour chip, name (+ BOT), character, then the original captions' columns. The script's banner box
+// and prompt row stay.
+void Frontend::Impl::draw_debrief_table(ui::Renderer& renderer, ui::TextRenderer& text) {
+    using namespace ui::menu_style;
+    ui::MenuChrome page(renderer, text, menu);
+    const ui::Rect band = ui::MenuChrome::authored(176, 68, 408, 282);
+    const ui::Rect box{page.left(), band.y, page.right() - page.left(), band.h};
+    page.panel(box);
+    const float header = ui::MenuChrome::panel_header_height();
+    const float pitch = std::min(17.0f, (box.h - header - 8.0f) / float(debrief.rows.size()));
+    const float left = box.x + 18.0f, right = box.x + box.w - 18.0f;
+    // Numeric columns right-aligned under the original captions (Points, Victories, Deaths, TOTAL).
+    const std::uint32_t captions[4] = {0x24c, 0x686, 0x2be, 0x163};
+    float columns[4];
+    float x = right;
+    for (int c = 3; c >= 0; --c) {
+        columns[c] = x;
+        x -= std::max(page.text_width(label(captions[c]), 2), 40.0f) + 16.0f;
+    }
+    const float character_x = left + (x - left) * 0.55f;
+    const float name_x = left + 34.0f;
+    page.label({name_x, box.y + 2.0f, 120.0f, 14.0f}, label(0x14e), 2, ui::Align::Left, kLabelColor);   // Agent
+    for (int c = 0; c < 4; ++c)
+        page.label({columns[c] - 100.0f, box.y + 2.0f, 100.0f, 14.0f}, label(captions[c]), 2, ui::Align::Right,
+                   kLabelColor);
+    const bool contrast = ui::accessibility().high_contrast;
+    float y = box.y + header + 4.0f;
+    for (std::size_t i = 0; i < debrief.rows.size(); ++i, y += pitch) {
+        const DebriefRow& r = debrief.rows[i];
+        if (i == 0) page.selection({box.x + 8.0f, y, box.w - 16.0f, pitch - 1.0f});   // the winner
+        const std::uint32_t color = contrast ? kHighContrastColor : i == 0 ? kLabelColor : kItemColor;
+        const ui::Rect row{0, y, 0, pitch};
+        page.label({left - 4.0f, row.y, 20.0f, row.h}, std::to_string(i + 1), 2, ui::Align::Right, color);
+        // The agent's colour chip (as on the Extended radar, name tags and scoreboard).
+        const char* chip = ui::player_hollow(r.slot) ? "swatch_hollow" : "swatch";
+        if (const ui::ArtSprite* a = ui::art_sprite("mphud", chip)) {
+            const std::uint32_t full = ui::player_color(r.slot);
+            page.art("mphud", chip, left + 22.0f, y + (pitch - a->src.h) * 0.5f, (full >> 1 & 0x7F7F7F00u) | 0xFF);
+        }
+        const float nw = page.text_width(r.name, 2);
+        page.label({name_x, row.y, character_x - name_x - 8.0f, row.h}, page.clip(r.name, 2, character_x - name_x - 8.0f),
+                   2, ui::Align::Left, color);
+        if (r.is_bot)
+            if (const ui::ArtSprite* a = ui::art_sprite("mphud", "bot_tag"))
+                if (name_x + nw + 6.0f + a->src.w < character_x)
+                    page.art("mphud", "bot_tag", name_x + nw + 6.0f, y + (pitch - a->src.h) * 0.5f);
+        std::string character;
+        if (mp_data && r.character >= 0 && std::size_t(r.character) < mp_data->characters.size())
+            character = label(mp_data->characters[std::size_t(r.character)].short_name);
+        page.label({character_x, row.y, x - character_x, row.h}, page.clip(character, 2, x - character_x), 2,
+                   ui::Align::Left, color);
+        const std::string values[4] = {std::to_string(int(r.points)), std::to_string(r.kills), std::to_string(r.deaths),
+                                       std::to_string(r.score)};
+        for (int c = 0; c < 4; ++c)
+            page.label({columns[c] - 100.0f, row.y, 100.0f, row.h}, values[c], 2, ui::Align::Right, color);
+    }
 }
 
 // Movie pages (no decoder here): on show they request their PSS id (take_movie_request) for the

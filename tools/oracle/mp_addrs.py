@@ -138,6 +138,7 @@ GOAL_KIND = 0x4A               # 0 pickup 1 flag 2 base 3 GE 4 bp 5 base 6 uplin
 # ---- pickups (spec 1.10) ----------------------------------------------------
 MPPICKUPS = 0x2A4B50           # 64 x 0xA0
 MPPICKUP_STRIDE = 0xA0
+MPPICKUP_VISIT = 0x80           # float visit-until seconds for bot indices 0..3
 MPPICKUP_POS = 0x10            # vec4
 PICKUPINFO_OFF = 0xE0          # obj+0xE0 for type-0x2f objs
 PI_STATE = 0x20                # s16 0 settling 1 active 2 respawning

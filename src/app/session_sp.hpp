@@ -48,7 +48,7 @@ struct SpHeadless {
 class SpSession {
 public:
     SpSession(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRenderer& text, const SpLaunch& launch,
-              const AppConfig& cfg);
+              AppConfig& cfg);   // the pause menu writes the controller style / Y-inversion back
     ~SpSession();
 
     SpSession(const SpSession&) = delete;

@@ -14,7 +14,7 @@ namespace nf::net {
 
 constexpr std::uint16_t kProtocolVersion = 7;
 constexpr std::uint8_t kOwnerMovementSchemaVersion = 2;
-constexpr std::uint8_t kMaxServerBots = 12;
+constexpr std::uint8_t kMaxServerBots = 16;
 constexpr std::size_t kDataHashBytes = 32;
 constexpr std::size_t kMaxDatagramBytes = 1200;
 constexpr std::size_t kMaxPasswordBytes = 64;

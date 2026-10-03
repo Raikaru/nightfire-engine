@@ -40,7 +40,7 @@ inline void apply_arena_hud(const ArenaHud& src, HudMp& dst) {
     dst.radar_names = src.radar_names;
     dst.radar_enabled = true;
     dst.blips.clear();
-    for (const ArenaHud::Blip& b : src.blips) dst.blips.push_back({b.x, b.y, b.z, b.color, b.kind});
+    for (const ArenaHud::Blip& b : src.blips) dst.blips.push_back({b.x, b.y, b.z, b.color, b.kind, b.slot});
     dst.name_tags.clear();
 }
 

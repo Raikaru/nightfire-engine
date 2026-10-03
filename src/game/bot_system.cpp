@@ -67,9 +67,10 @@ std::string vec_str(const Vec3& v) { return fmt("(%.1f,%.1f,%.1f)", double(v[0])
 // Roster helpers
 
 void fill_bot_slots(ArenaSettings& settings, const std::vector<BotSpec>& roster) {
-    for (std::size_t i = kMpMaxHumans; i < settings.slots.size(); ++i) settings.slots[i] = {};
+    const std::size_t first = settings.first_bot_slot();
+    for (std::size_t i = first; i < settings.slots.size(); ++i) settings.slots[i] = {};
     for (const BotSpec& s : roster) {
-        if (s.slot < int(kMpMaxHumans) || std::size_t(s.slot) >= settings.slot_count ||
+        if (s.slot < int(first) || std::size_t(s.slot) >= settings.slot_count ||
             std::size_t(s.slot) >= settings.slots.size())
             throw std::invalid_argument("bot slot exceeds the match ruleset capacity");
         ArenaSettings::Slot& slot = settings.slots[std::size_t(s.slot)];
@@ -129,8 +130,8 @@ public:
 
     std::uint32_t scenario() const override { return sys_.impl_->cfg.arena->settings().mode; }
     bool teams_on() const override { return sys_.impl_->cfg.arena->settings().team_game(); }
-    float clock_seconds() const override { return float(world().frame()) / drones().timing().rate; }
-    std::uint32_t tick() const override { return std::uint32_t(world().frame()); }
+    float clock_seconds() const override { return sys_.impl_->cfg.arena->total_elapsed(); }
+    std::uint32_t tick() const override { return std::uint32_t(world().timer_frame()); }
     int weapon_set_start() const override {
         const int id = sys_.impl_->cfg.arena->weapon_set_row()[0];
         return sys_.impl_->cfg.weapons->table().weapon(id).base;   // startweap = weapon_data[set slot 0] + 2
@@ -537,7 +538,7 @@ BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
         goal.type = raw_u8(bv_raw, offset + 0x45);
         goal.flags = raw_u8(bv_raw, offset + 0x46);
         goal.max_range = raw_u8(bv_raw, offset + 0x47);
-        goal.last_result = raw_i32(bv_raw, offset + 0x48);
+        goal.last_result = raw_u8(bv_raw, offset + 0x48);  // BOTSTATE_processGoals loads this byte; +0x49/+0x4a are slot/kind.
         goal.slot = raw_u8(bv_raw, offset + 0x49);
         goal.kind = raw_u8(bv_raw, offset + 0x4a);
     }
@@ -588,6 +589,14 @@ BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
     restored.targeted_by_bot = raw_u8(bv_raw, 0x770) != 0;
     restored.in_zone = raw_u8(bv_raw, 0x771) != 0;
     restored.armour = raw_u8(bv_raw, 0x769);
+    // BOTSTATE_gotoGoal also installs the nonserialized runtime body target.
+    if (restored.active_goal >= 0) {
+        const BotGoal& goal = restored.goal[std::size_t(restored.active_goal)];
+        if (goal.type == goaltype::kPlayer)
+            bot->brain->body->setup_goal_participant(goal.target, bot->brain->speed_mul());
+        else if (goal.type != goaltype::kNone)
+            bot->brain->body->setup_goal_position(goal.pos, bot->brain->speed_mul());
+    }
 
     Drone& d = *bot->drone;
     d.pos = {raw_f32(obj_raw, 0x30), raw_f32(obj_raw, 0x34), raw_f32(obj_raw, 0x38)};
@@ -660,6 +669,19 @@ const BotBrain& BotSystem::brain(const Bot& b) const { return *b.brain; }
 
 BotSystem::Bot& BotSystem::add_bot(const BotSpec& spec) {
     Config& c = impl_->cfg;
+    if (spec.slot < 0 || spec.slot >= int(c.arena->settings().slot_count) ||
+        !c.arena->settings().slots[std::size_t(spec.slot)].present ||
+        !c.arena->settings().slots[std::size_t(spec.slot)].bot)
+        throw std::invalid_argument("bot slot is not an active bot participant");
+    if (bots_.size() >= kMpMaxBots) throw std::invalid_argument("bot capacity exceeded");
+    std::array<bool, kMpMaxBots> used_indices{};
+    for (const auto& existing : bots_)
+        if (existing->brain && existing->brain->v.bot_index >= 0 &&
+            std::size_t(existing->brain->v.bot_index) < used_indices.size())
+            used_indices[std::size_t(existing->brain->v.bot_index)] = true;
+    std::size_t bot_index = 0;
+    while (bot_index < used_indices.size() && used_indices[bot_index]) ++bot_index;
+    if (bot_index == used_indices.size()) throw std::invalid_argument("bot index capacity exceeded");
     auto bot = std::make_unique<Bot>();
     Bot& b = *bot;
     b.spec = spec;
@@ -667,13 +689,13 @@ BotSystem::Bot& BotSystem::add_bot(const BotSpec& spec) {
     if (!ch) throw std::invalid_argument("bot character " + std::to_string(spec.character) + " is not in MP_skins");
 
     auto slot_ref = [this](int slot) -> TargetRef {
-        if (slot < 0) return {};
-        if (slot < 4) return TargetRef::player(slot);
+        if (slot < 0 || slot >= int(impl_->cfg.arena->settings().slot_count)) return {};
+        if (!impl_->cfg.arena->settings().slots[std::size_t(slot)].bot) return TargetRef::player(slot);
         Bot* other = bot_at_slot(slot);
         return other && other->drone ? TargetRef::drone(other->drone->id) : TargetRef{};
     };
     b.body = std::make_unique<DroneBotBody>(*c.drones, slot_ref, [this](drone::Drone& d) { drop_weapon(d); });
-    auto brain = std::make_unique<BotBrain>(spec, *impl_->env, *b.body, c.weapons->table());
+    auto brain = std::make_unique<BotBrain>(spec, *impl_->env, *b.body, c.weapons->table(), int(bot_index));
     BotBrain* bp = brain.get();
     b.brain = bp;
 
@@ -839,18 +861,36 @@ void BotSystem::sync_dynamic_pickup_emitters() {
         }
     }
 }
+bool BotSystem::remove_bot(int slot) {
+    Bot* bot = bot_at_slot(slot);
+    if (!bot) return false;
+    for (auto& other : bots_) {
+        if (other.get() == bot || !other->brain) continue;
+        if (other->brain->opponent() == slot) other->brain->set_opponent(-1);
+        if (other->brain->v.friend_slot == slot) other->brain->v.friend_slot = -1;
+    }
+    const int drone_id = bot->drone ? bot->drone->id : -1;
+    if (slot >= 0 && slot < int(impl_->was_dead.size())) impl_->was_dead[std::size_t(slot)] = false;
+    impl_->cfg.arena->clear_participant(slot);
+    if (drone_id >= 0) impl_->cfg.drones->remove(drone_id);
+    const auto it = std::find_if(bots_.begin(), bots_.end(), [bot](const auto& item) { return item.get() == bot; });
+    if (it != bots_.end()) bots_.erase(it);
+    return true;
+}
 
-void BotSystem::tick(World&, FrameTiming timing) {
+
+void BotSystem::tick(World&, FrameTiming) {
     Config& c = impl_->cfg;
     ArenaSystem& arena = *c.arena;
-    const float clock = float(c.world->frame()) / timing.rate;
+    const float clock = arena.total_elapsed();
     // MP_Pickup_Process: expired per-bot visit locks are cleared.
     for (Pickup& p : arena.pickups().all())
         for (float& t : p.visit_until)
             if (t != 0 && t < clock) t = 0;
     // Pickups taken last tick by bots: BOTSTATE_setPickupVisitTime (the 45 s lock) + statistics.
     for (const PickupEvent& e : arena.pickup_events()) {
-        if (e.slot < 4) continue;
+        if (e.slot < 0 || e.slot >= int(arena.settings().slot_count) ||
+            !arena.settings().slots[std::size_t(e.slot)].bot) continue;
         Bot* b = bot_at_slot(e.slot);
         if (!b) continue;
         b->brain->set_pickup_visit_time(int(e.index));
@@ -860,8 +900,8 @@ void BotSystem::tick(World&, FrameTiming timing) {
                                           arena.pickups().all()[e.index].category, arena.pickups().all()[e.index].item));
     }
     // Humans that died since the last tick (MP_PlayerKilled -> msg 0x43 to every bot).
-    for (int slot = 0; slot < 4; ++slot) {
-        if (!arena.settings().slots[std::size_t(slot)].present) continue;
+    for (int slot = 0; slot < int(arena.settings().slot_count); ++slot) {
+        if (!arena.settings().slots[std::size_t(slot)].present || arena.settings().slots[std::size_t(slot)].bot) continue;
         const bool dead = arena.dead(slot);
         if (dead && !impl_->was_dead[std::size_t(slot)])
             for (auto& b : bots_) b->drone->send_self(botmsg::kPlayerDied, slot, 1);

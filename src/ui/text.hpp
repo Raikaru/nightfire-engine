@@ -34,9 +34,12 @@ TextStyle apply_format(TextStyle base, std::string_view format);
 // Font_GetAlignment: the alignment a format string selects.
 Align format_alignment(std::string_view format);
 
+class PromptGlyphs;
+
 // Draws strings with the original bitmap fonts (Font_DrawText / Font_GetTextExtent). Text is raw
 // game-encoded bytes: '\n' starts a new line, 0xA0 is a wide space, 0x99 draws a half-size "TM",
-// `~X` inserts button icon X (`specialchar`), 0xBA toggles the highlight colours.
+// `~X` inserts button icon X (`specialchar`, or the active PromptGlyphs' device glyph; `~x` = gameplay
+// binding), 0xBA toggles the highlight colours.
 class TextRenderer {
 public:
     TextRenderer(Renderer& renderer, const FontSet& fonts) : renderer_(&renderer), fonts_(fonts) {}
@@ -51,11 +54,16 @@ public:
 
     const FontSet& fonts() const { return fonts_; }
 
+    // The button-prompt resolver every TextRenderer (drawing and measuring) uses; null = original glyphs.
+    static void set_prompts(PromptGlyphs* prompts) { prompts_ = prompts; }
+    static PromptGlyphs* prompts() { return prompts_; }
+
 private:
     TextMetrics layout(float x, float y, std::string_view text, const TextStyle& style, Color color, bool emit);
 
     Renderer* renderer_ = nullptr;
     const FontSet& fonts_;
+    static inline PromptGlyphs* prompts_ = nullptr;
 };
 
 }  // namespace nf::ui

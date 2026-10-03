@@ -45,6 +45,7 @@ struct Frontend::Impl : ui::MenuHost {
     int online_choice_leaving = -1;      // frames since a choice started fading to its page (-1: not leaving)
     bool listen_host = false;            // route the original MP setup into the listen-server path
     std::array<bool, 4> controllers_present{true, false, false, false};   // PlayerSetting+0x155 per controller
+    std::array<bool, 4> join_slot_present{true, true, true, true};       // last presence update_join_slot drew
     std::uint32_t rand_state = 0x1234567;   // Rand_Random for Quick Game
     PauseInfo pause_info;
     PlayerOptions player_options;    // controller style / Y-inversion (pause CONTROLS tab, P_CNCONTROLS)
@@ -114,6 +115,7 @@ struct Frontend::Impl : ui::MenuHost {
     void open_online_choice(std::uint8_t stage);
     void draw_online_choice(ui::Renderer& renderer, ui::TextRenderer& text);
     void open_settings();
+    void draw_debrief_table(ui::Renderer& renderer, ui::TextRenderer& text);
     bool c_language(ui::Control&, const ui::Msg&);
     bool c_go_nightfire(ui::Control&, const ui::Msg&);
     bool c_go_multiplayer(ui::Control&, const ui::Msg&);
@@ -217,6 +219,9 @@ struct Frontend::Impl : ui::MenuHost {
     bool p_cn_controls(ui::Control&, const ui::Msg&);
     bool c_rb_control(ui::Control&, const ui::Msg&);
     void display_controller_style();
+    void sync_controls_device();
+    void draw_controls_diagram(ui::Renderer& renderer, ui::TextRenderer& text);
+    InputDevice controls_device = InputDevice::PlayStation;   // the device the P_CNCONTROLS labels were built for
     bool c_keypad(ui::Control&, const ui::Msg&);
     bool p_cn_av_options(ui::Control&, const ui::Msg&);
     bool p_screen_adjust(ui::Control&, const ui::Msg&);

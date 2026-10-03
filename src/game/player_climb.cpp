@@ -114,7 +114,7 @@ void Player::climb_update(const ActionInput& input, FrameTiming timing) {
     // The ladder's own displacement (obj+0xC0 - obj+0x40) is zero: ladders never move.
 
     const float forward = input.actionf(kActForward);
-    const float step = kStepNumerator / (timing.rate * 0.016666668f);   // 0.2 / FRAME_RATE_DIV
+    const float step = kStepNumerator / (timing.FRAME_RATE * 0.016666668f);   // 0.2 / FRAME_RATE_DIV
     if (!input.held(kActJump) || forward >= kStickDeadClimb) {
         if (ladder.top() < pos[1]) {
             velocity[2] += step * kTopStepOff;     // over the top and forward
@@ -132,7 +132,7 @@ void Player::climb_update(const ActionInput& input, FrameTiming timing) {
         velocity[2] += -step * kBackStepOff;       // jump off backwards
     }
     velocity[1] = 0.0f;
-    leave_climb(std::uint8_t(int(timing.rate)));
+    leave_climb(std::uint8_t(timing.FRAME_RATE_INT));
 }
 
 // Player_CollisionHandler, substate 1: no feet probe and no push-out. The first solid hit that is not the ladder

@@ -23,14 +23,25 @@ namespace nf {
 
 class ObjectWorld;
 
-// Logic-frame duration as the original derives it: GS_SetRefreshRate(rate) sets FRAME_RATE = rate,
-// FRAME_RATE_MUL = 60 / rate (scales per-frame quantities) and REC_FRAME_RATE = 1 / rate (scales
-// per-second quantities: gravity, velocity integration). The original re-measures `rate` every main
-// loop iteration (60 / vsyncs per frame); nfgame uses a constant 30.
+// Logic-frame duration, corresponding to the four values derived by GS_SetRefreshRate:
+// FRAME_RATE is ticks per second, FRAME_RATE_MUL scales per-frame quantities authored at
+// 60 Hz, REC_FRAME_RATE scales per-second quantities, and FRAME_RATE_INT is the integer rate.
+// Gameplay sessions choose a deterministic fixed rate; oracle replay supplies its recorded rate.
 struct FrameTiming {
-    float rate = 30.0f;
-    float mul() const { return 60.0f / rate; }
-    float rec() const { return 1.0f / rate; }
+    static constexpr float kReferenceHz = 60.0f;
+    static constexpr float kDefaultRate = kReferenceHz;
+
+    float FRAME_RATE = kDefaultRate;
+    float FRAME_RATE_MUL = 1.0f;
+    float REC_FRAME_RATE = 1.0f / kDefaultRate;
+    int FRAME_RATE_INT = int(kDefaultRate);
+
+    explicit FrameTiming(float rate = kDefaultRate)
+        : FRAME_RATE(rate), FRAME_RATE_MUL(kReferenceHz / rate), REC_FRAME_RATE(1.0f / rate),
+          FRAME_RATE_INT(static_cast<int>(rate + 0.5f)) {}
+
+    float mul() const { return FRAME_RATE_MUL; }
+    float rec() const { return REC_FRAME_RATE; }
 };
 
 // Tunables from TuningVars.txt [GLOBAL] that the movement code reads (Plr_NoAimTurnSpeed_*).

@@ -374,7 +374,8 @@ void WeatherRenderer::add_drop(const Vec3& viewer) {
 // One emitter tick (Emitter_Update): age live particles (colour from the key ramp, gravity sink),
 // then respawn up to `budget` dead slots while running and not expired. Switch-gated emitters need
 // their A channel on (or 0) and their B channel off (or 0).
-void WeatherRenderer::update_emitters(const std::function<bool(int)>& channel) {
+void WeatherRenderer::update_emitters(float frame_mul, float delta_seconds,
+                                      const std::function<bool(int)>& channel) {
     auto on = [&](int ch) { return ch == 0 || (channel && channel(ch)); };
     for (Emitter& e : emitters_) {
         const EmitterDef& def = *e.def;
@@ -383,26 +384,28 @@ void WeatherRenderer::update_emitters(const std::function<bool(int)>& channel) {
         const float speed = def.f[6];
         const bool running = !e.expired && on(e.ch_a) && (e.ch_b == 0 || !on(e.ch_b));
         if (e.remaining > 0) {
-            e.remaining -= 1.0f / 30.0f;
+            e.remaining -= delta_seconds;
             if (e.remaining <= 0) e.expired = true;
         }
         for (EmitterParticle& pt : e.parts) {
             if (pt.age >= pt.life) continue;
-            pt.age += 1.0f / 30.0f;
+            pt.age += delta_seconds;
             if (pt.age >= pt.life) {
                 pt.age = 1e30f;
                 continue;
             }
-            pt.x += pt.vx;
-            pt.y += pt.vy + grav * (1.0f / 30.0f);
-            pt.z += pt.vz;
+            pt.x += pt.vx * frame_mul;
+            pt.y += pt.vy * frame_mul + grav * delta_seconds;
+            pt.z += pt.vz * frame_mul;
         }
         if (!running) continue;
-        int budget = def.budget;
+        e.spawn_budget += float(def.budget) * frame_mul;
+        int budget = int(e.spawn_budget);
         for (EmitterParticle& pt : e.parts) {
             if (budget <= 0) break;
             if (pt.age < pt.life) continue;
             --budget;
+            e.spawn_budget -= 1.0f;
             const float az = az_b + az_r * frand(1.0f);
             const float pol = pol_b + pol_r * frand(1.0f);
             const float sp = speed * frand(1.0f);
@@ -435,8 +438,9 @@ void WeatherRenderer::update_emitters(const std::function<bool(int)>& channel) {
     }
 }
 
-void WeatherRenderer::update(const Vec3& viewer, const std::function<bool(int)>& channel) {
-    update_emitters(channel);
+void WeatherRenderer::update(const Vec3& viewer, float frame_mul, float delta_seconds,
+                             const std::function<bool(int)>& channel) {
+    update_emitters(frame_mul, delta_seconds, channel);
     if (type_ < 0) return;
     // First tick fills every drop around the viewer (the f9f5 respawn path).
     if (!filled_) {
@@ -461,8 +465,8 @@ void WeatherRenderer::update(const Vec3& viewer, const std::function<bool(int)>&
     const bool tight = level_id_ == 0x07000007 || level_id_ == 0x07000008 || level_id_ == 0x07000009;
     const float rx = tight ? 0.0056f : 0.04f, ox = tight ? 0.002f : 0.02f;
     if (type_ != 1) {  // snow gust random walk, clamped to +-0.01
-        wind_x_ = std::clamp(wind_x_ + frand(0.0009f) - 0.0002f, -0.01f, 0.01f);
-        wind_z_ = std::clamp(wind_z_ + frand(0.0009f) - 0.0002f, -0.01f, 0.01f);
+        wind_x_ = std::clamp(wind_x_ + frame_mul * (frand(0.0009f) - 0.0002f), -0.01f, 0.01f);
+        wind_z_ = std::clamp(wind_z_ + frame_mul * (frand(0.0009f) - 0.0002f), -0.01f, 0.01f);
     }
     for (std::size_t i = 0; i < max_drops_; ++i) {
         Drop& d = drops_[i];
@@ -481,16 +485,20 @@ void WeatherRenderer::update(const Vec3& viewer, const std::function<bool(int)>&
         float py = float(-(hash01(i * 3 + 2) * 0.075 + 0.025));
         float pz = float(hash01(i * 3 + 3) * rx - ox);
         if (type_ == 2) px *= 0.25f, py *= -0.25f, pz *= 0.25f;
-        d.x += px + (type_ == 1 ? 0 : wind_x_);
-        d.y += py;
-        d.z += pz + (type_ == 1 ? 0 : wind_z_);
+        d.x += (px + (type_ == 1 ? 0 : wind_x_)) * frame_mul;
+        d.y += py * frame_mul;
+        d.z += (pz + (type_ == 1 ? 0 : wind_z_)) * frame_mul;
         if ((type_ == 2 && d.y > d.floor) || (type_ != 2 && d.y < d.floor)) {
             d.live = false;
             d.y -= 1024.0f;
         }
     }
     
-    for (int n = 0; n < 0x15; ++n) add_drop(viewer);
+    drop_budget_ += 0x15 * frame_mul;
+    while (drop_budget_ >= 1.0f) {
+        add_drop(viewer);
+        drop_budget_ -= 1.0f;
+    }
 }
 namespace {
 void apply_alpha(GLint u_atest, GLint u_aref, const Material& m) {

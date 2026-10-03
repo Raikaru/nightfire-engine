@@ -58,12 +58,14 @@ struct ArenaSettings {
     bool grapple = false;                       // +0x1D0
     bool radar_names = true;                    // +0x1C4
     std::uint32_t level_id = 0;                 // +0x1A8
-    std::array<Slot, kMpSlots> slots{};         // humans 0..3, bots 4..7
+    std::array<Slot, kMpSlots> slots{};         // Legacy: humans 0..3, bots 4..7; Extended follows present humans.
 
     bool team_game() const { return (mode & mp_mode::kTeamFlag) != 0; }            // +0x18C
     bool objective_scored() const { return (mode & mp_mode::kObjectiveFlag) != 0; } // +0x190
     int human_count() const;
     int bot_count() const;
+    // Bots follow local humans in legacy rulesets; Extended reserves slots only for present humans.
+    std::size_t first_bot_slot() const;
     // Teams are honoured in team games and in Assassination (MP_areObjectsOnSameTeam / MP_getObjectTeam).
     bool uses_teams() const { return team_game() || mode == mp_mode::kAssassination; }
 };
@@ -153,6 +155,7 @@ struct ArenaSeedSnapshot {
         bool has_pos = false;
         bool has_stamp = false;
         bool has_lifetime = false;
+        std::array<float, kMpMaxBots> visit_until{};
     };
     MatchPhase phase = MatchPhase::Running;
     int state_code = 0;
@@ -172,7 +175,8 @@ struct ArenaSeedSnapshot {
 // What the HUD (nf_ui HudState::mp) needs for one viewer. Field names follow `HudMp`.
 struct ArenaHud {
     struct Blip {
-        float x = 0, y = 0, z = 0;              // camera space: x right, y up, z forward
+        float x = 0, y = 0, z = 0;             // camera space: x right, y up, z forward
+        int slot = -1;                          // participant slot; -1 for objectives
         std::uint32_t color = 0x7F7F7FFF;
         int kind = 0;                           // RADAROBJ+0x14: 0 player, 1 flag, 2 uplink, 3 target, 4 GoldenEye, 6 blueprint, 7 base
         Vec3 world{};                           // world position (for the HUD's name-tag projection)
@@ -225,10 +229,13 @@ public:
     ArenaSystem(World& world, ArenaSettings settings, const WeaponSets& sets, PickupWeaponFn weapon,
                 const StringTable* strings = nullptr);
 
-    // ---- MP_Init / MP_Start ----
-    // Registers the body of participant `slot` (humans 0..3, bots 4..7); the slot must be `present` in the settings.
+    // Registers the body of a participant; the slot must be `present` in the settings.
     // Humans are respawned by the arena, bots respawn themselves (BOT_respawn asks spawn_point()).
     void register_body(int slot, ArenaBody* body);
+    // Clears a departing participant and its per-slot match state.
+    void clear_participant(int slot);
+    // Activates a human with fresh per-slot state after bots or empty slots release it.
+    void activate_human_slot(int slot, std::string name, ArenaBody* body);
     // MP_GetSpawnPoint(team, self): Near / Far / Random among the spawn markers of the team's range that are
     // more than sqrt(2) from every other registered participant.
     ArenaSpawn spawn_point(int team, int slot);
@@ -285,8 +292,9 @@ public:
     int golden_target() const { return golden_target_; }
     float pickup_respawn_left(const Pickup& pickup) const {
         if (pickup.state != Pickup::State::Waiting || rate_ <= 0.0f) return 0.0f;
-        const float left =
-            10.0f * float(pickup.respawn_units) - float(frame_ - pickup.stamp) / rate_;
+        const std::uint64_t now = world_.timer_frame();
+        const float left = 10.0f * float(pickup.respawn_units) -
+                           float(now >= pickup.stamp ? now - pickup.stamp : 0) / rate_;
         return left > 0.0f ? left : 0.0f;
     }
     std::array<float, 2> team_score() const { return team_score_; }

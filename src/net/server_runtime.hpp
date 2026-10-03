@@ -22,6 +22,7 @@ struct ServerConfig {
     std::string map = "07000024.bin";
     MatchOptions match;
     std::uint16_t port = 27500;
+    int logic_hz = 60;
     std::string name = "Nightfire";
     std::string password;
     std::string master_host;

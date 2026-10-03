@@ -26,6 +26,7 @@
 #include "assets/elf.hpp"
 #include "assets/weapon_data.hpp"
 #include "ee/machine.hpp"
+#include "game/actions.hpp"
 
 namespace {
 
@@ -659,8 +660,85 @@ int cmd_diff_acc(const std::string& elf_path) {
                                                     }
     return 0;
 }
+// ---- psiInput_MapInputs, all eight controller styles --------------------------------------------------
+// Runs the original on pad states (every button word with random sticks, plus stick extremes) for each style and
+// compares the 40 action floats bit for bit against nf::map_inputs. Two players are mapped per call so the
+// player-0-only start+cross action is covered too. Prints the mismatch count per style.
+int cmd_diff_input(const std::string& elf_path) {
+    Machine m(elf_path);
+    m.install_libc_hooks();
+    const u32 entry = m.addr("psiInput_MapInputs__FP15PlayerInput_tagUs");
+    const u32 tslot = m.addr("tSlot");
+    m.hook("MapPlayerToSlot__Fi", [](nf::ee::Cpu& c) {   // player i reads slot i
+        c.r[2].d[0] = c.r[4].d[0];
+        return true;
+    });
+    m.hook("sceMtapGetConnection", [](nf::ee::Cpu& c) {
+        c.r[2].d[0] = 0;
+        return true;
+    });
+    constexpr u32 kSlot = 0x180, kRecord = 0x158;
+    const u32 records = m.alloc(2 * kRecord);
+    std::mt19937 rng(0x1F2E3D4C);
+    std::vector<std::pair<nf::PadState, nf::PadState>> pads;
+    auto random_pad = [&](std::uint16_t buttons) {
+        nf::PadState p;
+        p.buttons = buttons;
+        p.rx = u8(rng()), p.ry = u8(rng()), p.lx = u8(rng()), p.ly = u8(rng());
+        return p;
+    };
+    for (u32 b = 0; b < 0x10000; ++b) pads.emplace_back(random_pad(u16(b)), random_pad(u16(rng())));
+    static constexpr u8 kStick[] = {0x00, 0x01, 0x19, 0x40, 0x7E, 0x7F, 0x80, 0x81, 0xBF, 0xE6, 0xFE, 0xFF};
+    for (u8 a : kStick)
+        for (u8 b : kStick) {
+            nf::PadState p = random_pad(u16(rng()));
+            p.rx = a, p.ly = a, p.lx = b, p.ry = b;
+            pads.emplace_back(p, random_pad(u16(rng())));
+        }
+    int total = 0;
+    for (int style = 0; style < 8; ++style) {
+        int mismatches = 0;
+        for (const auto& [p0, p1] : pads) {
+            const nf::PadState* player_pads[2] = {&p0, &p1};
+            for (u32 i = 0; i < 2; ++i) {
+                const nf::PadState& p = *player_pads[i];
+                const u32 slot = tslot + i * kSlot;
+                m.mem.write<u16>(slot + 0x122, nf::sony_pad_word(p.buttons));
+                for (u32 copy : {0x128u, 0x148u}) {
+                    m.mem.write<u8>(slot + copy + 0, p.rx);
+                    m.mem.write<u8>(slot + copy + 1, p.ry);
+                    m.mem.write<u8>(slot + copy + 2, p.lx);
+                    m.mem.write<u8>(slot + copy + 3, p.ly);
+                }
+                const u32 rec = records + i * kRecord;
+                for (u32 o = 0; o < kRecord; o += 4) m.mem.write<u32>(rec + o, 0);   // Input_Update's memset
+                m.mem.write<u16>(rec + 0xE, u16(style));
+            }
+            CallArgs a;
+            a.i(records).i(2);
+            m.call_keep(entry, a);
+            for (u32 i = 0; i < 2; ++i) {
+                const auto want = nf::map_inputs(*player_pads[i], style, int(i));
+                for (u32 k = 0; k < u32(nf::kActionCount); ++k) {
+                    const u32 got = m.mem.read<u32>(records + i * kRecord + 0x14 + 4 * k);
+                    if (got != Machine::fbits(want[k])) {
+                        if (mismatches < 8)
+                            std::printf("style %d player %u buttons %04x sticks %02x %02x %02x %02x: action %u ee %08x port %08x\n",
+                                        style, i, player_pads[i]->buttons, player_pads[i]->rx, player_pads[i]->ry,
+                                        player_pads[i]->lx, player_pads[i]->ly, k, got, Machine::fbits(want[k]));
+                        ++mismatches;
+                    }
+                }
+            }
+        }
+        std::printf("style %d: %zu pad pairs, %d mismatching action values\n", style, pads.size(), mismatches);
+        total += mismatches;
+    }
+    std::printf("diff-input: %d mismatches -> %s\n", total, total == 0 ? "PASS" : "FAIL");
+    return total == 0 ? 0 : 1;
+}
+
 // ---- PS2Sinf__Ff sweep --------------------------------------------------------------------------
-// EE sine truth table for the Bots polynomial replica: 2001 args across [-pi/2, pi/2] plus large args.
 int cmd_diff_sin(const std::string& elf_path) {
     Machine m(elf_path);
     m.install_libc_hooks();
@@ -2499,6 +2577,7 @@ void usage() {
                  "       nfmips <elf> diff [--count N] [--seed N] [--state p2s]\n"
                  "       nfmips <elf> diff-acc (DroneWeap_DoBulletAccuracy truth table, Bots diff)\n"
                  "       nfmips <elf> diff-sin (PS2Sinf__Ff truth table, Bots poly replica)\n"
+                 "       nfmips <elf> diff-input (psiInput_MapInputs, all controller styles vs nf::map_inputs)\n"
                  "       nfmips <elf> diff-refind (NDrone2_ReFindMissionPath truth table, Bots diff)\n"
                  "       nfmips <elf> diff-combat (DroneFunc_CombatState truth table, Bots diff)\n"
                  "       nfmips <elf> diff-mpweap (spread draws + spherical + HandlePain table, Combat diff)\n"
@@ -2649,6 +2728,7 @@ int main(int argc, char** argv) {
         }
         if (cmd == "diff-acc") return cmd_diff_acc(elf);
         if (cmd == "diff-sin") return cmd_diff_sin(elf);
+        if (cmd == "diff-input") return cmd_diff_input(elf);
         if (cmd == "diff-refind") return cmd_diff_refind(elf);
         if (cmd == "diff-combat") return cmd_diff_combat(elf);
         if (cmd == "diff-mpweap") return cmd_diff_mpweap(elf);

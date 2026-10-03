@@ -91,12 +91,13 @@ def source_favourite():
 
 
 def badge(text, face, edge):
+    """Rule-set badge: an R1-style plate (0x03000075) with the name in the 4x7 font."""
     w = s.pixel_text_width(text) + 6
     img = icon(w, 11)
     s.fill_shape(img, (0, 0, w, 11), s.round_rect_inside(w, 11, 2.0),
                  lambda u, v, x, y: s.lerp(face, edge, v * 0.8))
     s.bevel(img, (0, 0, w, 11))
-    s.pixel_text(img, 3, 3, text, s.INK)
+    s.pixel_text(img, 3, 2, text, s.INK)
     return img
 
 

@@ -5,6 +5,9 @@
 #include <deque>
 
 #include "assets/reader.hpp"
+#include "ui/accessibility.hpp"
+#include "ui/art_sheet.hpp"
+#include "ui/prompts.hpp"
 
 namespace nf {
 
@@ -19,6 +22,7 @@ struct Spr {
     HudSprite s;
     std::uint16_t tex_w = 0, tex_h = 0;  // hashtable_set_sprite: size of the bound texture
     std::string text;                    // text sprites: the current string
+    int slot = -1;                       // radar blips: participant slot (Extended markers)
 };
 
 struct Viewer {
@@ -91,6 +95,8 @@ struct Hud::Impl {
     int bond_timer = 0;          // BLData+0x948
     int ammo_swap = 0;           // BLData+0x95E
     int third_icon_timer = 0, crouch_icon_timer = 0;  // ThirdIconTimer / CrouchIconTimer
+    std::uint8_t third_icon = 0xFF;                   // the ThirdIcon type the context icon shows (or fades out)
+    int controller_style = 7;                         // the player's style when the icon was last shown
     bool objective_new = false, objective_done = false;  // cGpffff8654 / cGpffff8655
     int oicw_mode = 0, oicw_timer = 150;
     int night_toggle = 0, redeemer_toggle = 0;
@@ -425,7 +431,8 @@ struct Hud::Impl {
         }
         fix_mp(p.sprites[0]);
         // Sprite_CreateLink + Sprite_SetParams: additive centred 2x2 blips of texture 0x0300016F.
-        p.extra.assign(p.def->extra, Spr{});
+        // The Extended rule set has up to 16 participants (+ objectives): room for their blips.
+        p.extra.assign(std::max<std::size_t>(p.def->extra, cfg.slot_count > 10 ? 48 : 0), Spr{});
         for (Spr& s : p.extra) {
             s.s.color = 0x005000FF;
             s.s.layer = kHidden;
@@ -757,6 +764,8 @@ struct Hud::Impl {
             ctx.s.color = 0x7F7F7FFF;
             ctx.s.x = 400, ctx.s.y = 0x30;
             third_icon_timer = int(half_second());
+            third_icon = st.context_icon;
+            controller_style = st.controller_style;
         } else {
             hide(ctx);
         }
@@ -1318,7 +1327,7 @@ struct Hud::Impl {
             score.s.shadow = 0xFF;
         } else {
             score.text = team_text + "\n" + player_text;
-            score.s.shadow = team_color;
+            score.s.shadow = ui::remap_team_word(team_color);
         }
 
         hide(s[1]), hide(s[2]), hide(s[6]);
@@ -1396,7 +1405,8 @@ struct Hud::Impl {
             q.s.u = std::int16_t(r.u), q.s.v = std::int16_t(r.v);
             q.s.w = q.s.uw = std::int16_t(r.w);
             q.s.h = q.s.vh = std::int16_t(r.h);
-            q.s.color = b.color;
+            q.s.color = ui::remap_team_word(b.color);
+            q.slot = b.slot;
             q.s.layer = 0x1C;
         }
         for (std::size_t i = used; i < slots / 2; ++i) hide(p.extra[i]);
@@ -1414,6 +1424,7 @@ struct Hud::Impl {
                 q.s.label = 0;
                 q.s.color = !mp.teams ? 0x1E504BFF : (mp.team == 0 ? 0x5A1414FF : 0x14145AFF);
                 if (mp.teams) q.s.color = tag.same_team == (mp.team == 0) ? 0x5A1414FF : 0x14145AFF;
+                q.s.color = ui::remap_team_word(q.s.color);
             }
         }
         for (std::size_t i = used; i < slots; ++i) hide(p.extra[i]);
@@ -1421,7 +1432,8 @@ struct Hud::Impl {
 
     // ---- drawing (View_DrawSprites) ---------------------------------------------------------
 
-    void draw_sprite(ui::Renderer& r, ui::TextRenderer& t, const Spr& spr, float ox, float oy) const {
+    // `widen`: the sprite covers the whole 640-wide view; stretch it across the full (widescreen) canvas.
+    void draw_sprite(ui::Renderer& r, ui::TextRenderer& t, const Spr& spr, float ox, float oy, bool widen = false) const {
         const HudSprite& s = spr.s;
         if (s.is_text()) {
             if (spr.text.empty()) return;
@@ -1432,7 +1444,21 @@ struct Hud::Impl {
             style.drop_shadow = s.flags & kSprDropShadow;
             style.highlight = s.flags & kSprHighlight;
             style.scale_x = kStretchX;
-            t.draw((float(s.x) + ox) * kStretchX, float(s.y) + oy, spr.text, style);
+            const float x = (float(s.x) + ox) * kStretchX, y = float(s.y) + oy;
+            if (ui::accessibility().high_contrast && (s.color & 0xFF) != 0) {
+                // Near-white text with a solid outline on a dark plate (Settings > Accessibility).
+                const ui::TextMetrics m = t.measure(spr.text, style);
+                const float lines = float(1 + std::count(spr.text.begin(), spr.text.end(), '\n'));
+                const float left = style.align == ui::Align::Center ? x - m.width * 0.5f
+                                   : style.align == ui::Align::Right ? x - m.width : x;
+                r.set_blend(ui::Blend::Alpha);
+                r.fill({left - 3.0f, y - m.height / lines - 1.0f, m.width + 6.0f, m.height + 3.0f}, {4, 2, 4, 0x70});
+                style.color = 0xF8F8F0FF & (0xFFFFFF00u | (style.color & 0xFF));
+                style.shadow_color = 0x000000FF;
+                style.outline = true;
+                style.drop_shadow = false;
+            }
+            t.draw(x, y, spr.text, style);
             return;
         }
         if ((s.color & 0xFF) == 0 || !s.texture) return;
@@ -1463,7 +1489,13 @@ struct Hud::Impl {
                     const float off = std::max(1.0f, std::min(5.0f, w / 64.0f));
                     r.draw(s.texture, stretch({dst.x + off, dst.y + off, dst.w, dst.h}), src, {0, 0, 0, c.a});
                 }
-                r.draw(s.texture, stretch(dst), src, c);
+                ui::Rect out = stretch(dst);
+                if (widen) {
+                    const float k = r.canvas_width() / ui::kScreenW, mid = ui::kScreenW * 0.5f;
+                    out.x = mid + (out.x - mid) * k;
+                    out.w *= k;
+                }
+                r.draw(s.texture, out, src, c);
             }
         }
     }
@@ -1472,6 +1504,7 @@ struct Hud::Impl {
         struct Item {
             const Spr* spr;
             float ox, oy;
+            bool widen = false;
         };
         std::vector<Item> items;
         const bool full_width_view = cfg.players == 1 || (cfg.players == 2 && !cfg.side_by_side);
@@ -1484,13 +1517,21 @@ struct Hud::Impl {
                 offset_x = -edge_shift;
             else if (pane_index == std::size_t(HudPane::Ammo) || pane_index == std::size_t(HudPane::Radar))
                 offset_x = edge_shift;
-            for (const Spr& s : p.sprites)
-                if (s.s.layer != kHidden) items.push_back({&s, offset_x, 0});
+            // The four damage-edge overlays (Health pane: PS2 sprites 20..23, MP 4..7) tint the whole view, so they
+            // span the full canvas instead of following the pane's edge anchor.
+            const std::size_t first_flash = cfg.multiplayer ? 4 : 20;
+            for (std::size_t k = 0; k < p.sprites.size(); ++k) {
+                const Spr& s = p.sprites[k];
+                if (s.s.layer == kHidden) continue;
+                const bool flash = pane_index == std::size_t(HudPane::Health) && k >= first_flash && k < first_flash + 4;
+                items.push_back({&s, flash ? 0.0f : offset_x, 0, flash});
+            }
             for (const Spr& s : p.extra)
                 if (s.s.layer != kHidden) items.push_back({&s, offset_x, 0});
         }
         if (mp_clock_ready && mp_clock.s.layer != kHidden) items.push_back({&mp_clock, 0, 0});
-        if (crosshair.s.layer != kHidden) items.push_back({&crosshair, viewer.x0, viewer.y0});
+        const bool own_crosshair = ui::accessibility().crosshair != ui::CrosshairStyle::Original;
+        if (crosshair.s.layer != kHidden && !own_crosshair) items.push_back({&crosshair, viewer.x0, viewer.y0});
         const float extension = r.canvas_width() - ui::kScreenW;
         const Pane& sight = pane(HudPane::Sight);
         const bool scoped = std::any_of(sight.sprites.begin(), sight.sprites.end(),
@@ -1500,8 +1541,86 @@ struct Hud::Impl {
             r.fill({ui::kScreenW, viewer.y0, extension * 0.5f, viewer.h}, {0, 0, 0, 0x80});
         }
         std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.spr->s.layer < b.spr->s.layer; });
-        for (const Item& i : items) draw_sprite(r, t, *i.spr, i.ox, i.oy);
+        for (const Item& i : items) draw_sprite(r, t, *i.spr, i.ox, i.oy, i.widen);
         r.set_blend(ui::Blend::Alpha);
+        if (crosshair.s.layer != kHidden && own_crosshair) draw_own_crosshair(r);
+        draw_radar_markers(r, edge_shift);
+        draw_context_prompt(t, -edge_shift);
+    }
+
+    // The button of the context icon's action beside it (the PS2 HUD shows the icon alone): ThirdIcon 3 is "jump onto
+    // the wire" (Player_HandleJump), 6 "hug the wall" (Player_Activate, the use button). The glyph follows the device.
+    void draw_context_prompt(ui::TextRenderer& t, float offset_x) const {
+        const Pane& health = pane(HudPane::Health);
+        if (!health.present || !health.enabled || health.sprites.size() <= 18) return;
+        const Spr& icon = health.sprites[18];
+        if (icon.s.layer == kHidden) return;
+        const Action action = third_icon == 3 ? kActJump : third_icon == 6 ? kActUse : Action(-1);
+        const char key = action == Action(-1) ? 0 : ui::prompt_key(ui::action_button(action, controller_style));
+        if (!key) return;
+        const char escape[] = {'~', char(key - 'A' + 'a'), 0};   // lowercase: the gameplay binding
+        ui::TextStyle style;   // 1.5x: level with the 32-texel context icon
+        style.color = icon.s.color;
+        style.scale_x = style.scale_y = 1.5f;
+        const float x = float(icon.s.x + icon.s.w) * kStretchX + 4.0f + offset_x;
+        const float y = float(icon.s.y) + float(icon.s.h) * 0.5f +
+                        float(t.fonts().font(style.font).glyphs.front().h) * style.scale_y * 0.5f;
+        t.draw(x, y, escape, style);
+    }
+
+    // Settings > Accessibility > Crosshair: an assets/ui/access.png shape in the game crosshair's place and colour.
+    void draw_own_crosshair(ui::Renderer& r) const {
+        static constexpr const char* kNames[] = {"", "crosshair_cross", "crosshair_dot", "crosshair_ring",
+                                                 "crosshair_chevron"};
+        const ui::ArtSprite* a = ui::art_sprite("access", kNames[int(ui::accessibility().crosshair)]);
+        if (!a) return;
+        const HudSprite& s = crosshair.s;
+        float cx = float(s.x) + viewer.x0, cy = float(s.y) + viewer.y0;
+        if (!(s.flags & kSprCentre)) cx += float(s.w) * 0.5f, cy += float(s.h) * 0.5f;
+        const float w = a->src.w * (7.5f / 7.0f);
+        r.draw(a->hash, {cx * kStretchX - w * 0.5f, cy - a->src.h * 0.5f, w, a->src.h}, a->src, gs_color(s.color));
+    }
+
+    // Radar markers (assets/ui/mphud.png) over the blips: team shapes with the colour-blind option, outlined dots for
+    // every participant in the Extended rule set: a dot (or, in the colour-blind set's slots 8..15, a ring) in the
+    // participant's colour. Neither applies to the default PS2 HUD.
+    void draw_radar_markers(ui::Renderer& r, float edge_shift) const {
+        const Pane& radar = pane(HudPane::Radar);
+        const bool extended = cfg.slot_count > 10, safe = ui::accessibility().colorblind_teams;
+        if (!radar.present || !radar.enabled || (!extended && !safe)) return;
+        for (const Spr& q : radar.extra) {
+            if (q.s.layer == kHidden || q.s.is_text() || !q.text.empty()) continue;
+            std::uint32_t c = q.s.color;
+            const char* name = nullptr;
+            if (c == ui::remap_team_word(0xD22D35FF)) name = "marker_triangle";
+            else if (c == ui::remap_team_word(0x2D61D2FF)) name = "marker_square";
+            else if (extended && q.slot >= 0) {
+                name = ui::player_hollow(q.slot) ? "marker_ring" : "marker_dot";
+                const std::uint32_t full = ui::player_color(q.slot);   // full scale -> GS (0x80 = 1.0)
+                c = (full >> 1 & 0x7F7F7F00u) | 0xFF;
+            }
+            const ui::ArtSprite* a = name ? ui::art_sprite("mphud", name) : nullptr;
+            if (!a) continue;
+            const float w = a->src.w * (7.5f / 7.0f);
+            const float x = (float(q.s.x) + edge_shift) * kStretchX;
+            r.draw(a->hash, {x - w * 0.5f, float(q.s.y) - a->src.h * 0.5f, w, a->src.h}, a->src, gs_color(c));
+        }
+    }
+
+    HudGeometry geometry(float canvas_width) const {
+        const bool full_width_view = cfg.players == 1 || (cfg.players == 2 && !cfg.side_by_side);
+        const float extension = canvas_width - ui::kScreenW;
+        const float edge_shift = full_width_view ? extension * 0.4f : 0.0f;
+        HudGeometry g;
+        g.viewer = {viewer.x0 * kStretchX - extension * 0.5f, viewer.y0, viewer.w * kStretchX + extension, viewer.h};
+        const Pane& radar = pane(HudPane::Radar);
+        if (radar.present && radar.enabled && !radar.sprites.empty() && radar.sprites[0].s.layer != kHidden) {
+            const HudSprite& d = radar.sprites[0].s;
+            float x = float(d.x) + edge_shift, y = float(d.y);
+            if (d.flags & kSprCentre) x -= float(d.w) * 0.5f, y -= float(d.h) * 0.5f;
+            g.radar = {x * kStretchX, y, float(d.w) * kStretchX, float(d.h)};
+        }
+        return g;
     }
 };
 
@@ -1517,5 +1636,6 @@ void Hud::reset() { impl_->reset(); }
 void Hud::add_message(const HudMessage& message) { impl_->add_message(message); }
 void Hud::update(const HudState& state) { impl_->update(state); }
 void Hud::draw(ui::Renderer& renderer, ui::TextRenderer& text) const { impl_->draw(renderer, text); }
+HudGeometry Hud::geometry(float canvas_width) const { return impl_->geometry(canvas_width); }
 
 }  // namespace nf

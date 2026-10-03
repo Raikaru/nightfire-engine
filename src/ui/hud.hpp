@@ -51,12 +51,14 @@ struct HudBlip {                         // RADAROBJ (MP_GetRadarObjects)
     float x = 0, y = 0, z = 0;           // position in camera space (x right, y up, z forward)
     std::uint32_t color = 0x7F7F7FFF;    // +0x10
     int kind = 0;                        // +0x14: TexUV row (0..7)
+    int slot = -1;                       // participant slot (Extended per-player marker colour), -1 objectives
 };
 
 struct HudNameTag {                      // a visible opponent's name, projected (HUD_RadarUpdate)
     std::string name;
     float x = 0, y = 0;                  // projected position (y up)
     bool same_team = false;
+    int slot = -1;                       // participant slot (Extended per-player colour)
 };
 
 // Multiplayer scenario (MPSettings+0x1A4) values HUD_MPUpdatePane switches on.
@@ -99,6 +101,7 @@ struct HudState {
     std::optional<HudDamage> damage;     // set on the frame the player is hurt (Player_HandlePain)
     bool bond_moment = false;            // set on the frame a Bond moment is achieved (PlrStat_DoneBondMoment)
     std::uint8_t context_icon = 0xFF;    // +0x95F: action prompt icon 0..6, 0xFF none
+    int controller_style = 7;            // PlayerSetting+0xE: the button the context-icon hint names follows it
     std::uint16_t player_state = 1;      // obj+0xF6: 4 crouching, 6 on a wire, 0xB/0xC/0x10 vehicles
     bool camera_shot = false;            // +0x95B: the camera gadget just fired
     std::uint8_t cam_mode = 0;           // +0x950: non-zero hides the crosshair (0 = first person)
@@ -146,6 +149,13 @@ struct HudConfig {
     int player = 0;                      // viewer index of this HUD
     bool side_by_side = false;           // DrawInfo+0 == 1: two players share the screen left/right
     float frame_rate = 60.0f;            // FRAME_RATE; timers scale by FRAME_RATE_MUL = 60 / frame_rate
+    std::size_t slot_count = 8;          // MP rule-set capacity; 16 (Extended) adds radar room and markers
+};
+
+// Where the HUD sits on the UI canvas (after Renderer::begin), for overlays drawn next to it.
+struct HudGeometry {
+    ui::Rect viewer;                     // the viewer's canvas rectangle, widened to the canvas edges
+    ui::Rect radar;                      // the radar disc (w = 0 while the radar is hidden)
 };
 
 // A `Text_AddMsg` entry: mission / objective / info / pickup messages shown by the status panes.
@@ -179,6 +189,8 @@ public:
     void update(const HudState& state);
     // Sprite layers are drawn in ascending order, like `View_DrawSprites`.
     void draw(ui::Renderer& renderer, ui::TextRenderer& text) const;
+    // Canvas placement of the viewer and its panes for a canvas `canvas_width` wide (Renderer::canvas_width).
+    HudGeometry geometry(float canvas_width) const;
 
     struct Impl;
 

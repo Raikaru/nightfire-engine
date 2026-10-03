@@ -23,8 +23,13 @@ BotMatch::BotMatch(GameFiles& files, const std::filesystem::path& gamedir, const
 BotMatch::~BotMatch() = default;
 
 void BotMatch::install(ArenaSession& session) {
+    session_ = &session;
     ArenaSystem& arena = session.arena();
     ArenaSettings& settings = arena.mutable_settings();
+    const std::size_t first_bot = settings.first_bot_slot();
+    const std::size_t available = settings.slot_count > first_bot ? settings.slot_count - first_bot : 0;
+    if (roster_.size() > available) roster_.resize(available);
+    for (std::size_t i = 0; i < roster_.size(); ++i) roster_[i].slot = int(first_bot + i);
     fill_bot_slots(settings, roster_);
     // Bots are drones: multiplayer perception / firing branches, difficulty forced to 1 by P_MPCONFIRM_Handler.
     drone::DroneConfig dc;
@@ -52,10 +57,10 @@ void BotMatch::install(ArenaSession& session) {
         bots->drop_weapon(d);
     };
     bots_->log_states = options_.log_states;
-    // MP_PlayerKilled Vengeful (+2) bonus (spec Part 1 §1.6 step 4): killer bot slot >= 4 with personality
-    // byte 7 whose designated victim (BOT_vars+0x76b) is the victim scores +2.0 instead of +1.0.
-    arena.set_vengeful_bonus_fn([bots = bots_](int killer, int victim) {
-        if (killer < 4 || victim < 0) return false;
+    // MP_PlayerKilled Vengeful (+2) bonus: only a participant currently marked as a bot qualifies.
+    arena.set_vengeful_bonus_fn([bots = bots_, arena_ptr = &arena](int killer, int victim) {
+        if (killer < 0 || killer >= int(arena_ptr->settings().slot_count) ||
+            !arena_ptr->settings().slots[std::size_t(killer)].bot || victim < 0) return false;
         const BotSystem::Bot* b = bots->bot_at_slot(killer);
         if (!b || !b->brain) return false;
         if (b->brain->v.stats.personality != std::uint8_t(Personality::Vengeful)) return false;
@@ -73,6 +78,55 @@ void BotMatch::install(ArenaSession& session) {
 void BotMatch::start() {
     if (bots_) bots_->start();
 }
+void BotMatch::add_bot(BotSpec spec) {
+    if (!session_ || !bots_) throw std::logic_error("BotMatch must be installed before changing its roster");
+    ArenaSystem& arena = session_->arena();
+    ArenaSettings& settings = arena.mutable_settings();
+    if (spec.slot < 0 || spec.slot >= int(settings.slot_count) || spec.slot >= int(settings.slots.size()))
+        throw std::out_of_range("bot participant slot is outside the match capacity");
+    ArenaSettings::Slot& participant = settings.slots[std::size_t(spec.slot)];
+    if (participant.present) throw std::logic_error("bot participant slot is already occupied");
+    if (settings.bot_count() >= int(kMpMaxBots)) throw std::out_of_range("bot capacity exceeded");
+    if (settings.mode == mp_mode::kAssassination) {
+        spec.team = kTeamPhoenix;
+    } else if (settings.team_game() && spec.team != kTeamPhoenix && spec.team != kTeamMi6) {
+        int phoenix = 0, mi6 = 0;
+        for (const ArenaSettings::Slot& other : settings.slots) {
+            if (!other.present) continue;
+            phoenix += other.team == kTeamPhoenix;
+            mi6 += other.team == kTeamMi6;
+        }
+        spec.team = phoenix <= mi6 ? kTeamPhoenix : kTeamMi6;
+    } else if (!settings.team_game()) {
+        spec.team = kTeamNone;
+    }
+    participant.present = true;
+    participant.bot = true;
+    participant.name = spec.name;
+    participant.team = spec.team;
+    participant.character = spec.character;
+    participant.health_bonus = 0;
+    try {
+        bots_->add_bot(spec);
+    } catch (...) {
+        participant = {};
+        throw;
+    }
+    roster_.push_back(std::move(spec));
+}
+
+bool BotMatch::remove_bot(int slot) {
+    if (!bots_ || !bots_->remove_bot(slot)) return false;
+    std::erase_if(roster_, [slot](const BotSpec& spec) { return spec.slot == slot; });
+    return true;
+}
+
+bool BotMatch::replace_bot_with_human(ArenaSession& session, int slot, std::string_view name) {
+    if (session_ != &session || !remove_bot(slot)) return false;
+    session.activate_human(slot, name);
+    return true;
+}
+
 
 std::string BotMatch::summary() const {
     std::string out;

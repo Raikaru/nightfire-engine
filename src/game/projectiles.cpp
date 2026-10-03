@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 #include "game/weapons.hpp"
 
@@ -128,10 +129,18 @@ std::vector<WeaponSystem::Victim> WeaponSystem::collect_victims(const World& wor
     return out;
 }
 
-int WeaponSystem::register_target(DamageTarget* target) {
+int WeaponSystem::register_target(DamageTarget* target, int preferred_id) {
+    int id = preferred_id;
+    if (id < 0) {
+        id = next_target_id_;
+        while (std::find(target_ids_.begin(), target_ids_.end(), id) != target_ids_.end()) ++id;
+        next_target_id_ = id + 1;
+    } else if (std::find(target_ids_.begin(), target_ids_.end(), id) != target_ids_.end()) {
+        throw std::logic_error("combat target id is already registered");
+    }
     targets_.push_back(target);
-    target_ids_.push_back(next_target_id_);
-    return next_target_id_++;
+    target_ids_.push_back(id);
+    return id;
 }
 
 void WeaponSystem::unregister_target(DamageTarget* target) {

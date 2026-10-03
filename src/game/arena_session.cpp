@@ -103,8 +103,9 @@ ArenaSettings MatchOptions::settings() const {
         slot.character = i;
         slot.health_bonus = handicap;
     }
-    for (int i = 0; i < std::min(bots, int(s.slot_count) - 4); ++i, ++n) {
-        ArenaSettings::Slot& slot = s.slots[std::size_t(4 + i)];
+    const int first_bot = int(s.first_bot_slot());
+    for (int i = 0; i < std::min(bots, int(s.slot_count) - first_bot); ++i, ++n) {
+        ArenaSettings::Slot& slot = s.slots[std::size_t(first_bot + i)];
         slot.present = true;
         slot.bot = true;
         slot.name = "Bot " + std::to_string(i + 1);
@@ -185,20 +186,97 @@ ArenaSession::ArenaSession(World& world, WeaponTable table, const MatchOptions& 
         l.start_weapon = arena_->weapon_set_row()[0];
         l.grapple = settings.grapple;
         weapons_->spawn_player(i, l);
-        bodies_.push_back(std::make_unique<HumanBody>(world_, *weapons_, i));
-        arena_->register_body(i, bodies_.back().get());
+        bodies_[std::size_t(i)] = std::make_unique<HumanBody>(world_, *weapons_, i);
+        arena_->register_body(i, bodies_[std::size_t(i)].get());
     }
     if (before_start) before_start(*this);
     arena_->start();
     last_dead_.assign(kMpSlots, 0);
     last_score_.assign(kMpSlots, 0);
 }
+HumanBody& ArenaSession::activate_human(int slot, std::string_view name) {
+    if (slot < 0 || slot >= int(arena_->settings().slot_count) || slot >= World::kMaxPlayers)
+        throw std::out_of_range("human participant slot is outside the match capacity");
+    const ArenaSettings::Slot& participant = arena_->settings().slots[std::size_t(slot)];
+    if (participant.present && participant.bot)
+        throw std::logic_error("bot participant must be removed before human activation");
+    return ensure_human_actor(slot, name, false);
+}
+
+HumanBody& ArenaSession::ensure_human_actor(int slot, std::string_view name, bool preserve_bot) {
+    if (slot < 0 || slot >= int(arena_->settings().slot_count) || slot >= World::kMaxPlayers)
+        throw std::out_of_range("human actor slot is outside the match capacity");
+
+    ArenaSettings& settings = arena_->mutable_settings();
+    ArenaSettings::Slot& participant = settings.slots[std::size_t(slot)];
+    const bool was_present = participant.present;
+    const bool was_bot = participant.bot;
+    if (!preserve_bot) participant.bot = false;
+    participant.present = true;
+    participant.name.assign(name);
+
+    const bool created_body = !bodies_[std::size_t(slot)];
+    if (!bodies_[std::size_t(slot)]) {
+        int team = participant.team;
+        if (!preserve_bot) {
+            if (settings.mode == mp_mode::kAssassination) {
+                team = kTeamPhoenix;
+            } else if (settings.team_game() && team != kTeamPhoenix && team != kTeamMi6) {
+                std::array<int, 2> counts{};
+                for (int i = 0; i < int(settings.slot_count); ++i) {
+                    if (i == slot) continue;
+                    const ArenaSettings::Slot& other = settings.slots[std::size_t(i)];
+                    if (other.present && (other.team == kTeamPhoenix || other.team == kTeamMi6))
+                        ++counts[std::size_t(other.team)];
+                }
+                team = counts[0] <= counts[1] ? kTeamPhoenix : kTeamMi6;
+            }
+            participant.team = team;
+        }
+
+        if (!world_.player(slot)) {
+            SpawnPoint at{SpawnPoint::Kind::Multiplayer, {}, 0.0f, {}};
+            if (preserve_bot) {
+                for (int other = 0; other < World::kMaxPlayers; ++other) {
+                    if (other == slot) continue;
+                    const Player* existing = world_.player(other);
+                    if (!existing) continue;
+                    at.position = existing->pos;
+                    at.yaw = existing->yaw;
+                    break;
+                }
+            } else {
+                const ArenaSpawn spawn = arena_->spawn_point(team, slot);
+                at.position = spawn.pos;
+                at.yaw = spawn.yaw;
+            }
+            world_.spawn_player(slot, at);
+        }
+        if (!weapons_->has_player(slot)) {
+            SpawnLoadout loadout;
+            loadout.health = 100.0f + float(participant.health_bonus);
+            loadout.start_weapon = arena_->weapon_set_row()[0];
+            loadout.grapple = settings.grapple;
+            weapons_->spawn_player(slot, loadout);
+        }
+        bodies_[std::size_t(slot)] = std::make_unique<HumanBody>(world_, *weapons_, slot);
+    }
+
+    HumanBody& body = *bodies_[std::size_t(slot)];
+    if ((!preserve_bot && was_bot) || (!was_present && !preserve_bot))
+        arena_->activate_human_slot(slot, std::string(name), &body);
+    else if (!was_present || created_body)
+        arena_->register_body(slot, &body);
+    return body;
+}
 
 void ArenaSession::tick(const PadInputs& pads, FrameTiming timing) {
     world_.tick(pads, timing);
     weapons_->post_tick_rng();   // MP Player_LaserPointer / muzzle draws follow all bot systems.
     // A death the movement half decided on its own (fall damage, hurt volume) is the combat half's too.
-    for (int i = 0; i < options_.humans; ++i) {
+    const ArenaSettings& settings = arena_->settings();
+    for (int i = 0; i < int(settings.slot_count); ++i) {
+        if (!settings.slots[std::size_t(i)].present || settings.slots[std::size_t(i)].bot) continue;
         const Player* p = world_.player(i);
         if (p && !p->alive() && weapons_->alive(i) && !arena_->dead(i)) weapons_->kill(i);
     }

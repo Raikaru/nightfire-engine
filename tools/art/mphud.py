@@ -28,6 +28,23 @@ def marker_dot():
     return tinted(icon(7, 7), s.circle_inside(3.5, 3.5, 2.6), 7, 7)
 
 
+def marker_ring():
+    """Hollow participant marker: the colour-blind player set's second eight slots (same colours, open shape)."""
+    return tinted(icon(7, 7), lambda px, py: 1.5 <= ((px - 3.5) ** 2 + (py - 3.5) ** 2) ** 0.5 <= 2.9, 7, 7)
+
+
+def swatch(hollow):
+    """Player colour chip for scoreboard rows and name tags (white, tinted with the slot colour)."""
+    img = icon(8, 8)
+    if hollow:
+        s.fill_shape(img, (0, 0, 8, 8), lambda px, py: 0.8 <= px <= 7.2 and 0.8 <= py <= 7.2 and
+                     not (2.4 <= px <= 5.6 and 2.4 <= py <= 5.6), lambda u, v, x, y: WHITE)
+    else:
+        s.fill_shape(img, (0, 0, 8, 8), s.round_rect_inside(8, 8, 1.5), lambda u, v, x, y: s.lerp(WHITE, (200, 200, 200), v))
+    s.outline(img, 100, alpha=220)
+    return img
+
+
 def marker_triangle():
     """Phoenix team marker (shape keeps teams apart without colour)."""
     return tinted(icon(9, 8), lambda px, py: py >= 1 and py <= 7 and abs(px - 4.5) <= (py - 1) * 0.62, 9, 8)
@@ -87,17 +104,21 @@ def kill_self():
 
 def bot_tag():
     """Scoreboard marker for bot participants."""
-    img = icon(15, 9)
-    s.fill_shape(img, (0, 0, 15, 9), s.round_rect_inside(15, 9, 2.0),
+    w = s.pixel_text_width("BOT") + 6
+    img = icon(w, 11)
+    s.fill_shape(img, (0, 0, w, 11), s.round_rect_inside(w, 11, 2.0),
                  lambda u, v, x, y: s.lerp(s.PLATE_FACE, s.PLATE_BOTTOM, v))
-    s.bevel(img, (0, 0, 15, 9))
-    s.pixel_text(img, 2, 2, "BOT", s.INK)
+    s.bevel(img, (0, 0, w, 11))
+    s.pixel_text(img, 3, 2, "BOT", s.INK)
     return img
 
 
 def main():
     sheet = s.Sheet("mphud", width=128)
     sheet.add("marker_dot", marker_dot())
+    sheet.add("marker_ring", marker_ring())
+    sheet.add("swatch", swatch(False))
+    sheet.add("swatch_hollow", swatch(True))
     sheet.add("marker_triangle", marker_triangle())
     sheet.add("marker_square", marker_square())
     sheet.add("marker_self", marker_self())

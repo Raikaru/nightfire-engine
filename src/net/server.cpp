@@ -34,7 +34,7 @@ void usage() {
     std::puts("usage: nfserver <gamedir> [--config file] [--map file.bin] [--mode arena] [--ruleset ps2|gc-xbox|extended]"
               " [--bots N] [--port 27500] [--name server] [--password text] [--master host:port]"
               " [--frag-limit N] [--time-limit minutes] [--net-sim-loss percent] [--net-sim-latency ms]"
-              " [--visibility-culling|--no-visibility-culling] [--ticks N]");
+              " [--visibility-culling|--no-visibility-culling] [--logic-hz 30|60] [--ticks N]");
 }
 using Clock = std::chrono::steady_clock;
 constexpr std::size_t kPendingInputCapacity = 64;
@@ -61,14 +61,36 @@ struct HitHistoryFrame {
     nf::WeaponSystem::LagCompVolumes volumes;
 };
 
-HitHistoryFrame capture_hit_history(std::uint32_t tick, nf::World& world, nf::bots::BotMatch* bots) {
+HitHistoryFrame capture_hit_history(std::uint32_t tick, nf::World& world, const nf::ArenaSystem& arena,
+                                    nf::bots::BotMatch* bots) {
     HitHistoryFrame frame;
     frame.tick = tick;
-    for (int slot = 0; slot < nf::World::kMaxPlayers; ++slot) {
-        const nf::Player* player = world.player(slot);
-        if (!player) continue;
+    for (int slot = 0; slot < int(arena.settings().slot_count); ++slot) {
+        const auto& settings = arena.settings().slots[std::size_t(slot)];
+        if (!settings.present) continue;
         auto& volume = frame.volumes.values[frame.volumes.count++];
         volume.id = slot;
+        if (settings.bot) {
+            auto* bot = bots ? bots->bots().bot_at_slot(slot) : nullptr;
+            if (!bot || !bot->arena_body || !bot->drone) {
+                --frame.volumes.count;
+                continue;
+            }
+            const nf::Vec3 center = bot->drone->pos;
+            const float radius = bot->drone->radius;
+            const float half_height = std::max(0.0f, bot->drone->stand_height - radius + 0.4f);
+            volume.alive = bot->drone->alive();
+            volume.a = nf::Vec3{center[0], center[1] + half_height, center[2]};
+            volume.b = nf::Vec3{center[0], center[1] - half_height, center[2]};
+            volume.blast_ref = center;
+            volume.radius = radius;
+            continue;
+        }
+        const nf::Player* player = world.player(slot);
+        if (!player) {
+            --frame.volumes.count;
+            continue;
+        }
         volume.alive = player->alive();
         volume.blast_ref = player->eye();
         if (player->substate == nf::SubState::Crouch) {
@@ -79,22 +101,6 @@ HitHistoryFrame capture_hit_history(std::uint32_t tick, nf::World& world, nf::bo
             volume.a = nf::Vec3{player->pos[0], player->pos[1] + 0.275f, player->pos[2]};
             volume.b = nf::Vec3{player->pos[0], player->pos[1] + 0.55f - player->stand_height, player->pos[2]};
             volume.radius = 0.55f;
-        }
-    }
-    if (bots) {
-        for (int slot = nf::World::kMaxPlayers; slot < int(nf::kMpSlots); ++slot) {
-            auto* bot = bots->bots().bot_at_slot(slot);
-            if (!bot || !bot->arena_body || !bot->drone) continue;
-            auto& volume = frame.volumes.values[frame.volumes.count++];
-            const nf::Vec3 center = bot->drone->pos;
-            const float radius = bot->drone->radius;
-            const float half_height = std::max(0.0f, bot->drone->stand_height - radius + 0.4f);
-            volume.id = slot;
-            volume.alive = bot->drone->alive();
-            volume.a = nf::Vec3{center[0], center[1] + half_height, center[2]};
-            volume.b = nf::Vec3{center[0], center[1] - half_height, center[2]};
-            volume.blast_ref = center;
-            volume.radius = radius;
         }
     }
     return frame;
@@ -163,7 +169,7 @@ nf::net::OwnerMovementState owner_movement_state(const nf::PlayerPredictionState
     state.zoom = source.zoom;
     state.aim_state = {source.aim.cursor_x, source.aim.cursor_y, source.aim.turn_x, source.aim.turn_y,
                        source.aim.scope_x, source.aim.scope_y};
-    state.timing_rate = source.timing.rate;
+    state.timing_rate = source.timing.FRAME_RATE;
     state.body_basis = source.body_basis;
     state.look_state = source.look_state;
     state.walk_class = source.walk_class;
@@ -211,7 +217,7 @@ nf::net::Snapshot make_snapshot(std::uint32_t tick, nf::World& world, nf::ArenaS
             state.score = std::int16_t(std::clamp(it->score, -32768, 32767));
             state.points = it->points;
         }
-        if (slot < nf::World::kMaxPlayers) {
+        if (!settings.bot && slot < nf::World::kMaxPlayers) {
             if (const nf::Player* player = world.player(slot)) {
                 state.alive = player->alive();
                 state.visible = settings.present;
@@ -235,7 +241,7 @@ nf::net::Snapshot make_snapshot(std::uint32_t tick, nf::World& world, nf::ArenaS
                     -32768, 32767));
                 state.aiming = session.weapons().aiming(slot);
             }
-        } else if (bots) {
+        } else if (settings.bot && bots) {
             if (auto* bot = bots->bots().bot_at_slot(slot); bot && bot->arena_body) {
                 const nf::Vec3 pos = bot->arena_body->position();
                 state.alive = bot->arena_body->alive();
@@ -395,9 +401,10 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
     std::uint16_t master_port = runtime_config ? runtime_config->master_port : 27501;
     nf::MatchOptions options;
     options.enabled = true;
-    options.humans = 4;
+    options.humans = 0; // Online humans are admitted only when a peer joins; never reserve ghost players.
     options.log = true;
     int port = 27500, net_loss = 0, net_latency = 0, max_ticks = -1;
+    int logic_hz = runtime_config ? runtime_config->logic_hz : int(nf::World::kTickHz);
     bool visibility_culling = true;
     if (runtime_config) {
         options = runtime_config->match;
@@ -472,7 +479,12 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                 if (master_host.empty()) throw std::runtime_error("--master requires a host");
             } else if (arg == "--visibility-culling") visibility_culling = true;
             else if (arg == "--no-visibility-culling") visibility_culling = false;
-            else if (arg == "--port" || arg == "--net-sim-loss" || arg == "--net-sim-latency" || arg == "--ticks") {
+            else if (arg == "--logic-hz") {
+                int v = 0;
+                if (!parse_int(value(), v) || (v != 30 && v != 60))
+                    throw std::runtime_error("--logic-hz must be 30 or 60");
+                logic_hz = v;
+            } else if (arg == "--port" || arg == "--net-sim-loss" || arg == "--net-sim-latency" || arg == "--ticks") {
                 int v = 0;
                 if (!parse_int(value(), v)) throw std::runtime_error("invalid non-negative integer for " + arg);
                 if (arg == "--port") { if (v == 0 || v > 65535) throw std::runtime_error("port must be 1..65535"); port = v; }
@@ -488,7 +500,10 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
         }
     } catch (const std::exception& e) { std::fprintf(stderr, "nfserver: %s\n", e.what()); return 2; }
     }
-    options.bots = std::min(options.bots, int(nf::mp_rule_slot_limit(options.rules) - nf::kMpMaxHumans));
+    const int match_capacity = int(nf::mp_rule_slot_limit(options.rules));
+    const int reserved_humans =
+        options.rules == nf::MpRuleSet::Extended ? options.humans : int(nf::kMpMaxLocalHumans);
+    options.bots = std::clamp(options.bots, 0, std::max(0, match_capacity - reserved_humans));
 
     try {
         auto ctx = nf::app::load_context(game_dir.string());
@@ -542,18 +557,19 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
             runtime_state->condition.notify_all();
         }
 
-        std::array<Peer, 4> peers{};
-        std::array<std::array<std::uint32_t, nf::kMpSlots>, 4> last_visible_tick{};
-        std::array<nf::PadState, 4> current_inputs{};
+        std::array<Peer, nf::kMpMaxHumans> peers{};
+        std::array<std::array<std::uint32_t, nf::kMpSlots>, nf::kMpSlots> last_visible_tick{};
+        nf::PadInputs current_inputs{};
         std::uint32_t tick = 0;
         std::array<std::uint32_t, nf::kMpMaxHumans> shooter_view_ticks{};
-        std::array<HitHistoryFrame, 32> hit_history{};
-        hit_history[0] = capture_hit_history(0, world, bots.get());
+        std::array<HitHistoryFrame, 64> hit_history{};
+        hit_history[0] = capture_hit_history(0, world, session.arena(), bots.get());
         session.weapons().set_lag_comp_provider([&](int shooter) {
             nf::WeaponSystem::LagCompVolumes empty;
             if (shooter < 0 || shooter >= nf::World::kMaxPlayers) return empty;
             const std::uint32_t requested = shooter_view_ticks[std::size_t(shooter)];
-            const std::uint32_t rewind_tick = std::clamp(requested, tick > 6 ? tick - 6 : 0u, tick);
+            const std::uint32_t rewind_ticks = std::uint32_t(logic_hz / 5);
+            const std::uint32_t rewind_tick = std::clamp(requested, tick > rewind_ticks ? tick - rewind_ticks : 0u, tick);
             const HitHistoryFrame* selected = nullptr;
             for (const HitHistoryFrame& frame : hit_history) {
                 if (frame.tick <= rewind_tick && (!selected || frame.tick > selected->tick)) selected = &frame;
@@ -695,10 +711,11 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                     std::uint32_t query_id = 0;
                     if (!nf::net::decode_server_query(incoming.packet.payload, query_id)) continue;
                     nf::net::ServerInfo info;
+                    const nf::ArenaSettings& active_settings = session.arena().settings();
                     info.query_id = query_id;
                     info.name = server_name;
                     info.map = map_name;
-                    info.mode = options.mode;
+                    info.mode = active_settings.mode;
                     if (runtime_state) {
                         std::lock_guard lock(runtime_state->mutex);
                         info.match_revision = runtime_state->status.revision;
@@ -706,12 +723,14 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                     info.players = 0;
                     for (const Peer& peer : peers)
                         if (peer.active) info.players = std::uint8_t(info.players + peer.local_players);
-                    info.max_players = 4;
-                    info.bots = std::uint8_t(options.bots);
-                    info.slot_count = std::uint8_t(session.arena().settings().slot_count);
-                    info.modified_rules = options.score_limit != 10 || options.time_limit != 600.0f ||
-                                          options.friendly_fire || options.weapon_set != 0 ||
-                                          options.spawn != nf::SpawnSelection::Random || options.handicap != 0;
+                    info.max_players = std::uint8_t(active_settings.slot_count);
+                    info.bots = std::uint8_t(active_settings.bot_count());
+                    info.slot_count = std::uint8_t(active_settings.slot_count);
+                    info.modified_rules = active_settings.score_limit != 10 || active_settings.time_limit != 600.0f ||
+                                          active_settings.friendly_fire || active_settings.weapon_set != 0 ||
+                                          active_settings.spawn_selection != nf::SpawnSelection::Random;
+                    for (int slot = 0; slot < int(nf::kMpMaxHumans); ++slot)
+                        info.modified_rules |= active_settings.slots[std::size_t(slot)].health_bonus != 0;
                     info.password_required = !password.empty();
                     nf::net::Packet response;
                     response.header.message = nf::net::Message::ServerInfo;
@@ -779,6 +798,35 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                             socket.send(incoming.address, incoming.port, response);
                             continue;
                         }
+                        bool claimable = true;
+                        for (std::size_t local = 0; local < local_players; ++local) {
+                            const std::size_t slot = std::size_t(base) + local;
+                            if (session.arena().settings().slots[slot].bot &&
+                                (!bots || !bots->bots().bot_at_slot(int(slot))))
+                                claimable = false;
+                        }
+                        if (!claimable) {
+                            response.header.message = nf::net::Message::Reject;
+                            const std::string reason = "a bot slot could not be claimed";
+                            response.payload.assign(reason.begin(), reason.end());
+                            socket.send(incoming.address, incoming.port, response);
+                            continue;
+                        }
+                        for (std::size_t local = 0; local < local_players; ++local) {
+                            const std::size_t slot = std::size_t(base) + local;
+                            const std::string suffix = local == 0 ? "" : " " + std::to_string(local + 1);
+                            const std::string player_name =
+                                client_name.substr(0, 32 - std::min<std::size_t>(suffix.size(), 32)) + suffix;
+                            if (session.arena().settings().slots[slot].bot) {
+                                if (!bots->replace_bot_with_human(session, int(slot), player_name))
+                                    throw std::runtime_error("failed to replace bot participant");
+                            } else {
+                                session.activate_human(int(slot), player_name);
+                            }
+                            current_inputs[slot] = {};
+                            shooter_view_ticks[slot] = 0;
+                            last_visible_tick[slot].fill(0);
+                        }
                         peer_it->active = true;
                         peer_it->host = incoming.address;
                         peer_it->port = incoming.port;
@@ -790,15 +838,6 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                         peer_it->view_tick.fill(0);
                         peer_it->pending_input_head = 0;
                         peer_it->pending_input_count = 0;
-                        for (std::size_t local = 0; local < local_players; ++local) {
-                            const std::size_t slot = std::size_t(base) + local;
-                            current_inputs[slot] = {};
-                            shooter_view_ticks[slot] = 0;
-                            last_visible_tick[slot].fill(0);
-                            const std::string suffix = local == 0 ? "" : " " + std::to_string(local + 1);
-                            session.arena().mutable_settings().slots[slot].name =
-                                client_name.substr(0, 32 - std::min<std::size_t>(suffix.size(), 32)) + suffix;
-                        }
                         std::printf("nfserver: %s joined slots %u..%u\n", client_name.c_str(), unsigned(base),
                                     unsigned(base + local_players - 1));
                     }
@@ -820,8 +859,9 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                             const auto& sample = batch.samples[i - 1];
                             if (sample.local_player >= peer_it->local_players) continue;
                             const std::size_t local = sample.local_player;
-                            if (sample.tick <= peer_it->last_received_input_tick[local] || sample.tick > tick + 6 ||
-                                tick > sample.tick + 30 ||
+                            const std::uint32_t input_window = std::uint32_t(logic_hz / 5);
+                            if (sample.tick <= peer_it->last_received_input_tick[local] ||
+                                sample.tick > tick + input_window || tick > sample.tick + std::uint32_t(logic_hz) ||
                                 peer_it->pending_input_count == kPendingInputCapacity)
                                 continue;
                             const std::size_t tail =
@@ -884,7 +924,7 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
             }
             nf::PadInputs pads{};
             for (std::size_t i = 0; i < current_inputs.size(); ++i) pads[i] = current_inputs[i];
-            if (!session.arena().over()) session.tick(pads);
+            if (!session.arena().over()) session.tick(pads, nf::FrameTiming(float(logic_hz)));
             if (test_give_on_kill_slot >= 0) {
                 for (const nf::ScoreRow& row : session.arena().scoreboard()) {
                     if (row.slot != test_give_on_kill_slot || row.kills == 0) continue;
@@ -910,8 +950,8 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                     return 2;
                 }
             }
-            hit_history[tick % hit_history.size()] = capture_hit_history(tick, world, bots.get());
-            if ((tick % 3) == 0) {
+            hit_history[tick % hit_history.size()] = capture_hit_history(tick, world, session.arena(), bots.get());
+            if ((tick % std::uint32_t(std::max(1, logic_hz / 30))) == 0) {
                 nf::net::Snapshot snapshot = make_snapshot(tick, world, session, bots.get());
                 if (runtime_state) {
                     std::lock_guard lock(runtime_state->mutex);
@@ -941,7 +981,7 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                                 target.slot >= peer.slot && target.slot < peer.slot + peer.local_players;
                             if (!target.present || !target.alive || owner_target) continue;
                             nf::Vec3 position{target.x, target.y, target.z};
-                            if (target.slot < nf::World::kMaxPlayers) {
+                            if (!target.bot) {
                                 if (const nf::Player* target_player = world.player(target.slot)) position = target_player->eye();
                             } else if (bots) {
                                 if (auto* bot = bots->bots().bot_at_slot(target.slot); bot && bot->drone)
@@ -960,7 +1000,8 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                             if (visible) last_visible_tick[peer.slot][target.slot] = tick;
                             target.visible = visible ||
                                              (last_visible_tick[peer.slot][target.slot] != 0 &&
-                                              tick - last_visible_tick[peer.slot][target.slot] <= 11);
+                                              tick - last_visible_tick[peer.slot][target.slot] <=
+                                                  std::uint32_t(logic_hz * 11 / 30));
                             if (!target.visible) {
                                 target.x = target.y = target.z = target.yaw = target.pitch = 0.0f;
                                 target.velocity = {};
@@ -1020,7 +1061,7 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                     }
                 }
             }
-            next_tick += std::chrono::nanoseconds(1000000000 / int(nf::World::kTickHz));
+            next_tick += std::chrono::nanoseconds(1000000000 / logic_hz);
         }
         return 0;
     } catch (const std::exception& e) {

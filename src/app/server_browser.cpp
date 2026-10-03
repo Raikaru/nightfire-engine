@@ -141,7 +141,8 @@ std::vector<ServerBrowserEntry> ServerBrowser::master(const std::string& host, s
             if (incoming.address != expected.host || incoming.port != expected.port) continue;
             const auto ping = std::uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - sent->second).count());
             entries.push_back({endpoint->second, std::move(info.name), std::move(info.map), info.mode, info.players,
-                               info.max_players, ping, info.password_required, info.match_revision, info.bots});
+                               info.max_players, ping, info.password_required, info.match_revision, info.bots,
+                               info.slot_count, info.modified_rules});
             endpoints.erase(endpoint);
             sent_at.erase(sent);
         }

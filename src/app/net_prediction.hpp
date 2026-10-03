@@ -34,7 +34,7 @@ inline net::OwnerMovementState owner_movement_state(const Player& player) {
     wire.aim_yaw = state.aim_yaw;
     wire.aim_state = {state.aim.cursor_x, state.aim.cursor_y, state.aim.turn_x,
                       state.aim.turn_y, state.aim.scope_x, state.aim.scope_y};
-    wire.timing_rate = state.timing.rate;
+    wire.timing_rate = state.timing.FRAME_RATE;
     wire.body_basis = state.body_basis;
     wire.look_state = state.look_state;
     wire.walk_class = state.walk_class;

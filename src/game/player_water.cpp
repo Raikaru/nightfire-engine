@@ -230,7 +230,7 @@ bool Player::in_water() {
             set_substate(SubState::Swim, timing_);
             jump_state = 0;
             look_state_ = 2;
-            rope_.attach_lockout = std::uint8_t(int(timing_.rate * (1.0f / 60.0f) * 5.0f));   // BL+0x951 = FRAME_RATE_DIV * 5
+            rope_.attach_lockout = std::uint8_t(int(timing_.FRAME_RATE * (1.0f / 60.0f) * 5.0f));   // BL+0x951 = FRAME_RATE_DIV * 5
             velocity = prev_velocity_ = {};   // Vec_Zero of BL+0x10/+0x20/+0x30/+0x40, BL+0x14
             yaw_step_ = 0.0f;
         }
@@ -307,7 +307,7 @@ void Player::monitor_air(FrameTiming timing) {
     water.air = water.air >= 0.0f ? std::min(water.air, 100.0f) : 0.0f;
 
     if (water.air < 1.0f) {
-        const std::uint64_t period = std::uint64_t(timing.rate * 0.5f);
+        const std::uint64_t period = std::uint64_t(timing.FRAME_RATE * 0.5f);
         if (period != 0 && water.frame % period == 0) {
             events_.sounds.push_back({watersound::kDrownHit, pos});
             hurt(2.0f, pos, {}, DamageType::Drown);   // Player_HandlePain(obj, bl, 2.0, 7, -1)

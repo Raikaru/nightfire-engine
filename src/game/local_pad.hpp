@@ -5,15 +5,18 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "game/actions.hpp"
 #include "game/input.hpp"
+#include "ui/input_devices.hpp"
 
 namespace nf {
 
-// One local player's controller for split-screen play: an optional keyboard + mouse and an optional gamepad, mapped
-// like nfgame's single-player input (docs/gameplay.md "nfgame"). Sticks come out in game form (post dead zone).
+// One local player's controller: an optional keyboard + mouse (nfgame's keyboard layout, docs/gameplay.md "nfgame")
+// and an optional gamepad read positionally as a DualShock 2. Buttons come from the shared binding table
+// (InputContext::OnFoot, rebindable in nightfire.cfg); sticks come out in game form (post dead zone).
 class LocalPad {
 public:
     LocalPad(bool keyboard_and_mouse, SDL_Gamepad* pad) : keyboard_(keyboard_and_mouse), pad_(pad) {}
@@ -29,9 +32,20 @@ public:
     }
     void set_captured(bool c) { captured_ = c; }
     bool has_gamepad() const { return pad_ != nullptr; }
+    // The devices of this player (for the prompt glyphs, InputDevices::assign).
+    SlotDevice device() const { return {keyboard_, pad_ ? SDL_GetGamepadID(pad_) : 0}; }
+    // This player's devices read through the menu bindings (their pause menu).
+    PadState sample_menu() const {
+        PadState s;
+        const InputBindings& bindings = input_bindings();
+        if (keyboard_) s.buttons = bindings.keyboard_buttons(InputContext::Menu, SDL_GetKeyboardState(nullptr));
+        s.buttons |= bindings.gamepad_buttons(InputContext::Menu, pad_);
+        return s;
+    }
 
     PadState sample() {
         PadState raw;
+        const InputBindings& bindings = input_bindings();
         if (keyboard_) {
             const bool* k = SDL_GetKeyboardState(nullptr);
             auto axis = [](bool neg, bool pos) { return std::uint8_t(neg == pos ? 0x80 : neg ? 0x00 : 0xFF); };
@@ -39,27 +53,18 @@ public:
             raw.rx = axis(k[SDL_SCANCODE_A], k[SDL_SCANCODE_D]);
             raw.lx = axis(k[SDL_SCANCODE_LEFT], k[SDL_SCANCODE_RIGHT]);
             raw.ry = axis(k[SDL_SCANCODE_PAGEUP], k[SDL_SCANCODE_PAGEDOWN]);
-            if (k[SDL_SCANCODE_SPACE]) raw.buttons |= kPadTriangle;
-            if (k[SDL_SCANCODE_C] || k[SDL_SCANCODE_LCTRL]) raw.buttons |= kPadL2;
-            if (k[SDL_SCANCODE_R]) raw.buttons |= kPadCross;
-            if (k[SDL_SCANCODE_TAB]) raw.buttons |= kPadSquare;
-            if (k[SDL_SCANCODE_E]) raw.buttons |= kPadCircle;
-            if (k[SDL_SCANCODE_Q]) raw.buttons |= kPadLeft;
-            if (wheel_ != 0) {
-                raw.buttons |= wheel_ > 0 ? kPadUp : kPadR2;
-                wheel_ = 0;
-            }
+            const SDL_MouseButtonFlags mouse = captured_ ? SDL_GetMouseState(nullptr, nullptr) : 0;
+            raw.buttons |= bindings.keyboard_buttons(InputContext::OnFoot, k, mouse, wheel_);
+            wheel_ = 0;
         }
-        if (pad_) apply_gamepad(raw);
+        if (pad_) {
+            apply_gamepad_sticks(raw);
+            raw.buttons |= bindings.gamepad_buttons(InputContext::OnFoot, pad_);
+        }
         PadState out = compensate_sticks(raw);
         if (keyboard_ && (mouse_dx_ != 0 || mouse_dy_ != 0)) {
             out.lx = stick_from_delta(mouse_dx_, out.lx);
             out.ry = stick_from_delta(mouse_dy_, out.ry);
-        }
-        if (keyboard_ && captured_) {
-            const Uint32 mb = SDL_GetMouseState(nullptr, nullptr);
-            if (mb & SDL_BUTTON_LMASK) out.buttons |= kPadR1;
-            if (mb & SDL_BUTTON_RMASK) out.buttons |= kPadL1;
         }
         mouse_dx_ = mouse_dy_ = 0;
         return out;
@@ -71,33 +76,20 @@ private:
         return std::uint8_t(std::clamp(int(std::lround(float(current) + delta * kUnitsPerPixel)), 0, 255));
     }
 
-    void apply_gamepad(PadState& raw) {
+    // Positional, as the DualShock 2 report: the left stick is lx/ly, the right stick rx/ry (the controller style
+    // decides what they do; Classic Bond: left = move/turn, right = strafe/look).
+    void apply_gamepad_sticks(PadState& raw) {
         auto stick = [this](SDL_GamepadAxis a) {
             return std::uint8_t(std::clamp(int(std::lround(SDL_GetGamepadAxis(pad_, a) / 32767.0 * 127.0)) + 0x80, 0, 255));
         };
-        auto pressed = [this](SDL_GamepadButton b) { return SDL_GetGamepadButton(pad_, b); };
         const auto lx = stick(SDL_GAMEPAD_AXIS_LEFTX), ly = stick(SDL_GAMEPAD_AXIS_LEFTY);
         const auto rx = stick(SDL_GAMEPAD_AXIS_RIGHTX), ry = stick(SDL_GAMEPAD_AXIS_RIGHTY);
         if (lx != 0x80 || ly != 0x80 || rx != 0x80 || ry != 0x80) {
-            raw.rx = lx;
+            raw.lx = lx;
             raw.ly = ly;
-            raw.lx = rx;
+            raw.rx = rx;
             raw.ry = ry;
         }
-        if (pressed(SDL_GAMEPAD_BUTTON_SOUTH)) raw.buttons |= kPadTriangle;
-        if (pressed(SDL_GAMEPAD_BUTTON_EAST)) raw.buttons |= kPadL2;
-        if (SDL_GetGamepadAxis(pad_, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000) raw.buttons |= kPadL1;
-        if (SDL_GetGamepadAxis(pad_, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16000) raw.buttons |= kPadR1;
-        if (pressed(SDL_GAMEPAD_BUTTON_WEST)) raw.buttons |= kPadCross;
-        if (pressed(SDL_GAMEPAD_BUTTON_NORTH)) raw.buttons |= kPadCircle;
-        if (pressed(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) raw.buttons |= kPadSquare;
-        if (pressed(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) raw.buttons |= kPadR2;
-        if (pressed(SDL_GAMEPAD_BUTTON_START)) raw.buttons |= kPadStart;
-        if (pressed(SDL_GAMEPAD_BUTTON_BACK)) raw.buttons |= kPadSelect;
-        if (pressed(SDL_GAMEPAD_BUTTON_DPAD_UP)) raw.buttons |= kPadUp;
-        if (pressed(SDL_GAMEPAD_BUTTON_DPAD_DOWN)) raw.buttons |= kPadDown;
-        if (pressed(SDL_GAMEPAD_BUTTON_DPAD_LEFT)) raw.buttons |= kPadLeft;
-        if (pressed(SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) raw.buttons |= kPadRight;
     }
 
     bool keyboard_;
@@ -123,6 +115,16 @@ inline std::vector<LocalPad> open_local_pads(int players) {
         const int index = one_each ? p : p - 1;
         SDL_Gamepad* g = index >= 0 && index < int(pads.size()) ? pads[std::size_t(index)] : nullptr;
         out.emplace_back(p == 0, g);
+    }
+    return out;
+}
+
+// The devices the P_MPJOIN slots claimed (FrontendResult::slot_devices), one pad per player.
+inline std::vector<LocalPad> open_local_pads(std::span<const SlotDevice> slots, int players) {
+    std::vector<LocalPad> out;
+    for (int p = 0; p < players; ++p) {
+        const SlotDevice d = p < int(slots.size()) ? slots[std::size_t(p)] : SlotDevice{};
+        out.emplace_back(d.keyboard_mouse, d.gamepad != 0 ? SDL_OpenGamepad(d.gamepad) : nullptr);
     }
     return out;
 }

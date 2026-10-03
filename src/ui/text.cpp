@@ -1,6 +1,10 @@
 #include "ui/text.hpp"
 
 #include <algorithm>
+#include <cctype>
+
+#include "ui/art_sheet.hpp"
+#include "ui/prompts.hpp"
 
 namespace nf::ui {
 
@@ -77,13 +81,19 @@ TextMetrics TextRenderer::layout(float x0, float y0, std::string_view text, cons
             ++highlights;
         } else if (c == '~') {
             char key = ++i < text.size() ? text[i] : 0;
-            if (const SpecialChar* s = fonts_.find_special(key)) {
+            int player = -1;   // `~<n>X`: button X on local player n's device (the MP join page)
+            if (key >= '1' && key <= '4' && i + 1 < text.size()) player = key - '1', key = text[++i];
+            const SpecialChar* s = prompts_ ? (player >= 0 ? prompts_->find(key, player) : prompts_->find(key))
+                                            : fonts_.find_special(char(std::toupper(static_cast<unsigned char>(key))));
+            if (s) {
                 if (emit) {
                     Rect dst{x, y - (s->height + g0.h * sy) * 0.5f, s->advance * sx, s->height * sy};
                     renderer_->draw(s->texture_hash, dst, {float(s->u), float(s->v), float(s->w), float(s->h)},
                                    Color{0x7F, 0x7F, 0x7F, color.a});
                 }
-                x += s->advance;  // the original does not scale the icon advance
+                // The original does not scale the icon advance; the engine's own (wider) glyphs advance by their
+                // drawn width so keycap labels never run into the following text.
+                x += s->texture_hash >= kArtHashBase ? s->advance * sx : float(s->advance);
                 width = std::max(width, x - x0);
             }
         } else {

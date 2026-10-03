@@ -1,4 +1,4 @@
-"""MP match setup driver: main menu (PINE slot 1) -> configured MP match via vpad.
+"""MP match setup driver: main menu (PINE slot 50) -> configured MP match via vpad.
 
 Learned flow (2026-10-03, verified live):
   main menu -down-> Multiplayer -cross-> P_MPJOIN -cross-> join
@@ -62,6 +62,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenario", type=int, default=1, help="wheel index from Quick Game")
     ap.add_argument("--map", type=int, default=0, help="wheel index from Skyrail")
+    ap.add_argument("--direct-map-at-confirm", action="store_true",
+                    help="write the chosen MP map ID at Scenario Options/Confirm instead of relying on the map wheel")
     ap.add_argument("--bots", type=int, default=3)
     ap.add_argument("--slot", type=int, default=12, help="PINE slot for the match-start state")
     ap.add_argument("--bot-chars", default="", help="e.g. 6,5,8: char ids poked into mpbots at confirm (skip wheel)")
@@ -74,7 +76,7 @@ def main():
     ap.add_argument("--settle", type=float, default=8.0)
     ap.add_argument("--page-settle", type=float, default=10.0,
                     help="seconds to wait after entering a menu page before confirming it")
-    ap.add_argument("--load-slot", type=int, default=1)
+    ap.add_argument("--load-slot", type=int, default=50)
     ap.add_argument("--live-timeout", type=float, default=120.0,
                     help="seconds to wait for the match player after loading")
     ap.add_argument("--spawn-stabilize", type=int, default=60,
@@ -232,6 +234,9 @@ def main():
         vpad("press", "cross", 400)
         time.sleep(args.page_settle)
     snap("12-confirm")
+    if args.direct_map_at_confirm:
+        pine.write(WRITE32, A.MPSETTINGS + A.MPS_MAP, A.MP_MAPS[args.map][0])
+        print("poked MP map at confirm", A.MP_MAPS[args.map], flush=True)
     poke_roster()   # idempotent re-poke guards menu clobbering
     if args.weapon_set is not None:
         pine.write(WRITE32, A.MPSETTINGS + A.MPS_WEAPON_SET, args.weapon_set)

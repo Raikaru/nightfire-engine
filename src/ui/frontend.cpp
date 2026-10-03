@@ -225,6 +225,7 @@ void Frontend::update(const PadHistory& pad) {
     if (!s.mgr || s.closed) return;
     s.mgr->update(pad.now);
     s.after_update();
+    s.sync_controls_device();
 }
 
 void Frontend::update(const std::array<PadHistory, 4>& pads) {
@@ -234,6 +235,7 @@ void Frontend::update(const std::array<PadHistory, 4>& pads) {
     for (std::size_t i = 0; i < 4; ++i) now[i] = pads[i].now;
     s.mgr->update(now);
     s.after_update();
+    s.sync_controls_device();
 }
 
 void Frontend::set_controller_present(std::size_t controller, bool present) {
@@ -243,7 +245,12 @@ void Frontend::set_controller_present(std::size_t controller, bool present) {
 void Frontend::draw(ui::Renderer& renderer, ui::TextRenderer& text) {
     if (!impl_->mgr) return;
     if (impl_->online_choice_pending || impl_->online_choice_leaving >= 0) impl_->draw_online_choice(renderer, text);
-    else impl_->mgr->draw(renderer, text);
+    else {
+        impl_->mgr->draw(renderer, text);
+        impl_->draw_controls_diagram(renderer, text);
+        if (impl_->mgr->current_page_id() == 0x40000033 && impl_->debrief.table())   // P_MPDEBRIEFING
+            impl_->draw_debrief_table(renderer, text);
+    }
 }
 
 // The online choice lists in the scenario page's composition (P_MPSCEN 0x4000001a): title, logo, the

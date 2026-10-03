@@ -7,8 +7,11 @@
 // "new codename" plus the in-memory profile name, "save" shows the no-save box and stays, and saved-game
 // unlocks are those of a fresh save (as elsewhere in this front end).
 #include <algorithm>
+#include <span>
 
+#include "ui/art_sheet.hpp"
 #include "ui/frontend_impl.hpp"
+#include "ui/menu_chrome.hpp"
 
 namespace nf {
 
@@ -325,15 +328,70 @@ bool Frontend::Impl::c_rb_control(ui::Control& c, const ui::Msg& m) {
     return true;
 }
 
-// Menu_DisplayControllerStyle: the per-style diagram labels (see the tables above).
+// Menu_DisplayControllerStyle: the per-style diagram labels (see the tables above). The picture between the label
+// columns is drawn by draw_controls_diagram (the script's picture control stays hidden).
 void Frontend::Impl::display_controller_style() {
     const int style = std::clamp(player_options.controller_style, 0, 7);
+    controls_device = input_devices().device(0);
     for (std::size_t i = 0; i < 12; ++i) set_label(kStyleDiagram[i], kStyleBases[style] + kStyleOffsets[i]);
     set_label(0x10000066, kStyleBases[style] + 5);
     set_label(0x100000C8, kStyleBases[style]);
     set_label(0x10000163, kStyleT[style]);
     set_label(0x10000225, kStyleT[style]);
     send(0x10000061, kSetFlags, 1);
+    // The DualShock picture (the page's sprite label at 222,194, texture 0x03000077).
+    if (ui::Page* page = mgr->current_page())
+        for (const auto& c : page->controls)
+            if (c->def && c->def->x == 222 && c->def->y == 194 && c->def->w == 197)
+                mgr->send_to(*c, ui::Msg{kSetFlags, 1, 0});
+}
+
+// Instant device switch on P_CNCONTROLS: redraw for player 1's new device family.
+void Frontend::Impl::sync_controls_device() {
+    if (mgr && mgr->current_page_id() == kPageCnControls && input_devices().device(0) != controls_device)
+        display_controller_style();
+}
+
+// The controls diagram: the device's picture (the original DualShock picture, or the keyboard + mouse / gamepad
+// drawing of assets/ui/prompts.png) narrowed to leave a lane on each side, where every label row gets the glyph of
+// the input bound to its button (lowercase escapes: the gameplay bindings, so a rebinding shows here).
+void Frontend::Impl::draw_controls_diagram(ui::Renderer& renderer, ui::TextRenderer& text) {
+    if (!mgr || mgr->current_page_id() != kPageCnControls) return;
+    const ui::Rect box = ui::MenuChrome::authored(222, 194, 197, 136);
+    constexpr float kLane = 34.0f;   // canvas units per glyph lane
+    const ui::Rect inner{box.x + kLane + 4.0f, box.y, box.w - 2.0f * (kLane + 4.0f), box.h};
+    std::uint32_t hash = 0x03000077;
+    ui::Rect src{0, 0, 0, 0};
+    float aspect = box.w / box.h;   // the script stretches the DualShock texture over its box
+    if (controls_device == InputDevice::PlayStation) {
+        const auto [tw, th] = renderer.texture_size(hash);
+        src = {0, 0, float(tw), float(th)};
+    } else if (const ui::ArtSprite* art = ui::art_sprite(
+                   "prompts", controls_device == InputDevice::KeyboardMouse ? "diagram_keyboard" : "diagram_pad")) {
+        hash = art->hash;
+        src = art->src;
+        aspect = art->src.w * 1.25f / art->src.h;   // the menu's horizontal scale
+    }
+    if (src.w > 0) {
+        const float w = std::min(inner.w, inner.h * aspect), h = w / aspect;
+        renderer.draw(hash, {inner.x + (inner.w - w) * 0.5f, inner.y + (inner.h - h) * 0.5f, w, h}, src,
+                      ui::Color{0x7F, 0x7F, 0x7F, 0x80});
+    }
+    struct Row {
+        int y;
+        char key;
+    };
+    static constexpr Row kLeft[] = {{165, 'c'}, {190, 'l'}, {240, 'v'}, {265, 'h'}, {290, 'f'}, {315, 't'}, {340, 's'}};
+    static constexpr Row kRight[] = {{165, 'd'}, {190, 'r'}, {215, 'y'}, {240, 'b'}, {265, 'x'}, {315, 'a'}, {340, 'e'}};
+    const float lift = float(text.fonts().font(2).glyphs.front().h) * 0.5f;
+    for (const bool left : {true, false}) {
+        ui::TextStyle style = ui::MenuChrome::style(2, left ? ui::Align::Right : ui::Align::Left, ui::menu_style::kLabelColor);
+        for (const Row& r : left ? std::span<const Row>(kLeft) : std::span<const Row>(kRight)) {
+            const ui::Rect row = ui::MenuChrome::authored(left ? 24 : 431, r.y, 185, 17);
+            const char glyph[] = {'~', r.key, 0};
+            text.draw(left ? box.x + kLane : box.x + box.w - kLane, row.y + row.h * 0.5f + lift, glyph, style);
+        }
+    }
 }
 
 // C_KEYPAD: toggles Y-axis inversion.

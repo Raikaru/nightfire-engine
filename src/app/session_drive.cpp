@@ -20,6 +20,7 @@
 #include "game/player_basis.hpp"
 #include "render/gl.hpp"
 #include "ui/frontend.hpp"
+#include "ui/prompts.hpp"
 
 namespace nf::app {
 namespace driving_app = nf::driving;
@@ -32,20 +33,11 @@ PadState drive_pad(SDL_Gamepad* gamepad) {
     auto key = [&](SDL_Scancode a, SDL_Scancode b = SDL_SCANCODE_UNKNOWN) {
         return k[a] || (b != SDL_SCANCODE_UNKNOWN && k[b]);
     };
-    if (key(SDL_SCANCODE_W, SDL_SCANCODE_UP)) pad.buttons |= kPadCross;
-    if (key(SDL_SCANCODE_S, SDL_SCANCODE_DOWN)) pad.buttons |= kPadSquare;
-    if (key(SDL_SCANCODE_SPACE)) pad.buttons |= kPadCircle;
-    if (key(SDL_SCANCODE_C)) pad.buttons |= kPadTriangle;
-    if (key(SDL_SCANCODE_Q)) pad.buttons |= kPadL2;
+    pad.buttons = input_bindings().keyboard_buttons(InputContext::Driving, k);
     const int steer = int(key(SDL_SCANCODE_D, SDL_SCANCODE_RIGHT)) - int(key(SDL_SCANCODE_A, SDL_SCANCODE_LEFT));
     if (steer != 0) pad.lx = steer < 0 ? 0 : 255;
     if (gamepad) {
-        auto down = [&](SDL_GamepadButton b) { return SDL_GetGamepadButton(gamepad, b); };
-        if (down(SDL_GAMEPAD_BUTTON_SOUTH)) pad.buttons |= kPadCross;
-        if (down(SDL_GAMEPAD_BUTTON_WEST)) pad.buttons |= kPadSquare;
-        if (down(SDL_GAMEPAD_BUTTON_EAST)) pad.buttons |= kPadCircle;
-        if (down(SDL_GAMEPAD_BUTTON_NORTH)) pad.buttons |= kPadTriangle;
-        if (down(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) pad.buttons |= kPadL2;
+        pad.buttons |= input_bindings().gamepad_buttons(InputContext::Driving, gamepad);
         const int sx = int(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTX));
         if (std::abs(sx) > 8000) pad.lx = std::uint8_t(std::clamp(sx / 128 + 128, 0, 255));
     }
@@ -83,34 +75,8 @@ driving_app::SceneMesh drive_marker(float r, std::uint32_t color) {
     return m;
 }
 
-// Frontend/drive-menu pad (nfui mapping) from the keyboard plus a gamepad.
-PadState drive_menu_pad(SDL_Gamepad* gamepad) {
-    PadState s;
-    const bool* k = SDL_GetKeyboardState(nullptr);
-    if (k[SDL_SCANCODE_UP]) s.buttons |= kPadUp;
-    if (k[SDL_SCANCODE_DOWN]) s.buttons |= kPadDown;
-    if (k[SDL_SCANCODE_LEFT]) s.buttons |= kPadLeft;
-    if (k[SDL_SCANCODE_RIGHT]) s.buttons |= kPadRight;
-    if (k[SDL_SCANCODE_Z] || k[SDL_SCANCODE_RETURN]) s.buttons |= kPadCross;
-    if (k[SDL_SCANCODE_X]) s.buttons |= kPadCircle;
-    if (k[SDL_SCANCODE_A]) s.buttons |= kPadSquare;
-    if (k[SDL_SCANCODE_S]) s.buttons |= kPadTriangle;
-    if (k[SDL_SCANCODE_SPACE]) s.buttons |= kPadStart;
-    if (k[SDL_SCANCODE_BACKSPACE]) s.buttons |= kPadSelect;
-    if (gamepad) {
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_UP)) s.buttons |= kPadUp;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_DOWN)) s.buttons |= kPadDown;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_LEFT)) s.buttons |= kPadLeft;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) s.buttons |= kPadRight;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_SOUTH)) s.buttons |= kPadCross;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_EAST)) s.buttons |= kPadCircle;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_WEST)) s.buttons |= kPadSquare;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_NORTH)) s.buttons |= kPadTriangle;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_START)) s.buttons |= kPadStart;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_BACK)) s.buttons |= kPadSelect;
-    }
-    return s;
-}
+// Frontend/drive-menu pad: the shared menu bindings from the keyboard plus a gamepad.
+PadState drive_menu_pad(SDL_Gamepad* gamepad) { return input_bindings().sample(InputContext::Menu, gamepad); }
 }  // namespace
 
 struct DriveSessionApp::Impl {
@@ -233,6 +199,7 @@ struct DriveSessionApp::Impl {
         }
         const driving_app::DrivingHud& hud = mission->hud();
         ui.begin(w, h, false);
+        ui::select_prompts(0, InputContext::Driving);
         ui::TextStyle style;
         style.font = 1;
         style.drop_shadow = true;
@@ -275,6 +242,7 @@ struct DriveSessionApp::Impl {
             int w, h;
             window.begin_frame(w, h);
             ui.begin(w, h);
+            ui::select_prompts(0, InputContext::Menu);
             menu.draw(ui, text);
             ui.end();
             window.swap();

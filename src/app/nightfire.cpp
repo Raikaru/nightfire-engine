@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "app/frontend_pads.hpp"
 #include "app/menu_background.hpp"
 #include "app/app.hpp"
 #include "app/movie.hpp"
@@ -29,11 +30,15 @@
 #include "core/rng.hpp"
 #include "net/server_runtime.hpp"
 #include "app/online_browser.hpp"
+#include "app/settings_screen.hpp"
 #include "app/net_client.hpp"
 #include "audio/audio.hpp"
 #include "render/window.hpp"
+#include "ui/art_sheet.hpp"
 #include "ui/frontend.hpp"
+#include "ui/input_devices.hpp"
 #include "ui/menu_audio.hpp"
+#include "ui/prompts.hpp"
 #include "driving/driving_level.hpp"
 #include "ui/renderer.hpp"
 #include "ui/text.hpp"
@@ -50,67 +55,104 @@ const std::map<std::string, std::uint16_t> kPressButtons = {
     {"start", kPadStart}, {"select", kPadSelect}, {"l1", kPadL1},       {"l2", kPadL2},
     {"r1", kPadR1},       {"r2", kPadR2},         {"l3", kPadL3},       {"r3", kPadR3}};
 
-// --press replay (nfui token format): one 30 Hz frame per token.
+// Virtual gamepads (--virtual-pads): real SDL devices the replay can press, for multi-device captures.
+std::vector<SDL_Joystick*> g_virtual_pads;
+
+void attach_virtual_pads(const std::string& list) {
+    // Headless captures have no focused window; SDL drops joystick input of background apps by default.
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    for (std::size_t p = 0; p < list.size();) {
+        const std::size_t e = list.find(',', p);
+        const std::string kind = list.substr(p, e == std::string::npos ? e : e - p);
+        p = e == std::string::npos ? list.size() : e + 1;
+        SDL_VirtualJoystickDesc desc;
+        SDL_INIT_INTERFACE(&desc);
+        desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        desc.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
+        desc.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1;
+        desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        if (kind == "xbox") desc.vendor_id = 0x045E, desc.product_id = 0x02EA, desc.name = "Virtual Xbox pad";
+        else if (kind == "ps") desc.vendor_id = 0x054C, desc.product_id = 0x09CC, desc.name = "Virtual PlayStation pad";
+        else throw std::runtime_error("--virtual-pads takes xbox and ps entries");
+        const SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
+        SDL_Joystick* joystick = id ? SDL_OpenJoystick(id) : nullptr;
+        if (!joystick) throw std::runtime_error(std::string("virtual gamepad: ") + SDL_GetError());
+        std::printf("virtual pad %zu: %s, gamepad=%d type=%s\n", g_virtual_pads.size(), desc.name, int(SDL_IsGamepad(id)),
+                    SDL_GetGamepadStringForType(SDL_GetGamepadTypeForID(id)));
+        g_virtual_pads.push_back(joystick);
+    }
+    SDL_UpdateJoysticks();
+}
+
+void set_virtual_pad(std::size_t index, std::uint16_t buttons) {
+    if (index >= g_virtual_pads.size()) throw std::runtime_error("no virtual pad " + std::to_string(index));
+    static constexpr std::pair<std::uint16_t, SDL_GamepadButton> kMap[] = {
+        {kPadCross, SDL_GAMEPAD_BUTTON_SOUTH},      {kPadCircle, SDL_GAMEPAD_BUTTON_EAST},
+        {kPadSquare, SDL_GAMEPAD_BUTTON_WEST},      {kPadTriangle, SDL_GAMEPAD_BUTTON_NORTH},
+        {kPadUp, SDL_GAMEPAD_BUTTON_DPAD_UP},       {kPadDown, SDL_GAMEPAD_BUTTON_DPAD_DOWN},
+        {kPadLeft, SDL_GAMEPAD_BUTTON_DPAD_LEFT},   {kPadRight, SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
+        {kPadStart, SDL_GAMEPAD_BUTTON_START},      {kPadSelect, SDL_GAMEPAD_BUTTON_BACK},
+        {kPadL1, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER}, {kPadR1, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER}};
+    for (const auto& [bit, button] : kMap) SDL_SetJoystickVirtualButton(g_virtual_pads[index], button, (buttons & bit) != 0);
+    SDL_SetJoystickVirtualAxis(g_virtual_pads[index], SDL_GAMEPAD_AXIS_LEFT_TRIGGER, (buttons & kPadL2) ? 32767 : -32768);
+    SDL_SetJoystickVirtualAxis(g_virtual_pads[index], SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, (buttons & kPadR2) ? 32767 : -32768);
+    SDL_UpdateJoysticks();
+}
+
+// --press replay (nfui token format): one 30 Hz frame per token. Plain tokens press slot 0 directly;
+// `kb:<buttons>` presses through the keyboard bindings and `pad<N>:<buttons>` virtual gamepad N, so the
+// multiplayer join page sees separate devices.
 template <typename AdvanceBackground>
-void replay_press(Frontend& frontend, PadHistory& pad, const std::string& script, AdvanceBackground&& advance_background) {
+void replay_press(Frontend& frontend, FrontendPads& pads, const std::string& script, AdvanceBackground&& advance_background) {
     for (std::size_t p = 0; p < script.size();) {
         const std::size_t e = script.find(',', p);
-        const std::string tok = script.substr(p, e == std::string::npos ? e : e - p);
+        std::string tok = script.substr(p, e == std::string::npos ? e : e - p);
         p = e == std::string::npos ? script.size() : e + 1;
-        if (tok.rfind("net-", 0) == 0) continue;  // Reserved for the Online server-browser screen.
+        // Reserved for the Online server-browser and Settings screens.
+        if (tok.rfind("net-", 0) == 0 || tok.rfind("set-", 0) == 0) continue;
         if (tok.rfind("wait", 0) == 0) {
             const int n = tok.size() > 4 ? std::atoi(tok.c_str() + 4) : 1;
             for (int i = 0; i < n; ++i) {
-                pad.push({});
-                frontend.update(pad);
+                pads.sample(frontend);
                 advance_background();
             }
             continue;
         }
-        PadState s;
+        std::string device;
+        if (const std::size_t colon = tok.find(':'); colon != std::string::npos) {
+            device = tok.substr(0, colon);
+            tok = tok.substr(colon + 1);
+        }
+        std::uint16_t buttons = 0;
         for (std::size_t q = 0; q < tok.size();) {
             const std::size_t plus = tok.find('+', q);
             const std::string name = tok.substr(q, plus == std::string::npos ? plus : plus - q);
             q = plus == std::string::npos ? tok.size() : plus + 1;
             const auto it = kPressButtons.find(name);
             if (it == kPressButtons.end()) throw std::runtime_error("unknown button " + name);
-            s.buttons |= it->second;
+            buttons |= it->second;
         }
-        pad.push(s);
-        frontend.update(pad);
-        advance_background();
-        pad.push({});
-        frontend.update(pad);
+        if (device.empty()) {
+            pads.push_slot0(frontend, buttons);
+            advance_background();
+            pads.push_slot0(frontend, 0);
+        } else if (device == "kb") {
+            pads.sample(frontend, buttons);
+            advance_background();
+            pads.sample(frontend);
+        } else if (device.rfind("pad", 0) == 0) {
+            const std::size_t index = std::size_t(std::atoi(device.c_str() + 3));
+            set_virtual_pad(index, buttons);
+            pads.sample(frontend);
+            advance_background();
+            set_virtual_pad(index, 0);
+            pads.sample(frontend);
+        } else {
+            throw std::runtime_error("unknown device " + device);
+        }
         advance_background();
     }
-}
-
-PadState live_menu_pad(SDL_Gamepad* gamepad) {
-    PadState s;
-    const bool* k = SDL_GetKeyboardState(nullptr);
-    if (k[SDL_SCANCODE_UP]) s.buttons |= kPadUp;
-    if (k[SDL_SCANCODE_DOWN]) s.buttons |= kPadDown;
-    if (k[SDL_SCANCODE_LEFT]) s.buttons |= kPadLeft;
-    if (k[SDL_SCANCODE_RIGHT]) s.buttons |= kPadRight;
-    if (k[SDL_SCANCODE_Z] || k[SDL_SCANCODE_RETURN]) s.buttons |= kPadCross;
-    if (k[SDL_SCANCODE_X]) s.buttons |= kPadCircle;
-    if (k[SDL_SCANCODE_A]) s.buttons |= kPadSquare;
-    if (k[SDL_SCANCODE_S]) s.buttons |= kPadTriangle;
-    if (k[SDL_SCANCODE_SPACE]) s.buttons |= kPadStart;
-    if (k[SDL_SCANCODE_BACKSPACE]) s.buttons |= kPadSelect;
-    if (gamepad) {
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_UP)) s.buttons |= kPadUp;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_DOWN)) s.buttons |= kPadDown;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_LEFT)) s.buttons |= kPadLeft;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) s.buttons |= kPadRight;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_SOUTH)) s.buttons |= kPadCross;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_EAST)) s.buttons |= kPadCircle;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_WEST)) s.buttons |= kPadSquare;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_NORTH)) s.buttons |= kPadTriangle;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_START)) s.buttons |= kPadStart;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_BACK)) s.buttons |= kPadSelect;
-    }
-    return s;
 }
 
 void sync_config_to_frontend(const AppConfig& cfg, Frontend& frontend) {
@@ -135,8 +177,8 @@ void sync_config_to_frontend(const AppConfig& cfg, Frontend& frontend) {
 
 void report_result(const FrontendResult& r) {
     static const char* const names[] = {"none", "start-multiplayer", "start-online-join", "start-listen-server",
-                                        "start-mission", "resume", "restart-mission", "quit-to-menu", "rematch",
-                                        "mission-done", "quit"};
+                                        "open-settings", "start-mission", "resume", "restart-mission", "quit-to-menu",
+                                        "rematch", "mission-done", "quit"};
     std::printf("frontend: %s level=%s difficulty=%d", names[int(r.action)], r.level_bin.c_str(), r.difficulty);
     if (r.launch) std::printf(" mp mode=0x%08x humans=%u bots=%u", r.launch->settings.mode,
                               r.launch->settings.human_count, r.launch->settings.bot_count);
@@ -147,13 +189,14 @@ void report_result(const FrontendResult& r) {
 // false when the application should exit.
 bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRenderer& text, AppConfig& cfg,
                   audio::AudioSystem* audio, const std::string& press, const std::string& shot,
-                  const std::optional<std::uint32_t>& first_page, FrontendResult& out) {
+                  const std::optional<std::uint32_t>& first_page, FrontendResult& out, bool match_takes_shot = false) {
     Frontend frontend(ctx.assets, ctx.menu, &ctx.mp_data, &ctx.sp_data);
     sync_config_to_frontend(cfg, frontend);
     frontend.open(FrontendMode::MainMenu, first_page);
     MenuBackground background(ctx.gamedir);
     background.advance();
-    PadHistory pad;
+    FrontendPads pads;
+    ui::select_prompts(0, InputContext::Menu);
     bool trace = true;
     std::uint32_t last_page = 0;
     auto play_sounds = [&] {
@@ -167,10 +210,11 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
     if (!press.empty() || !shot.empty()) {
         // Headless verification: replay the button script, serve a pending movie
         // request into the shot when the script lands on a movie page, else screenshot.
-        if (!press.empty()) replay_press(frontend, pad, press, [&] { background.advance(); });
+        if (!press.empty()) replay_press(frontend, pads, press, [&] { background.advance(); });
         play_sounds();
         report_result(frontend.result());
         out = frontend.result();
+        out.slot_devices = pads.slot_devices();
         if (std::uint32_t movie = frontend.take_movie_request()) {
             if (shot.empty()) {
                 // Probe run: note the request and take the fallback transition (no playback).
@@ -182,7 +226,8 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
             frontend.movie_finished();
             return false;
         }
-        if (!shot.empty()) {
+        // With --frames the match the replay starts takes the screenshot instead (see run()).
+        if (!shot.empty() && !(match_takes_shot && out.action == FrontendResult::Action::StartMultiplayer)) {
             int w, h;
             window.begin_frame(w, h);
             ui.begin(w, h);
@@ -195,12 +240,7 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
         }
         return false;
     }
-    SDL_Gamepad* gamepad = nullptr;
-    int count = 0;
-    if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
-        if (count > 0) gamepad = SDL_OpenGamepad(ids[0]);
-        SDL_free(ids);
-    }
+    SDL_Gamepad* gamepad = input_devices().gamepads().empty() ? nullptr : input_devices().gamepads().front();
     double accumulator = 0;
     Uint64 last = SDL_GetTicksNS();
     bool quit_app = false;
@@ -213,8 +253,7 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
         accumulator = std::min(accumulator + double(now - last) * 1e-9, 0.25);
         last = now;
         while (accumulator >= 1.0 / 30.0) {
-            pad.push(live_menu_pad(gamepad));
-            frontend.update(pad);
+            pads.sample(frontend);
             background.advance();
             // Movie pages hand their PSS id to the game (fallback transition when missing).
             if (std::uint32_t movie = frontend.take_movie_request()) {
@@ -230,13 +269,13 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
         }
         int w, h;
         window.begin_frame(w, h);
+        ui::select_prompts(0, InputContext::Menu);
         ui.begin(w, h);
         background.draw(ui);
         frontend.draw(ui, text);
         ui.end();
         window.swap();
     }
-    if (gamepad) SDL_CloseGamepad(gamepad);
     if (quit_app) {
         out = FrontendResult{};
         out.action = FrontendResult::Action::Quit;
@@ -264,6 +303,7 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
     ui.set_pillarbox(cfg.pillarbox);
     report_result(frontend.result());
     out = frontend.result();
+    out.slot_devices = pads.slot_devices();
     return true;
 }
 
@@ -279,8 +319,8 @@ struct Args {
     std::string drive;
     std::string car;
     std::string movie;  // direct PSS test: hex id or .PSS path
-    // Headless.
     long frames = -1;
+    int logic_hz = 60;
     std::string shot;
     std::string inputs;
     std::string press;
@@ -301,6 +341,12 @@ struct Args {
     int give = -1;
     int local_players = 1;
     int width = kWindowW, height = kWindowH;
+    // Accessibility overrides for this run (the Settings screen's options; not saved to nightfire.cfg).
+    std::optional<int> crosshair_style;
+    bool high_contrast = false, colorblind_teams = false;
+    std::optional<InputDevice> prompts;   // --prompts: fixed glyph set instead of the last used device
+    std::string virtual_pads;             // --virtual-pads xbox,ps: SDL virtual gamepads (pad<N>: --press tokens)
+    std::string hold;                     // --hold pad0:r1,pad1:l1: virtual pad buttons held during the match
 };
 bool parse_args(int argc, char** argv, Args& a) {
     if (argc < 2) return false;
@@ -328,13 +374,18 @@ bool parse_args(int argc, char** argv, Args& a) {
             if (eq == std::string::npos) throw std::runtime_error("--channel needs CH=VAL");
             a.channels.emplace_back(std::atoi(spec.substr(0, eq).c_str()), std::atoi(spec.substr(eq + 1).c_str()));
         }
+        else if (v == "--logic-hz" && i + 1 < argc) {
+            a.logic_hz = std::atoi(argv[++i]);
+            if (a.logic_hz != 30 && a.logic_hz != 60)
+                throw std::runtime_error("--logic-hz must be 30 or 60");
+        }
         else if (v == "--mp") a.mp = true;
-        else if (v == "--connect") need(a.connect);
         else if (v == "--local-players" && i + 1 < argc) {
             a.local_players = std::atoi(argv[++i]);
             if (a.local_players < 1 || a.local_players > int(nf::net::kMaxLocalPlayers))
                 throw std::runtime_error("--local-players must be 1..4");
         }
+        else if (v == "--connect") need(a.connect);
         else if (v == "--password") need(a.password);
         else if (v == "--browse-lan") a.browse_lan = true;
         else if (v == "--browse-master") { a.browse_master = true; need(a.master); }
@@ -374,7 +425,19 @@ bool parse_args(int argc, char** argv, Args& a) {
         else if (v == "--page" && i + 1 < argc)
             a.first_page = static_cast<std::uint32_t>(std::stoul(argv[++i], nullptr, 0));
         else if (v == "--mute") a.mute = true;
+        else if (v == "--virtual-pads") need(a.virtual_pads);
+        else if (v == "--hold") need(a.hold);
+        else if (v == "--prompts" && i + 1 < argc) {   // force the prompt glyph set (screenshots)
+            const std::string d = argv[++i];
+            if (d == "ps") a.prompts = InputDevice::PlayStation;
+            else if (d == "xbox") a.prompts = InputDevice::Xbox;
+            else if (d == "keyboard") a.prompts = InputDevice::KeyboardMouse;
+            else throw std::runtime_error("--prompts takes ps, xbox or keyboard");
+        }
         else if (v == "--give" && i + 1 < argc) a.give = std::atoi(argv[++i]);  // debug equip
+        else if (v == "--crosshair" && i + 1 < argc) a.crosshair_style = std::clamp(std::atoi(argv[++i]), 0, 4);
+        else if (v == "--high-contrast") a.high_contrast = true;
+        else if (v == "--colorblind-teams") a.colorblind_teams = true;
         else if (a.mp && v.rfind("--", 0) == 0) {
             // Match options (nfgame --mp set: --mode/--players/--bots/...): forwarded with values.
             a.mp_args.push_back(v);
@@ -384,7 +447,8 @@ bool parse_args(int argc, char** argv, Args& a) {
                  takes_value("--frag-limit") || takes_value("--time-limit") || takes_value("--weapons") ||
                  takes_value("--spawn") || takes_value("--handicap") || takes_value("--seed") ||
                  takes_value("--bot-char") || takes_value("--cam") || takes_value("--follow-bot") ||
-                 takes_value("--inputs2") || takes_value("--inputs3") || takes_value("--inputs4")) &&
+                 takes_value("--inputs2") || takes_value("--inputs3") || takes_value("--inputs4") ||
+                 takes_value("--ruleset")) &&
                 i + 1 < argc) {
                 a.mp_args.push_back(argv[++i]);
                 if (last == "--cam") {
@@ -406,7 +470,7 @@ std::vector<nf::net::MatchConfig> make_host_rotation(const AppContext& ctx, cons
     std::vector<nf::net::MatchConfig> rotation;
     MatchOptions match = initial.options;
     match.enabled = true;
-    match.humans = int(nf::kMpMaxHumans);
+    match.humans = 0; // Runtime matches start empty; connected clients activate only the slots they own.
     if (repeat_current) rotation.push_back({initial.level_bin, match});
     const auto map_it = std::find_if(ctx.mp_data.maps.begin(), ctx.mp_data.maps.end(),
                                      [&](const nf::MpMap& map) { return map.bin_name == initial.level_bin; });
@@ -450,12 +514,14 @@ std::vector<nf::net::MatchConfig> make_host_rotation(const AppContext& ctx, cons
 void usage(const char* prog) {
     std::fprintf(stderr,
                  "usage: %s <gamedir> [--mission level.bin [--difficulty 0|1|2] [--channel CH=VAL]] [--mp MAP_OPTS] "
-                 "[--drive name [--car name]] [--movie hexid] [--frames N] [--shot out.bmp] [--inputs file] "
-                 "[--press a,b,...] [--page 0x40000002] [--size WIDTHxHEIGHT] [--mute] [--give ID]\n"
-                 "  --connect IPv4[:port] [--password text] [--map file.bin] [--name name] [--chat message] [--frames N] "
-                 "[--net-sim-loss 0..100] [--net-sim-latency ms] joins a network server.\n"
-                 "  --browse-lan, --browse-master IPv4[:port], or --browse-ip IPv4[:port] query server lists/info; the main-menu Multiplayer entry opens Host/Join.\n"
-                 "  --online-master IPv4[:port] adds the registry to that join screen; --listen-port and --host-time-limit configure a listen host.\n"
+                 "[--drive name [--car name]] [--movie hexid] [--logic-hz 30|60] [--frames N] [--shot out.bmp] "
+                 "[--inputs file] [--press a,b,...] [--page 0x40000002] [--size WIDTHxHEIGHT] [--mute] [--give ID] "
+                 "[--prompts ps|xbox|keyboard] [--virtual-pads xbox,ps,...] [--hold pad0:r1,...]\n"
+                 "[--local-players 1..4] [--net-sim-loss 0..100] [--net-sim-latency ms] joins a network server.\n"
+                 "  --browse-lan, --browse-master IPv4[:port], or --browse-ip IPv4[:port] query server lists/info; "
+                 "the main-menu Multiplayer entry opens Host/Join.\n"
+                 "  --online-master IPv4[:port] adds the registry to that join screen; --listen-port and "
+                 "--host-time-limit configure a listen host.\n"
                  "  --mp options: nfgame set (--mode/--players/--bots/--frag-limit/--time-limit/--weapons/...).\n"
                  "  --give ID: debug equip (scoped-capture hook): give + select the weapon at session start.\n",
                  prog);
@@ -471,6 +537,7 @@ int run(int argc, char** argv) {
     }
     AppConfig cfg;
     load_config(config_path(), cfg);
+    cfg.logic_hz = args.logic_hz;
     if (args.password.size() > nf::net::kMaxPasswordBytes)
         throw std::runtime_error("--password is limited to 64 bytes");
     if (args.browse_lan || args.browse_master || !args.direct_lookup.empty()) {
@@ -513,6 +580,7 @@ int run(int argc, char** argv) {
         return 0;
     }
     std::unique_ptr<AppContext> ctx = load_context(args.gamedir);
+    ui::register_art_sheets(ctx->assets.sprites);
     if (!args.connect.empty() && args.frames >= 0 && args.shot.empty()) {
         NetworkClientOptions options;
         options.endpoint = args.connect;
@@ -524,6 +592,7 @@ int run(int argc, char** argv) {
         options.frames = args.frames;
         options.loss_percent = args.net_sim_loss;
         options.latency_ms = args.net_sim_latency;
+        options.local_players = std::uint8_t(args.local_players);
         return run_network_client(*ctx, options);
     }
     // Window first: it owns SDL/GL and must die last (teardown order: menu audio and the
@@ -542,8 +611,27 @@ int run(int argc, char** argv) {
     audio::AudioSystem* menu_audio_ptr = args.mute ? nullptr : &menu_audio;
     if (menu_audio_ptr && !menu_audio_ptr->open_device()) menu_audio_ptr = nullptr;
     ui::Renderer ui(ctx->assets.sprites);
-    ui.set_pillarbox(cfg.pillarbox);
+    apply_settings(cfg, window, ui, menu_audio_ptr);
+    {
+        ui::Accessibility access = accessibility_from_config(cfg);
+        if (args.crosshair_style) access.crosshair = ui::CrosshairStyle(*args.crosshair_style);
+        access.high_contrast = access.high_contrast || args.high_contrast;
+        access.colorblind_teams = access.colorblind_teams || args.colorblind_teams;
+        ui::set_accessibility(access);
+    }
     ui::TextRenderer text(ui, ctx->assets.fonts);
+    // Button prompts follow each player's last used device (docs/ui.md "Button prompts").
+    if (!args.virtual_pads.empty()) attach_virtual_pads(args.virtual_pads);
+    input_devices().install();
+    input_devices().force(args.prompts);
+    ui::PromptGlyphs prompts(ctx->assets.fonts);
+    ui::TextRenderer::set_prompts(&prompts);
+    struct PromptsReset {   // before the Window (SDL_Quit) goes
+        ~PromptsReset() {
+            ui::TextRenderer::set_prompts(nullptr);
+            input_devices().shutdown();
+        }
+    } prompts_reset;
     if (!args.connect.empty()) {
         NetworkClientOptions options;
         options.endpoint = args.connect;
@@ -559,9 +647,9 @@ int run(int argc, char** argv) {
         direct_mp.level_bin = args.map;
         direct_mp.inputs[0] = args.inputs;
         direct_mp.options.enabled = true;
-        direct_mp.options.humans = int(nf::kMpMaxHumans);
+        direct_mp.options.humans = args.local_players;
         if (!server_info.empty()) {
-            direct_mp.options.bots = server_info.front().bots;
+            direct_mp.options.bots = 0; // The server snapshot owns every remote bot.
             direct_mp.options.rules = server_info.front().slot_count == 10 ? nf::MpRuleSet::GcXbox :
                                       server_info.front().slot_count == 16 ? nf::MpRuleSet::Extended :
                                                                            nf::MpRuleSet::Ps2;
@@ -673,10 +761,14 @@ int run(int argc, char** argv) {
         if (pending_level == 0) {
             FrontendResult result;
             const std::string menu_press = args.press, menu_shot = args.shot;
+            // --press ... --frames N: a split-screen match the replay starts runs N ticks and takes the shot.
+            const bool headless_match = args.frames >= 0 && !args.press.empty();
             const bool frontend_live = run_frontend(*ctx, window, ui, text, cfg, menu_audio_ptr,
-                                                     args.press, args.shot, args.first_page, result);
+                                                     args.press, args.shot, args.first_page, result, headless_match);
             if (!frontend_live && result.action != FrontendResult::Action::StartOnlineJoin &&
-                result.action != FrontendResult::Action::StartListenServer) {
+                result.action != FrontendResult::Action::StartListenServer &&
+                result.action != FrontendResult::Action::OpenSettings &&
+                !(headless_match && result.action == FrontendResult::Action::StartMultiplayer)) {
                 if (!args.press.empty() || !args.shot.empty()) return 0;  // headless menu run done
                 if (result.action == FrontendResult::Action::Quit) return 0;
                 return 0;
@@ -685,9 +777,15 @@ int run(int argc, char** argv) {
             args.first_page.reset();
             args.shot.clear();
             if (result.action == FrontendResult::Action::Quit) return 0;
+            if (result.action == FrontendResult::Action::OpenSettings) {
+                run_settings(*ctx, window, ui, text, cfg, menu_audio_ptr, menu_press, menu_shot);
+                if (!frontend_live) return 0;
+                args.first_page = 0x40000002;   // back on the main menu
+                continue;
+            }
             if (result.action == FrontendResult::Action::StartOnlineJoin) {
                 auto options =
-                    run_online_browser(*ctx, window, ui, text, menu_press, menu_shot, args.player_name,
+                    run_online_browser(*ctx, window, ui, text, cfg, menu_press, menu_shot, args.player_name,
                                        args.online_master);
                 if (!options) {
                     if (!frontend_live) return 0;
@@ -705,9 +803,9 @@ int run(int argc, char** argv) {
                     direct_mp.level_bin = map;
                     direct_mp.options.enabled = true;
                     direct_mp.options.mode = mode;
-                    direct_mp.options.humans = int(nf::kMpMaxHumans);
+                    direct_mp.options.humans = int(connection.local_players);
+                    direct_mp.options.bots = 0; // Network snapshots provide all remote actors, including bots.
                     if (!server_info.empty()) {
-                        direct_mp.options.bots = server_info.front().bots;
                         direct_mp.options.rules = server_info.front().slot_count == 10 ? nf::MpRuleSet::GcXbox :
                                                   server_info.front().slot_count == 16 ? nf::MpRuleSet::Extended :
                                                                                        nf::MpRuleSet::Ps2;
@@ -739,12 +837,14 @@ int run(int argc, char** argv) {
             if (result.action == FrontendResult::Action::StartListenServer && result.launch) {
                 MpDirect mp = MpSession::from_launch(*result.launch);
                 mp.options.enabled = true;
-                mp.options.humans = int(nf::kMpMaxHumans);
+                mp.options.humans = int(nf::kMpMaxLocalHumans);
                 if (args.host_time_limit > 0.0f) mp.options.time_limit = args.host_time_limit * 60.0f;
                 nf::net::ServerConfig server_config;
+                server_config.logic_hz = cfg.logic_hz;
                 server_config.data_dir = args.gamedir;
                 server_config.map = mp.level_bin;
                 server_config.match = mp.options;
+                server_config.match.humans = 0;
                 server_config.port = std::uint16_t(args.listen_port);
                 server_config.name = args.player_name;
                 server_config.password = args.password;
@@ -783,7 +883,7 @@ int run(int argc, char** argv) {
                     client_mp.level_bin = before.map;
                     client_mp.options = mp.options;
                     client_mp.options.mode = before.mode;
-                    client_mp.options.humans = int(nf::kMpMaxHumans);
+                    client_mp.options.humans = args.local_players;
                     nf::GameRng client_rng;
                     nf::ScopedGameRng client_rng_binding(client_rng);
                     NetworkSession network(*ctx, std::move(client_options));
@@ -836,6 +936,33 @@ int run(int argc, char** argv) {
                 }
             } else if (result.action == FrontendResult::Action::StartMultiplayer && result.launch) {
                 MpDirect mp = MpSession::from_launch(*result.launch);
+                mp.devices = result.slot_devices;
+                if (headless_match) {
+                    // Verification run: hold the --hold buttons on the virtual pads, play N ticks, shoot.
+                    for (std::size_t p = 0; p < args.hold.size();) {
+                        const std::size_t e = args.hold.find(',', p);
+                        const std::string tok = args.hold.substr(p, e == std::string::npos ? e : e - p);
+                        p = e == std::string::npos ? args.hold.size() : e + 1;
+                        const std::size_t colon = tok.find(':');
+                        if (tok.rfind("pad", 0) != 0 || colon == std::string::npos)
+                            throw std::runtime_error("--hold takes pad<N>:<buttons>");
+                        std::uint16_t buttons = 0;
+                        for (std::size_t q = colon + 1; q < tok.size();) {
+                            const std::size_t plus = tok.find('+', q);
+                            const std::string name = tok.substr(q, plus == std::string::npos ? plus : plus - q);
+                            q = plus == std::string::npos ? tok.size() : plus + 1;
+                            const auto it = kPressButtons.find(name);
+                            if (it == kPressButtons.end()) throw std::runtime_error("unknown button " + name);
+                            buttons |= it->second;
+                        }
+                        set_virtual_pad(std::size_t(std::atoi(tok.c_str() + 3)), buttons);
+                    }
+                    mp.frames = args.frames;
+                    mp.shot = menu_shot;
+                    MpSession session(*ctx, window, ui, text, mp, cfg);
+                    if (session.ready()) session.run_interactive();
+                    return 0;
+                }
                 while (true) {
                     MpSession session(*ctx, window, ui, text, mp, cfg);
                     if (!session.ready()) break;

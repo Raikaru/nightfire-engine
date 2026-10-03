@@ -72,12 +72,13 @@ void MpTraceSink::dump(const World& world, const ArenaSystem& arena, const Weapo
     if (!out_) return;
     const auto team_score = arena.team_score();
     const ArenaSettings& settings = arena.settings();
-    std::fprintf(out_, "{\"frame\":%llu,\"elapsed\":%.3f,\"total_elapsed\":%.3f,\"time_limit\":%.3f,"
+    std::fprintf(out_, "{\"frame\":%llu,\"timer_frame\":%llu,\"elapsed\":%.3f,\"total_elapsed\":%.3f,\"time_limit\":%.3f,"
                        "\"time_left\":%.3f,\"mode\":%u,\"map\":%u,\"score_limit\":%d,\"weapon_set\":%d,"
                        "\"state\":%d,\"state_code\":%d,\"teams\":[%.1f,%.1f],"
                        "\"assassin\":%d,\"target\":%d,\"golden_effect_ticks\":%.3f,\"golden_target\":%d,"
                        "\"rng\":[%u,%u]",
-                 static_cast<unsigned long long>(world.frame()), arena.elapsed(), arena.total_elapsed(),
+                 static_cast<unsigned long long>(world.frame()),
+                 static_cast<unsigned long long>(world.timer_frame()), arena.elapsed(), arena.total_elapsed(),
                  settings.time_limit, arena.time_left(), settings.mode, settings.level_id, settings.score_limit,
                  settings.weapon_set, int(arena.phase()), arena.state_code(), team_score[0], team_score[1],
                  arena.assassin().value_or(-1), arena.target().value_or(-1), arena.golden_effect_ticks(),
@@ -99,10 +100,8 @@ void MpTraceSink::dump(const World& world, const ArenaSystem& arena, const Weapo
     std::fprintf(out_, "]");
     std::fprintf(out_, ",\"pl\":[");
     for (int s = 0; s < 8; ++s) {
-        const drone::Drone* botdrone = nullptr;
-        if (s >= 4 && bots) {
-            if (bots::BotSystem::Bot* b = bots->bot_at_slot(s)) botdrone = b->drone;
-        }
+        bots::BotSystem::Bot* bot = s >= 4 && bots ? bots->bot_at_slot(s) : nullptr;
+        const drone::Drone* botdrone = bot ? bot->drone : nullptr;
         const bool out = arena.participant_out(s);
         const unsigned type = s >= 4 ? (out ? 0x11u : 2u) : (out ? 0x12u : 3u);
         const Player* p = s < 4 ? world.player(s) : nullptr;
@@ -111,13 +110,27 @@ void MpTraceSink::dump(const World& world, const ArenaSystem& arena, const Weapo
             continue;
         }
         if (botdrone) {
+            int active_goal = -1;
+            int goal_type = -1;
+            int goal_kind = -1;
+            int goal_target = -1;
+            if (bot && bot->brain) {
+                active_goal = bot->brain->active_goal();
+                if (active_goal >= 0 && active_goal < int(bot->brain->v.goal.size())) {
+                    const bots::BotGoal& goal = bot->brain->v.goal[std::size_t(active_goal)];
+                    goal_type = goal.type;
+                    goal_kind = goal.kind;
+                    goal_target = goal.target;
+                }
+            }
             std::fprintf(out_, "%s{\"pos\":[%.4f,%.4f,%.4f],\"yaw\":%.6f,\"type\":%u,\"hp\":%.3f,\"arm\":0.0,"
                                "\"weap\":%d,\"alive\":%s,\"mp_status\":%u,\"dead\":%s,\"out\":%s,"
-                               "\"state\":%d,\"vel\":[%.5f,%.5f,%.5f],\"fall_vel\":[%.5f,%.5f,%.5f]}",
+                               "\"state\":%d,\"active_goal\":%d,\"goal_type\":%d,\"goal_kind\":%d,"
+                               "\"goal_target\":%d,\"vel\":[%.5f,%.5f,%.5f],\"fall_vel\":[%.5f,%.5f,%.5f]}",
                          s ? "," : "", botdrone->pos[0], botdrone->pos[1], botdrone->pos[2], botdrone->yaw,
                          type, botdrone->health, botdrone->weapon, botdrone->health > 0.0f ? "true" : "false",
                          static_cast<unsigned>(arena.status(s)), arena.dead(s) ? "true" : "false",
-                         out ? "true" : "false", botdrone->state(),
+                         out ? "true" : "false", botdrone->state(), active_goal, goal_type, goal_kind, goal_target,
                          botdrone->velocity[0], botdrone->velocity[1], botdrone->velocity[2],
                          botdrone->fall_velocity[0], botdrone->fall_velocity[1], botdrone->fall_velocity[2]);
         } else {
@@ -204,6 +217,10 @@ void MpTraceSink::dump(const World& world, const ArenaSystem& arena, const Weapo
         if (pickup.dynamic)
             std::fprintf(out_, ",\"amount\":%d,\"radar_hidden\":%s", pickup.amount,
                          pickup.radar_hidden ? "true" : "false");
+        std::fprintf(out_, ",\"visit_until\":[");
+        for (std::size_t k = 0; k < kMpPs2Slots - kMpMaxLocalHumans; ++k)
+            std::fprintf(out_, "%s%.6f", k ? "," : "", pickup.visit_until[k]);
+        std::fprintf(out_, "]");
         std::fputc('}', out_);
         first = false;
     }

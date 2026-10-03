@@ -6,7 +6,7 @@ Everything in `src/game/` (`nf_game`, executable `nfgame`). Function names are A
 | File | Role |
 |------|------|
 | `input.hpp` | `PadState` / `PadInputs`: the controller contract (unchanged) |
-| `actions.{hpp,cpp}` | `psiInput_PollDevices` dead zone, `psiInput_MapInputs` (style 7) and `Input_Update` -> `ActionInput` |
+| `actions.{hpp,cpp}` | `psiInput_PollDevices` dead zone, `psiInput_MapInputs` (all controller styles) and `Input_Update` -> `ActionInput` |
 | `collision_world.{hpp,cpp}` | `Collide_*` / `Intersect_*` (section "Collision" below) |
 | `player.{hpp,cpp}` | `Player_Update` walk/crouch path, `Player_Move`, `Player_HandleJump`, `Player_Aiming`, `Player_Collision`, `Player_CollisionHandler`, camera |
 | `player_health.{hpp,cpp}`, `damage.{hpp,cpp}` | `Player_HandlePain` / `Player_Hurt`, fall damage, `Player_CheckForDeath` / `Player_HandleDeath`, enable / disable, respawn hook (section "Health, damage and death") |
@@ -15,12 +15,13 @@ Everything in `src/game/` (`nf_game`, executable `nfgame`). Function names are A
 
 ## Frame timing
 
-The original re-measures its frame rate every main-loop iteration (`main`: `GS_SetRefreshRate(iGpffff808c /
-iGpffff809c)`, i.e. 60 / vsyncs-per-logic-frame, so 60, 30, 20 ...) and derives `FRAME_RATE`,
-`FRAME_RATE_MUL = 60 / FRAME_RATE` (scales per-frame quantities: walk speed, turn rate, jump delay) and
-`REC_FRAME_RATE = 1 / FRAME_RATE` (scales per-second quantities: gravity, `fall velocity * dt`). `FrameTiming`
-carries that; `World::tick(pads)` uses 30 Hz (`kTickHz`), oracle replays pass the recorded rate per frame.
-Physics is therefore frame-rate independent in *time*, not bit-identical between rates.
+`FrameTiming` carries the original's four values: `FRAME_RATE` is logic ticks per second,
+`FRAME_RATE_MUL = 60 / FRAME_RATE` scales quantities authored per 60-Hz frame, `REC_FRAME_RATE =
+1 / FRAME_RATE` scales per-second quantities, and `FRAME_RATE_INT` is the integer tick rate.
+The original derives these from `GS_SetRefreshRate(60 / vblanksPerFrame)` each frame. Rewritten SP
+and MP default to a deterministic 60-Hz logic step; `--logic-hz 30` selects the compatibility step.
+Oracle replay consumes each frame's recorded rate, independently of the local fixed-rate setting.
+Driving missions retain their separate 60-Hz vehicle simulation.
 
 ## Input
 
@@ -30,10 +31,12 @@ samples with `compensate_sticks`; traces recorded from PCSX2 already contain the
 button word is `PadState::buttons` (bit 0 = Select ... bit 15 = Square, the byte-swapped Sony libpad word the
 game keeps at `tSlot+0x122`; `sony_pad_word` converts).
 
-`ActionInput::update` = `Input_Update` for one player: `psiInput_MapInputs` fills 40 action floats (controller
-style 7, the default, the only one implemented), `StickCompensation2` (radial response curve
-`gAnalogStickMappingFunction`, read from ACTION.ELF) is applied to the pairs (look X, look Y) and (turn, pitch),
-`StickCompensation3` snaps (strafe, forward) to full deflection past 0.707, the invert option negates the two
+`ActionInput::update` = `Input_Update` for one player: `psiInput_MapInputs` (`map_inputs`) fills 40 action floats
+for the player's controller style (`PlayerSettings::controller_style`, PlayerSetting+0xE: all eight styles, 7 =
+Classic Bond the default; checked bit-exact by `nfmips diff-input`, docs/ui.md "Button prompts"),
+`StickCompensation2` (radial response curve `gAnalogStickMappingFunction`, read from ACTION.ELF) is applied to the
+pairs (look X, look Y) and (turn, pitch), `StickCompensation3` snaps (strafe, forward) to full deflection past 0.707
+(styles 2 and 5: only (look X, look Y) is shaped and (turn, forward) snapped), the invert option negates the two
 look axes, values clamp to [-1, 1] and per-action flag bytes are derived: 1 = held, 4 = pressed this frame
 (the flag byte was 0), 8 = auto-repeat pulse every 8th frame after 46 held frames. `Input_Action(p, a, 4)` is
 `pressed(a)`, `(p, a, 1)` is `held(a)`, `Input_Actionf` is `actionf(a)`.
@@ -104,10 +107,11 @@ Spawn (`Player_Start` / `Player_Init` / `Player_StandAtNewPosition`): the marker
 appears at the marker facing euler.y, probes down 3.0 from marker + 0.1 (`build_PointOnFloor`) and stands 1.1
 above the floor. `find_spawn_points` lists single-player markers first.
 
-## nfgame
+## Single-player gameplay (`nfgame` and `nightfire`)
 
 ```
-nfgame <gamedir> [level.bin] [--coll] [--shot out.bmp] [--frames N] [--inputs file [--sync]] [--trace out.jsonl]
+nightfire <gamedir> [--mission level.bin] [--mp ...] [--logic-hz 30|60] [--drive name]
+         [--frames N] [--shot out.bmp] [--inputs file] [--press ...]
 ```
 
 | Device | Mapping |
@@ -116,9 +120,11 @@ nfgame <gamedir> [level.bin] [--coll] [--shot out.bmp] [--frames N] [--inputs fi
 | mouse | click to capture; motion -> yaw/pitch stick deflection (4 stick units per pixel per tick, bypasses the dead zone); Esc releases, then quits |
 | gamepad (SDL) | left stick walk/strafe, right stick turn/look (the DS2 default puts strafe and turn on different sticks; nfgame swaps X so it behaves like a modern shooter), A = jump, B or left trigger = crouch, right trigger = Cross, X/Y = Square/Circle, bumpers L1/R1, D-pad, Start, Back = Select |
 
-The simulation runs at 30 Hz with the render camera interpolated between ticks. `--shot` runs the scripted frames
-(`--frames` or `--inputs`), renders once and writes a BMP (no window shown). With `--trace` and (`--inputs` or
-`--frames`) no window is created at all. `--inputs` text format (`tools/oracle/compare.py make-inputs` writes it):
+The simulation advances at 60 Hz by default; `--logic-hz 30` selects a fixed 30-Hz step for comparison.
+Interactive rendering is independent of the fixed logic step and camera views interpolate between ticks.
+`--shot` runs scripted frames (`--frames` or `--inputs`), renders once and writes a BMP (no window shown).
+With `--trace` and (`--inputs` or `--frames`) no window is created at all. `--inputs` text format
+(`tools/oracle/compare.py make-inputs` writes it):
 `start x y z yaw pitch ground_normal_y`, then per frame `frame sony_word_hex rx ry lx ly frame_rate [foot_height
 [x y z]]`; `--sync` re-seats the player at the recorded position before every frame. The trace has one JSON
 object per frame in the schema of `tools/oracle/trace.py` (`frame`, `pos`, `yaw`, `pad`, `act`, `flg`) plus
@@ -164,22 +170,21 @@ Espionage, GoldenEye Strike, Assassination and Top Agent (elimination + 5 s hold
 `PickupField` (MPpickups + Pickup_Create / Pickup_Update / Pickup_Handler) builds one level's pickups from the map
 statics (placement type 240) and the match's PickupMatrix row (row 10 rebuilt randomly per match): weapons (2 clips),
 ammo, armour (to 50), health and bonus items, bobbing/spinning as the original, respawn after `10 * x` s
-(`300 * x + 1` frames at 30 Hz). Objective objects (flags, hill, uplinks, targets, blueprints, GoldenEye items) are
-`MpObjective`s drawn from their placements and simulated per mode in `arena_modes.cpp`.
+(`10 * x * FRAME_RATE_INT + 1` frames). Objective objects (flags, hill, uplinks, targets, blueprints,
+GoldenEye items) are `MpObjective`s drawn from their placements and simulated per mode in `arena_modes.cpp`.
 
 `nfgame --mp [--mode NAME] [--players 1..4] [--ruleset ps2|gc-xbox|extended] [--bots 0..12] [--frag-limit N] [--time-limit MIN]
 [--weapons 0..10] [--spawn near|far|random] [--handicap N] [--split-vertical] [--bot-char a,b,c] [--cam ... | --follow-bot N]` runs a
 match on an arena map with 1..4 local players in split screen (Camera_CreateCameras layouts: top/bottom for 2,
 2+1 and 2x2; `--split-vertical` puts 2 players side by side) on additional gamepads, plus MP-drone bots via
-`BotMatch` (the Bots slice; bots are drones, not Players). The default `ps2` ruleset preserves the PS2 limit of four bots;
-`gc-xbox` permits six bots and `extended` permits twelve, for a maximum of 16 combatants. Higher bot counts use the same
-BotBrain and 30 Hz simulation, but their additional perception/visit state is a rewrite extension, not original game behavior.
+`gc-xbox` permits six bots and `extended` permits twelve, for a maximum of 16 combatants. Higher bot counts use
+the same BotBrain, with 60-Hz logic by default (`--logic-hz 30` for comparison); their additional perception/visit
+state is a rewrite extension, not original game behavior.
 `--frames N` + `--inputs*` + `--shot` work as in single-player for scripted verification. The interactive `nightfire --mp`
 capture path also applies an optional `start x y z yaw [pitch [ground_normal_y]]` record before simulation, allowing pose-matched shots.
 Humans are `HumanBody`s (Player movement + WeaponSystem combat);
 `ArenaSession` owns World + WeaponSystem + ArenaSystem and routes each frame's messages/sounds.
-The playable MP renderer advances level texture animation from its 30 Hz logic frame and `WeatherRenderer`
-(rain/snow and placed class-0xF2 emitters), passing world switch-channel state to gated emitters. The
+The playable MP renderer advances level texture animation from its logic frame and `WeatherRenderer`
 `nfgame --mp` preview uses the same weather path; scripted `--shot` captures create the render context before
 simulation so weather is aged through the replay.
 

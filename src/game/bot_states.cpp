@@ -304,7 +304,7 @@ int state_guard_idle(Drone& d, const Msg& m) {
             go(d, st::kIdle);
             return 1;
         }
-        const OtherInfo& o = b.v.other[std::size_t(f)];
+        const OtherInfo& o = b.v.other_info(f);
         if ((o.flags & otherflag::kValid) && o.sq_dist > 20.25f) go(d, st::kGuardFriendFollow);
         return 1;
     }
@@ -342,7 +342,7 @@ int state_guard_follow(Drone& d, const Msg& m) {
             return 1;
         }
         if (r != moveres::kArrived) return 1;
-        const OtherInfo& o = v.other[std::size_t(f)];
+        const OtherInfo& o = v.other_info(f);
         if (!(o.flags & otherflag::kValid) || o.sq_dist <= 20.25f) {
             go(d, st::kGuardFriendIdle);
             return 1;
@@ -978,7 +978,7 @@ int global_tick(Drone& d, BotBrain& b) {
     }
     // Samedi: aware of anyone he can see.
     if (!(d.sight_flags & sight::kSeen) && v.has_flag(botflag::kAware) && b.has_opponent() &&
-        (v.other[std::size_t(b.opponent())].flags & 6) == 6)
+        (v.other_info(b.opponent()).flags & 6) == 6)
         d.sight_flags |= sight::kSeen;
     // Samedi: +5 health each second up to the starting health.
     if (v.has_flag(botflag::kRegen) && b.env->tick() >= v.next_regen) {
@@ -1150,7 +1150,7 @@ void BotBrain::update_opponent_tracking() {
     const float bearing = std::atan2(delta[0], delta[2]);
     self->opp_bearing = bearing;
     self->opp_facing_b = wrap_pi(bearing - self->yaw);
-    const bool visible = (v.other[std::size_t(opponent_slot_)].flags & otherflag::kVisible) != 0;
+    const bool visible = (v.other_info(opponent_slot_).flags & otherflag::kVisible) != 0;
     self->opp_visible = visible;
     if (visible) {
         self->lost_frames = 0;

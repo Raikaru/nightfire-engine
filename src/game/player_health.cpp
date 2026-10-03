@@ -132,7 +132,7 @@ void Player::update_dead(FrameTiming timing) {
 
 bool Player::respawn_due() const {
     return params_.health.damage.mode == GameMode::Multiplayer && life == LifeState::Dead &&
-           death_frames_ >= kRespawnSeconds * int(timing_.rate);
+           death_frames_ >= kRespawnSeconds * timing_.FRAME_RATE_INT;
 }
 
 void Player::step_dead_body(FrameTiming timing) {

@@ -171,7 +171,7 @@ void Player::set_substate(SubState s, FrameTiming timing) {
     substate = s;
     if (matrix_driven() && !was_matrix_driven) body_ = yaw_basis(yaw);   // Player_ChangeSubState sets obj+0xFA bit 2
     if ((previous == SubState::Walk && s == SubState::Crouch) || (previous == SubState::Crouch && s == SubState::Walk))
-        crouch_timer_ = std::uint8_t(int(timing.rate));  // PlayerAnimStand2Crouch / Crouch2Stand
+        crouch_timer_ = std::uint8_t(timing.FRAME_RATE_INT);  // PlayerAnimStand2Crouch / Crouch2Stand
 }
 
 void Player::move(const ActionInput& input, FrameTiming timing, float speed_scale) {

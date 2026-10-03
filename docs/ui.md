@@ -14,6 +14,8 @@ stretch back out, uses the entire window by default, and offers `Renderer::set_p
 4:3 canvas. `nightfire.cfg` persists this choice as `pillarbox=0|1` (default 0). Game cameras use the window aspect with
 a fixed vertical FOV unless pillarboxing is enabled; split-screen viewports are divided inside that selected game
 viewport. PSS frames preserve the original 512x448-to-4:3 pixel aspect and are fitted inside a cleared full-window background.
+On the HUD the four damage-edge flashes (Health pane sprites 20..23, MP 4..7) cover the whole view: they ignore the
+Health pane's edge anchor and are stretched about the canvas centre to its full width (unchanged at 4:3).
 
 ## Multiplayer setup model
 
@@ -380,3 +382,168 @@ Known gaps: the `P_CNCONTROLS` per-style button diagram keeps the script's `"1"`
 `Menu_DisplayControllerStyle`'s label map behind an unrecovered jumptable); the `P_ENDMISSION` portrait sprite
 `0x030000db` decodes garbled (needs a sprites-side look); `TWEAKS` tuning values and the `C_NIS` list stay
 script-side (live game globals / raw script pointers).
+
+## Original art, Settings screen, Extended HUD and accessibility
+
+Everything below is engine-made: no disc art is redrawn, traced or shipped, and none of it shows a 007 logo or a
+likeness. The sheets are drawn in code by `tools/art/<sheet>.py` (Python 3 + Pillow, deterministic) into
+`assets/ui/<sheet>.png` + `<sheet>.txt` (`name x y w h` texels) and compiled into `nf_ui`
+(`ui::art_sprite(sheet, name)`, `src/ui/art_sheet.*`). `tools/art/style.py` holds the shared look, measured from the
+game: the label / item colours (0x7D6D59 / 0x73330F on the GS scale), the agent panel's translucent black, the
+charcoal glyph bodies and gold D-pad of texture 0x03000075, a 1-texel light-top/dark-bottom bevel and a soft dark
+rim, and a 4x7 badge font. Art is drawn one texel per canvas unit, widened by 7.5/7 so texels stay square.
+
+| Sheet | Script | Contents |
+|---|---|---|
+| `online` | `tools/art/online.py` | `ping_0..4` signal bars, `lock`, `source_lan` / `source_master` / `source_favourite`, rule-set badges `badge_ps2` / `badge_gcxbox` / `badge_extended`, `modified` (gear), `chat`, `spinner_0..11` |
+| `settings` | `tools/art/settings.py` | category icons `graphics`, `widescreen`, `texture_packs`, `audio`, `accessibility` on glyph-style discs |
+| `mphud` | `tools/art/mphud.py` | radar `marker_dot` / `marker_ring` (participant), `marker_triangle` (Phoenix) / `marker_square` (MI6) / `marker_self`, colour chips `swatch` / `swatch_hollow`, 9-slice `plate`, kill-feed `kill_arrow` / `kill_self`, `bot_tag` |
+| `access` | `tools/art/access.py` | `crosshair_cross`, `crosshair_dot`, `crosshair_ring`, `crosshair_chevron` (white, tinted like the game crosshair) |
+| `prompts` | `tools/art/prompts.py` (+ `pixel_font.py`) | button prompts (see "Button prompts" below): keycaps `key_<a..z, 0..9, f1..f12, return, escape, space, tab, backspace, lshift, lctrl, lalt, capslock, insert, delete, home, end, pageup, pagedown, up, down, left, right, kp_*, punctuation>`, clusters `key_updown` / `key_leftright` / `key_arrows` / `key_wasd`, mouse `mouse_left/right/middle/x1/x2/wheel/wheel_up/wheel_down/move`, pad `pad_a/b/x/y`, `pad_lb/rb/lt/rt/ls/rs/view/menu`, `dpad_up/down/left/right/updown/leftright/all`, controls-page pictures `diagram_keyboard` / `diagram_pad` |
+
+**Server browser** (`src/app/online_browser.cpp`, `docs/net.md`). Each row starts with where the server was found
+(LAN, master list, favourite star) and a lock for password servers; RULES shows the rule-set badge from the
+advertised slot count (8 PS2, 10 GC/Xbox, 16 Extended) plus the gear when `modified_rules` is set; PING has four
+bars (< 50, 100, 150, 250 ms). **R1** (keyboard **F**) adds or removes the selected server from the favourites
+(`favourite_server=` lines in `nightfire.cfg`), which are queried directly on every search. Discovery runs on a
+worker thread, so the list keeps drawing: an empty list shows the large spinner and "Searching for servers", a
+refresh over a filled list a small spinner in the title strip. Choosing a server shows the Connecting page (same
+spinner) while the session opens. `MenuChrome::spinner` is the shared busy animation for later network waits.
+
+**Settings screen** (`src/app/settings_screen.*`, main menu **Square**; the prompt row names it). Pages Graphics
+(display mode, V-Sync), Widescreen (native widescreen / original 4:3 pillarbox), Audio (music and effects volume,
+speakers) and Accessibility, drawn with `MenuChrome` in the Join Game style: category list with icons, the
+settings panel with the original radio arrows (skin set 3 component 6) and a ten-segment volume meter, the
+description box and the glyph prompt row. Changes apply at once (`apply_settings`) and are saved when the screen
+closes. Scripted runs use `set-up`, `set-down`, `set-left`, `set-right`, `set-cross` and `set-circle` in `--press`.
+There is no Texture Packs page: the engine has no texture-pack loader yet, so only its icon exists.
+
+**Accessibility** (all off by default; `nightfire.cfg` `crosshair_style`, `high_contrast`, `colorblind_teams`;
+`--crosshair N`, `--high-contrast`, `--colorblind-teams` override for one run). `ui::accessibility()`
+(`src/ui/accessibility.*`) is read at draw time:
+
+- Crosshair: Original keeps the weapon's HUDCrossCoords sprite; Cross / Dot / Ring / Chevron draw the `access` sheet
+  shape at the same position in the game crosshair's colour (red, green in night vision). Scopes are unchanged.
+- High contrast: HUD text sprites get a dark plate, near-white colour and a solid outline; the button-prompt rows of
+  script pages (text with `~` escapes on the y 419 row) and of `MenuChrome` pages get the same plate.
+- Team colours: the two team colour words of the arena blips, score pane and radar name tags map to Okabe-Ito
+  orange / sky blue (`ui::remap_team_word`), and team blips carry a triangle (Phoenix) or square (MI6) marker. The
+  same option switches the Extended per-player colours to the colour-blind set (below).
+
+**Extended multiplayer HUD** (16-slot rule set, up to 16 human players online; `HudConfig::slot_count`,
+`src/ui/hud_overlay.*`). Every participant has a colour by global slot (`ui::player_color`): 16 distinct hues
+readable on the dark plates, or with the colour-blind option the eight Okabe-Ito colours where slots 8..15 repeat
+them with a hollow shape (`ui::player_hollow`: `marker_ring`, `swatch_hollow`). Duplicate names and characters are
+told apart by colour and rank. The colour appears on the participant's radar marker (`Hud`, from `HudBlip::slot`),
+name tag chip, kill-feed names and scoreboard chip; team games use the team colour and shape instead.
+`HudOverlay` draws over `Hud` per local viewer (`viewer_slot` is the global slot) from the scoreboard
+(`ArenaSystem::scoreboard`, or the network snapshot's kills/deaths): radar room for 16 participants, name tags on
+plates instead of the bare radar names, a kill feed (top right, below the radar: killer, round icon, victim;
+suicides a crossed circle; five rows, five seconds each) derived from per-tick score changes, and a 16-row
+scoreboard while **Select** is held (rank, colour chip, team marker, name, BOT tag, kills, deaths, score; the
+viewer's row on the selection gradient). P_MPDEBRIEFING shows the original four columns for up to four agents;
+more (GC/Xbox, Extended) hides the columns and row captions and draws a ranked table in their place
+(`Frontend::Impl::draw_debrief_table`: rank, colour chip, name, BOT tag, character, then the page's own captions
+Points / Victories / Deaths / TOTAL), keeping the banner box and prompts. Network chat lines received in a match
+appear bottom-left with the `chat` icon in every rule set. The PS2 and GC/Xbox HUDs draw the game's HUD unchanged.
+
+With every option off, the PS2 HUD is pixel-identical to a build without these hooks: the same headless
+`--mp 07000024.bin --bots 3 --frames 600 --shot` capture (Arena and Team Arena, 1920x1080) compared with
+`magick compare -metric AE` gave 0 differing pixels. The captures below are 1920x1080 runs: the browser against
+four local servers (LAN PS2, master-listed GC/Xbox with a password and a raised frag limit, master-listed Extended,
+a favourite reached only by direct query), the Settings pages through `set-*` presses, and `--mp --ruleset extended`
+matches (12 bots or 4 split-screen humans + 12 bots; Select held through `--inputs` for the scoreboard).
+
+![Server browser icons, searching, connecting and chat](ui-art-online.png)
+
+![Settings: Graphics, Audio, Accessibility, high-contrast prompts](ui-art-settings.png)
+
+![Extended HUD: scoreboard, kill feed and name tags, 16 participants, colour-blind set, debriefing table](ui-art-extended.png)
+
+![Default PS2 HUD, high contrast with the Cross crosshair, colour-blind teams with the Ring crosshair](ui-art-accessibility.png)
+
+## Button prompts (`src/ui/input_devices.*`, `src/ui/prompts.*`)
+
+The game's strings name DualShock 2 buttons with `~X` escapes (`specialchar`: `A` cross, `B` triangle, `X` circle,
+`Y` square, `L`/`R` L1/R1, `C`/`D` L2/R2, `S` start, `T` select, `V` up/down, `H` left/right, `W` D-pad, `F`/`E`
+left/right stick; `I`/`J` are a dot and a tick). Every `ui::TextRenderer` resolves them through the active
+`ui::PromptGlyphs` (`TextRenderer::set_prompts`), so every prompt row, memo, list, HUD message and `MenuChrome`
+screen follows the player's device without per-screen code:
+
+    escape -> DualShock button -> InputBindings (context) -> the input the player presses -> glyph
+
+- **Devices** (`InputDevices`, `input_devices()`): an SDL event watch records each local player's last used
+  device: keyboard/mouse, an Xbox-style pad, or a PlayStation pad (`SDL_GetGamepadType` PS3/PS4/PS5). Any key,
+  mouse button, wheel or real mouse motion, gamepad button or stick/trigger past half switches the glyphs on the
+  next drawn frame. Without slot assignments every device drives player 0 (front end, single player); split-screen
+  sessions assign each `LocalPad`'s devices to its player (`InputDevices::assign`), and the P_MPJOIN page previews
+  which device each open slot would take. At start-up player 0 shows the first connected gamepad, else keyboard.
+- **Bindings** (`InputBindings`, `input_bindings()`): per context, which keys / mouse buttons / gamepad controls
+  press which DualShock button. The samplers of every screen read the same table (front end and pause menus,
+  `LocalPad` on foot, driving, the online browser), so a rebinding changes the input and the prompt together.
+  Contexts and defaults:
+
+  | context | keyboard / mouse | gamepad |
+  |---|---|---|
+  | `menu` | arrows; Enter/Z cross, X circle, A square, S triangle, Space start, Backspace select, Q/E L1/R1 | D-pad; face buttons by position (south cross, east circle, west square, north triangle), Start, Back, LB/RB L1/R1 |
+  | `browser` | arrows; Enter/keypad Enter/X cross, Esc/C circle, T/Backspace triangle, S square, F R1 | as `menu`, RB R1 |
+  | `onfoot` | Space triangle (jump), C/LCtrl L2 (crouch), R cross (use/reload), Tab square, E circle, Q left, wheel up/down up/R2, left/right mouse R1/L1 (fire/aim), N select (vision); W/S/A/D move and the mouse looks (fixed) | positional DualShock 2: south cross, east circle, west square, north triangle, LB/RB L1/R1, LT/RT L2/R2, stick clicks L3/R3, D-pad, Start, Back select; left stick lx/ly, right stick rx/ry. The controller style (Classic Bond by default) maps them to actions as on the PS2 |
+  | `driving` | W/Up cross, S/Down square, Space circle, C triangle, Q L2; A/D steer (fixed) | positional, as `onfoot`; left stick steers |
+
+  `nightfire.cfg` holds the whole table and is read back on start: `bind_<context>_<button>=Return,Z,Mouse
+  Left,Wheel Up` (SDL key names) and `pad_<context>_<button>=a,leftshoulder,lefttrigger` (SDL gamepad names), with
+  buttons `cross circle square triangle up down left right start select l1 l2 r1 r2 l3 r3`; an empty value unbinds.
+  The sessions' Esc pause is a key event, not a binding; prompts show `ESC` for start on foot. Gamepads are read
+  positionally, so a PlayStation or Xbox pad plays the PS2 layout of the player's controller style.
+- **Controller styles** (`PlayerSettings::controller_style`, PlayerSetting+0xE): `nf::map_inputs` is
+  `psiInput_MapInputs` for all eight styles (0 NightFire, 1 Moonraker, 2 Octopussy, 3 Goldfinger, 4 Dr. No,
+  5 Thunderball, 6 GoldenEye, 7 Classic Bond, the default), translated from the decomp's per-style switch, and
+  `ActionInput::update` is `Input_Update` with its style-dependent stick shaping (Octopussy and Thunderball snap
+  turn/forward and leave the pitch axis unshaped) and the style-independent Y inversion of the two look axes.
+  `nfmips <elf> diff-input` runs the original on every button word (random sticks) plus stick extremes for each
+  style and two players and compares all 40 action floats bit for bit: 0 mismatches. The style is per player: player
+  1's is the active profile's (P_CNCONTROLS, the pause CONTROLS tab; saved in `nightfire.cfg` and the profile), the
+  other split-screen players start on Classic Bond and set theirs in their own pause menu (the pause belongs to the
+  player whose start button opened it). The pause CONTROLS list and the HUD context hint follow the style
+  (`ui::action_button(action, style)` asks `map_inputs` which button sets the action).
+- **Resolution** (`PromptGlyphs::find`): the first binding of the device family in the draw site's context
+  (`ui::select_prompts(player, context, text_entry)` before each draw). PlayStation pads get the original glyph of
+  the bound pad button (`specialchar`, so a remapped pad shows the button it really is); Xbox-style pads get the
+  `prompts` sheet's `pad_*` / `dpad_*` art, face letters from `SDL_GetGamepadButtonLabelForType`; keyboard/mouse get
+  keycaps and mouse glyphs (V/H/W show the arrow pair or cluster, or the wheel; sticks show `key_wasd` and
+  `mouse_move`). Unbound buttons keep the original glyph. Two engine escapes extend the original set: `~x`
+  (lowercase) is the same button bound for gameplay whatever the screen (the pause CONTROLS list, the controls
+  diagram, HUD hints), and `~<n>X` draws it for local player n's device (the join slots). Text-entry screens
+  (address/password keyboards) skip keys that type text, so Back shows `ESC` and Erase `BACKSPACE`.
+- **Art** (`tools/art/prompts.py`, `prompts` sheet): drawn to the measurements of texture 0x03000075: 19x19
+  charcoal face discs lit from the top right (Xbox-style: a generic disc with a 2-texel coloured A/B/X/Y), 13-texel
+  plates and keycaps with the L1/R1 bevel (light top/right edge, dark left/bottom edge, a shadow row) and bold white
+  lettering with a grey left edge (wide keys spell their name in a 3x5 font), the D-pad gold for D-pad arms and
+  mouse buttons. The engine's glyphs advance by their drawn width (the original icons do not scale their advance).
+- **Pages**: P_CNCONTROLS draws the device's picture (the original DualShock picture, or `diagram_keyboard` /
+  `diagram_pad`) narrowed between the label columns, with each label row's bound glyph in a lane beside it;
+  the pause CONTROLS list uses gameplay escapes; the HUD's ThirdIcon context icon (now fed from
+  `Player::icon_context`, BLData+0x95F) gets its action's button beside it (icon 3 jump onto the wire, icon 6 hug
+  the wall = use).
+- **Multiplayer join** (P_MPJOIN, `app::FrontendPads`): every connected device (keyboard + mouse, each gamepad)
+  drives the front end until the join page; there a device that is not yet in a slot claims the lowest free slot
+  with Cross (Enter), so keyboard and gamepads join in any order. An open slot reads "Press `~A` to join" with the
+  glyph of the device that would take it, or "Connect a controller to join" when no device is left (the PS2 text
+  named controller ports and the multitap). The claims ride `FrontendResult::slot_devices` into the split-screen
+  session (`MpDirect::devices`, `open_local_pads(slots, players)`); back at the main menu every device drives
+  slot 0 again.
+
+Verification: `--prompts ps|xbox|keyboard` (nightfire and nfui) fixes the glyph set for captures;
+`nightfire --virtual-pads xbox,ps` attaches SDL virtual gamepads that `--press` drives with `pad<N>:<buttons>`
+tokens (`kb:<buttons>` presses through the keyboard bindings), e.g. P_MPJOIN with one keyboard and two gamepads:
+`--virtual-pads xbox,ps --page 0x40000002 --press wait60,down,cross,wait20,cross,wait40,kb:cross,wait20,pad0:cross,wait20,pad1:cross,wait30`.
+The main menu, P_MPSCENARIO, the server browser and address keyboard, the pause page and its CONTROLS tab,
+P_CNCONTROLS and the HUD context hint were captured at 1920x1080 with each glyph set and inspected.
+With `--frames N` a `--press` replay that starts a split-screen match plays it for N ticks and takes the shot there,
+and `--hold pad<N>:<buttons>` keeps virtual pad buttons held during the match: joining keyboard + Xbox + PlayStation
+pads, then Quick Game with `--hold pad0:r1,pad1:l1`, logs each local player's device (`local player 2: Virtual
+Xbox pad (Xbox glyphs)`) and shows player 2 firing (RB = R1) and player 3 aiming (LB = L1) while player 1 stands.
+With `HOME` pointing at a `nightfire.cfg` holding `controller_style=6`, player 1 (a pad) strafes instead of firing on
+the same held RB (GoldenEye), while player 2 keeps Classic Bond. `--hold pad1:start` opens player 2's pause
+menu (the multiplayer pause now uses the level's menu script, where P_PAUSE lives); in verification runs it is
+shot after three seconds and the run ends, showing that player's device glyphs.
