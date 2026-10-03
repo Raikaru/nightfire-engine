@@ -40,10 +40,18 @@ struct AppConfig {
     bool manual_aim = false;
     bool weapon_auto_switch = false;
     bool hud_always_on = false;
-    // Display (P_CNAVOPTIONS speaker/widescreen + screen adjust).
+    // `widescreen` mirrors the original AV option; pillarbox explicitly opts into
+    // the original 4:3 viewport. With it off, views use the actual window aspect.
     int speaker = 1;
     bool widescreen = false;
+    bool pillarbox = false;
     int screen_x = 0, screen_y = 0;
+    // Settings screen (not on the disc): display and opt-in accessibility. Defaults keep the original look.
+    bool fullscreen = false;
+    bool vsync = true;
+    int crosshair_style = 0;        // 0 the game's crosshair, else ui::CrosshairStyle
+    bool high_contrast = false;     // HUD text and menu prompts on dark plates with a solid outline
+    bool colorblind_teams = false;  // team colours from a colour-blind-safe pair, plus team shapes
     // Last used profile / SP difficulty (convenience, not on the disc).
     std::string profile;
     int difficulty = 1;  // 0 Agent, 1 Secret Agent, 2 00 Agent
@@ -75,10 +83,10 @@ std::unique_ptr<AppContext> load_context(const std::string& gamedir);
 // Camera helpers (nfgame convention: Camera looks down -Z at yaw 0, the
 // player down +Z, so the camera yaw is the player yaw + pi).
 Camera camera_for_eye_yaw_pitch(const Vec3& eye, float yaw, float pitch);
-float camera_aspect(int width, int height);
-// Game viewport (Camera_CalcViewAngles decomp): widescreen (AppConfig.widescreen,
-// dword_2A37C4) renders 16:9, otherwise 4:3 pillarboxed into the window.
+// Game viewport: Hor+ uses the actual window aspect unless the saved 4:3 pillarbox
+// option is enabled.
 float game_aspect(const AppConfig& cfg);
+float camera_aspect(int width, int height);
 struct GameView {
     int x = 0, y = 0, w = 0, h = 0;  // window pixels, origin top left
     float aspect = 4.0f / 3.0f;

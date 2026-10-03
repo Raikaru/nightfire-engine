@@ -97,10 +97,10 @@ struct NetworkSession::Impl {
         const auto hash = nf::net::game_data_hash(elf_bytes, map_bytes);
         socket.simulate({unsigned(options.loss_percent), unsigned(options.latency_ms), 0x4e46434c});
         std::string error;
-        if (!socket.bind(0, &error)) throw std::runtime_error(error);
+        if (!socket.bind(0, &error)) throw std::runtime_error("network client " + error);
         hello.header.message = nf::net::Message::Hello;
-        hello.payload = nf::net::encode_hello(hash, options.name, options.password);
-        if (hello.payload.empty()) throw std::runtime_error("password exceeds the 64-byte handshake limit");
+        hello.payload = nf::net::encode_hello(hash, options.name, options.password, options.local_players);
+        if (hello.payload.empty()) throw std::runtime_error("invalid local player count or password length");
         hello = reliability.prepare(std::move(hello), true, Clock::now());
     }
 
@@ -110,8 +110,10 @@ struct NetworkSession::Impl {
     nf::net::Reliability reliability;
     nf::net::Packet hello;
     std::uint8_t slot = 0xff;
+    std::uint8_t local_player_count = 0;
     std::uint32_t input_tick = 0, server_tick = 0, latest_snapshot_tick = 0;
-    nf::net::InputBatch input_history;
+    std::array<std::array<nf::net::PadInput, nf::net::kInputRedundancy>, nf::net::kMaxLocalPlayers> input_history{};
+    std::uint8_t input_history_count = 0;
     bool chat_sent = false;
     Clock::time_point last_hello{}, last_server = Clock::now();
     struct ProjectileAssembly {
@@ -119,7 +121,12 @@ struct NetworkSession::Impl {
         std::uint8_t count = 0;
         std::vector<std::optional<std::vector<nf::net::ProjectileSnapshot>>> pages;
     };
+    struct SnapshotAssembly {
+        nf::net::Snapshot base;
+        std::vector<std::optional<std::vector<nf::net::PlayerSnapshot>>> pages;
+    };
     std::vector<nf::net::Snapshot> snapshots;
+    std::map<std::uint32_t, SnapshotAssembly> snapshot_assemblies;
     std::optional<nf::net::Snapshot> latest_snapshot;
     std::optional<nf::net::WorldState> world_state;
     std::map<std::uint32_t, ProjectileAssembly> projectile_assemblies;
@@ -148,14 +155,18 @@ void NetworkSession::poll() {
         if (!fresh) continue;
         if (incoming.packet.header.message == nf::net::Message::Reject)
             throw std::runtime_error(std::string(incoming.packet.payload.begin(), incoming.packet.payload.end()));
-        if (incoming.packet.header.message == nf::net::Message::Welcome && incoming.packet.payload.size() == 5) {
+        else if (incoming.packet.header.message == nf::net::Message::Welcome &&
+                 incoming.packet.payload.size() == 6) {
             if (s.slot != 0xff) continue;
-            if (incoming.packet.payload[0] >= 4) throw std::runtime_error("server returned invalid player slot");
+            if (incoming.packet.payload[0] + incoming.packet.payload[1] > 4 ||
+                incoming.packet.payload[1] != s.options.local_players)
+                throw std::runtime_error("server returned invalid local player slots");
             s.slot = incoming.packet.payload[0];
-            s.server_tick = std::uint32_t(incoming.packet.payload[1]) |
-                            (std::uint32_t(incoming.packet.payload[2]) << 8) |
-                            (std::uint32_t(incoming.packet.payload[3]) << 16) |
-                            (std::uint32_t(incoming.packet.payload[4]) << 24);
+            s.local_player_count = incoming.packet.payload[1];
+            s.server_tick = std::uint32_t(incoming.packet.payload[2]) |
+                            (std::uint32_t(incoming.packet.payload[3]) << 8) |
+                            (std::uint32_t(incoming.packet.payload[4]) << 16) |
+                            (std::uint32_t(incoming.packet.payload[5]) << 24);
             s.input_tick = s.server_tick;
             if (!s.chat_sent && !s.options.chat.empty()) {
                 nf::net::Packet chat;
@@ -167,14 +178,52 @@ void NetworkSession::poll() {
                 s.chat_sent = true;
             }
         } else if (incoming.packet.header.message == nf::net::Message::Snapshot) {
-            nf::net::Snapshot snapshot;
-            if (!nf::net::decode_snapshot(incoming.packet.payload, snapshot) ||
-                snapshot.tick <= s.latest_snapshot_tick)
+            nf::net::Snapshot page;
+            if (!nf::net::decode_snapshot(incoming.packet.payload, page) || page.tick <= s.latest_snapshot_tick)
                 continue;
-            s.latest_snapshot_tick = snapshot.tick;
-            if (s.snapshots.size() == 32) s.snapshots.erase(s.snapshots.begin());
-            s.latest_snapshot = snapshot;
-            s.snapshots.push_back(std::move(snapshot));
+            auto [it, inserted] = s.snapshot_assemblies.try_emplace(page.tick);
+            auto& assembly = it->second;
+            if (inserted) {
+                assembly.base = page;
+                assembly.base.players.clear();
+                assembly.pages.resize(page.page_count);
+            } else if (assembly.base.slot_count != page.slot_count ||
+                       assembly.base.page_count != page.page_count ||
+                       assembly.base.ack_input_tick != page.ack_input_tick ||
+                       assembly.base.match_phase != page.match_phase ||
+                       assembly.base.state_code != page.state_code ||
+                       assembly.base.score_limit != page.score_limit ||
+                       assembly.base.elapsed != page.elapsed ||
+                       assembly.base.time_left != page.time_left ||
+                       assembly.base.team_score != page.team_score ||
+                       assembly.base.match_revision != page.match_revision) {
+                s.snapshot_assemblies.erase(it);
+                continue;
+            }
+            if (!assembly.pages[page.page_index])
+                assembly.pages[page.page_index] = std::move(page.players);
+            if (std::all_of(assembly.pages.begin(), assembly.pages.end(),
+                            [](const auto& part) { return part.has_value(); })) {
+                nf::net::Snapshot assembled = std::move(assembly.base);
+                assembled.page_index = 0;
+                assembled.page_count = 1;
+                assembled.players.reserve(assembled.slot_count);
+                for (auto& part : assembly.pages)
+                    assembled.players.insert(assembled.players.end(), part->begin(), part->end());
+                if (assembled.players.size() == assembled.slot_count && assembled.tick > s.latest_snapshot_tick) {
+                    s.latest_snapshot_tick = assembled.tick;
+                    if (s.snapshots.size() == 32) s.snapshots.erase(s.snapshots.begin());
+                    s.latest_snapshot = assembled;
+                    s.snapshots.push_back(std::move(assembled));
+                    for (auto old = s.snapshot_assemblies.begin();
+                         old != s.snapshot_assemblies.end() && old->first <= page.tick;)
+                        old = s.snapshot_assemblies.erase(old);
+                } else {
+                    s.snapshot_assemblies.erase(it);
+                }
+            }
+            while (s.snapshot_assemblies.size() > 4)
+                s.snapshot_assemblies.erase(s.snapshot_assemblies.begin());
         } else if (incoming.packet.header.message == nf::net::Message::WorldState) {
             nf::net::WorldState state;
             if (nf::net::decode_world_state(incoming.packet.payload, state) &&
@@ -229,28 +278,47 @@ void NetworkSession::poll() {
         throw std::runtime_error(s.slot == 0xff ? "connection timed out before handshake completed" : "server timed out");
 }
 
-void NetworkSession::send_input(const nf::PadState& pad, std::uint32_t view_tick) {
+void NetworkSession::wait_for_connection() {
+    const auto deadline = Clock::now() + std::chrono::seconds(10);
+    while (!connected() && Clock::now() < deadline) {
+        poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!connected()) throw std::runtime_error("timed out waiting for server welcome");
+}
+
+void NetworkSession::send_inputs(std::span<const nf::PadState> pads, std::uint32_t view_tick) {
     Impl& s = *impl_;
     if (s.slot == 0xff) return;
-    nf::net::PadInput input;
-    input.tick = ++s.input_tick;
-    input.view_tick = view_tick;
-    input.buttons = pad.buttons;
-    input.sticks = {pad.rx, pad.ry, pad.lx, pad.ly};
-    const std::size_t count = s.input_history.count;
-    for (std::size_t i = std::min<std::size_t>(count, 2); i > 0; --i)
-        s.input_history.samples[i] = s.input_history.samples[i - 1];
-    s.input_history.samples[0] = input;
-    if (s.input_history.count < s.input_history.samples.size()) ++s.input_history.count;
+    if (pads.size() != s.local_player_count) throw std::runtime_error("local input count does not match welcome");
+    nf::net::InputBatch batch;
+    const std::uint32_t tick = ++s.input_tick;
+    for (std::size_t local = 0; local < pads.size(); ++local) {
+        nf::net::PadInput input;
+        input.tick = tick;
+        input.view_tick = view_tick;
+        input.buttons = pads[local].buttons;
+        input.sticks = {pads[local].rx, pads[local].ry, pads[local].lx, pads[local].ly};
+        input.local_player = std::uint8_t(local);
+        for (std::size_t age = std::min<std::size_t>(s.input_history_count, nf::net::kInputRedundancy - 1);
+             age > 0; --age)
+            s.input_history[local][age] = s.input_history[local][age - 1];
+        s.input_history[local][0] = input;
+    }
+    if (s.input_history_count < nf::net::kInputRedundancy) ++s.input_history_count;
+    for (std::size_t age = 0; age < s.input_history_count; ++age)
+        for (std::size_t local = 0; local < pads.size(); ++local)
+            batch.samples[batch.count++] = s.input_history[local][age];
     nf::net::Packet packet;
     packet.header.message = nf::net::Message::Input;
-    packet.payload = nf::net::encode_input_batch(s.input_history);
+    packet.payload = nf::net::encode_input_batch(batch);
     if (!s.socket.send(s.endpoint.host, s.endpoint.port,
                        s.reliability.prepare(std::move(packet), false, Clock::now())))
         throw std::runtime_error("failed to send input");
 }
 
 std::uint8_t NetworkSession::slot() const { return impl_->slot; }
+std::uint8_t NetworkSession::local_players() const { return impl_->local_player_count; }
 std::uint32_t NetworkSession::server_tick() const { return impl_->server_tick; }
 std::uint32_t NetworkSession::latest_snapshot_tick() const { return impl_->latest_snapshot_tick; }
 const nf::net::Snapshot* NetworkSession::latest_snapshot() const {
@@ -310,9 +378,9 @@ int run_network_client(AppContext& ctx, const NetworkClientOptions& options) {
             const auto now = Clock::now();
             if (now < next_frame) { std::this_thread::sleep_until(next_frame); continue; }
             if (client.connected()) {
-                nf::PadState pad;
-                if (!script.empty()) pad = script[std::size_t(frames) % script.size()];
-                client.send_input(pad, latest_snapshot_tick);
+                std::array<nf::PadState, nf::net::kMaxLocalPlayers> pads{};
+                if (!script.empty()) pads[0] = script[std::size_t(frames) % script.size()];
+                client.send_inputs(std::span<const nf::PadState>(pads.data(), options.local_players), latest_snapshot_tick);
                 ++frames;
             }
             next_frame += std::chrono::nanoseconds(1000000000 / int(nf::World::kTickHz));

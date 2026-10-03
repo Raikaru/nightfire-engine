@@ -287,14 +287,14 @@ int BotBrain::validate_state_change(int S) {
 // Perception: BOT_setOtherPlayerInfo @0x125390 (one call per tick)
 
 bool BotBrain::opponent_seen() const {
-    if (has_opponent()) return (v.other[std::size_t(opponent_slot_)].flags & 6) == 6;
+    if (has_opponent()) return (v.other_info(opponent_slot_).flags & 6) == 6;
     return (self->sight_flags & drone::sight::kSeen) != 0;
 }
 
 void BotBrain::set_other_player_info() {
     const Participant me = env->participant(v.slot);
     v.targeted_by_bot = false;
-    for (int s = 4; s < 8; ++s) {
+    for (int s = 4; s < env->participant_count(); ++s) {
         if (s == v.slot) continue;
         const Participant p = env->participant(s);
         if (p.valid && p.alive && env->bot_opponent(s) == v.slot) v.targeted_by_bot = true;
@@ -304,12 +304,13 @@ void BotBrain::set_other_player_info() {
     const float clock = env->clock_seconds();
     const bool guardian = v.personality() == Personality::Guardian;
 
+    const int participant_count = env->participant_count();
     int rr = v.rr_index;
-    if (rr >= 8) rr = v.rr_index = 0;
+    if (rr >= participant_count) rr = v.rr_index = 0;
     bool rr_tested = false;
 
-    for (int j = 0; j < 8; ++j) {
-        OtherInfo& o = v.other[std::size_t(j)];
+    for (int j = 0; j < participant_count; ++j) {
+        OtherInfo& o = v.other_info(j);
         const Participant p = env->participant(j);
         if (!p.valid || j == v.slot || !p.alive) {
             o.flags &= ~(otherflag::kValid | otherflag::kSameTeam);
@@ -346,7 +347,7 @@ void BotBrain::set_other_player_info() {
             rr_tested = true;
         }
     }
-    v.rr_index = rr_tested ? (rr + 1) % 8 : 0;
+    v.rr_index = rr_tested ? (rr + 1) % participant_count : 0;
 }
 
 // ---------------------------------------------------------------------------------------------------------

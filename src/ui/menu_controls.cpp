@@ -39,14 +39,12 @@ const MenuComponent* MenuManager::component(const Control& c, std::uint16_t comp
     return &set->components[comp];
 }
 
-// Component_SetupInstance: lays the instances of component `comp` out inside (cx, cy, W, H) and emits
+// Component_SetupInstance: lays the instances of component `comp` out inside (bx, by, W, H) and emits
 // the ones visible in state `mask` (0x10 idle, 0x20 selected, 0x40/0x80 pressed).
-void MenuManager::skin_commands(Page& page, Control& c, std::uint16_t comp_index, unsigned mask, int cx, int cy, int W,
-                                int H, int layer, std::vector<DrawCmd>& out) {
-    const MenuComponent* comp = component(c, comp_index);
-    if (!comp) return;
+void append_skin(const MenuComponent& comp, unsigned mask, int bx, int by, int W, int H, int layer,
+                 std::vector<DrawCmd>& out) {
     int right = 0, left = W, bottom = 0, top = H;   // iStack_cc, iStack_c8, iStack_c4, iVar14
-    for (const MenuInstance& in : comp->instances) {
+    for (const MenuInstance& in : comp.instances) {
         if ((in.flags & mask) == 0) continue;
         int w = in.w, h = in.h;
         const float wf = in.width_factor, hf = in.height_factor;
@@ -75,16 +73,21 @@ void MenuManager::skin_commands(Page& page, Control& c, std::uint16_t comp_index
             eh = t < 0 ? 0 : int(std::min(t, avail));
         }
         int x, y;
-        const int bx = page.self->x + cx, by = page.self->y + cy;
         if (!(in.flags & 2)) x = (in.flags & 4) ? bx + ((W - ew) >> 1) : bx + in.x;
         else x = bx + W - ew - in.x;
         if (!(in.flags & 1)) y = (in.flags & 8) ? by + ((H - eh) >> 1) : by + in.y;
         else y = by + H - eh - in.y;
         if (ew <= 0 || eh <= 0) continue;
         Rect src{float(in.u), float(in.v), float(in.uw + 1), float(in.uh + 1)};
-        out.push_back(image_cmd(comp->texture, {float(x), float(y), float(ew), float(eh)}, src,
+        out.push_back(image_cmd(comp.texture, {float(x), float(y), float(ew), float(eh)}, src,
                                 in.color ? in.color : kDefaultColor, layer));
     }
+}
+
+void MenuManager::skin_commands(Page& page, Control& c, std::uint16_t comp_index, unsigned mask, int cx, int cy, int W,
+                                int H, int layer, std::vector<DrawCmd>& out) {
+    if (const MenuComponent* comp = component(c, comp_index))
+        append_skin(*comp, mask, page.self->x + cx, page.self->y + cy, W, H, layer, out);
 }
 
 // ---------------------------------------------------------------------------------------------

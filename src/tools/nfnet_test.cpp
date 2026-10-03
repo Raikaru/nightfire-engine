@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <string>
 
+#include <utility>
 #include "net/net.hpp"
 
 namespace {
@@ -18,62 +19,81 @@ int main() {
     bool ok = true;
     PadInput input{0x10203040, 0xa55a, {0, 127, 128, 255}}, decoded_input;
     input.view_tick = 0x55667788;
+    input.local_player = 2;
     const auto input_bytes = encode_input(input);
     ok &= check(decode_input(input_bytes, decoded_input), "input decode");
     ok &= check(decoded_input.tick == input.tick && decoded_input.buttons == input.buttons &&
                     decoded_input.sticks == input.sticks,
                 "input round-trip");
-    ok &= check(decoded_input.view_tick == input.view_tick, "input view-tick round-trip");
+    ok &= check(decoded_input.view_tick == input.view_tick && decoded_input.local_player == input.local_player,
+                "input owner/view round-trip");
     ok &= check(!decode_input(std::span(input_bytes).first(9), decoded_input), "truncated input rejection");
     InputBatch batch;
-    batch.count = 3;
-    batch.samples = {PadInput{10, 1, {255, 128, 0, 128}}, PadInput{9, 2, {128, 128, 128, 128}},
-                     PadInput{8, 3, {0, 128, 255, 128}}};
-    batch.samples[0].view_tick = 10;
-    batch.samples[1].view_tick = 9;
-    batch.samples[2].view_tick = 8;
+    batch.count = 6;
+    batch.samples = {PadInput{10, 1, {255, 128, 0, 128}}, PadInput{10, 2, {128, 128, 128, 128}},
+                     PadInput{9, 3, {128, 128, 128, 128}}, PadInput{9, 4, {128, 128, 128, 128}},
+                     PadInput{8, 5, {0, 128, 255, 128}}, PadInput{8, 6, {128, 128, 128, 128}}};
+    for (std::size_t age = 0; age < 3; ++age) {
+        batch.samples[age * 2].view_tick = std::uint32_t(10 - age);
+        batch.samples[age * 2 + 1].view_tick = std::uint32_t(10 - age);
+        batch.samples[age * 2 + 1].local_player = 1;
+    }
     InputBatch decoded_batch;
-    ok &= check(decode_input_batch(encode_input_batch(batch), decoded_batch), "redundant input batch decode");
-    ok &= check(decoded_batch.count == 3 && decoded_batch.samples[0].tick == 10 &&
-                    decoded_batch.samples[2].buttons == 3,
-                "redundant input order and contents");
-    ok &= check(decoded_batch.samples[0].view_tick == 10 && decoded_batch.samples[2].view_tick == 8,
+    ok &= check(decode_input_batch(encode_input_batch(batch), decoded_batch), "two-player redundant batch decode");
+    ok &= check(decoded_batch.count == 6 && decoded_batch.samples[0].tick == 10 &&
+                    decoded_batch.samples[1].local_player == 1 && decoded_batch.samples[4].buttons == 5,
+                "two-player redundant input order and contents");
+    ok &= check(decoded_batch.samples[0].view_tick == 10 && decoded_batch.samples[5].view_tick == 8,
                 "redundant shooter view ticks retained");
-    batch.samples[2].tick = 11;
+    batch.samples[5].tick = 11;
     ok &= check(encode_input_batch(batch).empty(), "non-monotonic input batch rejection");
-    batch.samples[2].tick = 8;
-    batch.samples[1].view_tick = 11;
+    batch.samples[5].tick = 8;
+    batch.samples[3].view_tick = 11;
     ok &= check(encode_input_batch(batch).empty(), "decreasing view tick rejection");
 
     std::array<std::uint8_t, kDataHashBytes> data_hash{};
     data_hash[7] = 0x3c;
     std::array<std::uint8_t, kDataHashBytes> decoded_hash{};
     std::string name, password;
-    ok &= check(decode_hello(encode_hello(data_hash, "Nightfire", "secret"), decoded_hash, name, password),
-                "hello decode");
-    ok &= check(decoded_hash == data_hash && name == "Nightfire" && password == "secret", "hello round-trip");
-    auto malformed_hello = encode_hello(data_hash, "x", "secret");
+    std::uint8_t local_players = 0;
+    ok &= check(decode_hello(encode_hello(data_hash, "Nightfire", "secret", 2), decoded_hash, name, password,
+                             local_players),
+                "two-player hello decode");
+    ok &= check(decoded_hash == data_hash && name == "Nightfire" && password == "secret" && local_players == 2,
+                "two-player hello round-trip");
+    auto malformed_hello = encode_hello(data_hash, "x", "secret", 2);
     malformed_hello.push_back(0);
-    ok &= check(!decode_hello(malformed_hello, decoded_hash, name, password), "malformed hello rejection");
+    ok &= check(!decode_hello(malformed_hello, decoded_hash, name, password, local_players),
+                "malformed hello rejection");
     ok &= check(encode_hello(data_hash, "x", std::string(kMaxPasswordBytes + 1, 'x')).empty(),
                 "oversized password rejected");
 
     ServerInfo info{0x12345678, "Nightfire Local", "07000024.bin", 2, 3, 8, true};
     info.match_revision = 0x8877665544332211ull;
-    info.bots = 2;
+    info.bots = 12;
+    info.slot_count = 16;
+    info.modified_rules = true;
     ServerInfo decoded_info;
     ok &= check(decode_server_info(encode_server_info(info), decoded_info), "server info decode");
     ok &= check(decoded_info.query_id == info.query_id && decoded_info.name == info.name &&
                     decoded_info.map == info.map && decoded_info.mode == info.mode &&
                     decoded_info.players == info.players && decoded_info.bots == info.bots &&
-                    decoded_info.password_required &&
-                    decoded_info.match_revision == info.match_revision,
-                "server info round-trip including match revision and bot count");
+                    decoded_info.slot_count == info.slot_count && decoded_info.modified_rules &&
+                    decoded_info.password_required && decoded_info.match_revision == info.match_revision,
+                "server info round-trip including revision, custom rules, and extended capacity");
     auto invalid_server_info = encode_server_info(info);
-    invalid_server_info.back() = std::uint8_t(kMaxServerBots + 1);
+    invalid_server_info[invalid_server_info.size() - 3] = std::uint8_t(kMaxServerBots + 1);
     ok &= check(!decode_server_info(invalid_server_info, decoded_info), "server info rejects excess bot count");
+    invalid_server_info = encode_server_info(info);
+    invalid_server_info.back() = 2;
+    ok &= check(!decode_server_info(invalid_server_info, decoded_info), "server info rejects invalid rules flag");
     info.bots = std::uint8_t(kMaxServerBots + 1);
     ok &= check(encode_server_info(info).empty(), "server info encoder rejects excess bot count");
+    info.bots = kMaxServerBots;
+    ok &= check(decode_server_info(encode_server_info(info), decoded_info) &&
+                    decoded_info.bots == kMaxServerBots && decoded_info.slot_count == 16 &&
+                    decoded_info.modified_rules,
+                "server info supports extended bots, slots, and custom-rule badge");
     std::uint32_t query_id = 0;
     ok &= check(decode_server_query(encode_server_query(info.query_id), query_id) && query_id == info.query_id,
                 "server query round-trip");
@@ -127,8 +147,54 @@ int main() {
     auto truncated = snapshot_bytes;
     truncated.pop_back();
     ok &= check(!decode_snapshot(truncated, decoded_snapshot), "truncated snapshot rejection");
+    Snapshot ten_slots;
+    ten_slots.slot_count = 10;
+    ten_slots.players.reserve(ten_slots.slot_count);
+    for (std::uint8_t slot = 0; slot < ten_slots.slot_count; ++slot) {
+        PlayerSnapshot player;
+        player.slot = slot;
+        player.bot = slot >= 4;
+        player.name = slot >= 4 ? "Bot" : "Player";
+        ten_slots.players.push_back(std::move(player));
+    }
+    const auto ten_slot_pages = split_snapshot(ten_slots);
+    std::vector<PlayerSnapshot> decoded_ten_players;
+    bool ten_slot_pages_decoded = ten_slot_pages.size() == 5;
+    for (const Snapshot& page : ten_slot_pages) {
+        const auto bytes = encode_snapshot(page);
+        Snapshot decoded_page;
+        ten_slot_pages_decoded &= decode_snapshot(bytes, decoded_page) &&
+                                  decoded_page.page_index == page.page_index &&
+                                  decoded_page.page_count == 5;
+        if (ten_slot_pages_decoded)
+            decoded_ten_players.insert(decoded_ten_players.end(), decoded_page.players.begin(),
+                                       decoded_page.players.end());
+    }
+    ok &= check(ten_slot_pages_decoded && decoded_ten_players.size() == 10 &&
+                    decoded_ten_players[9].slot == 9 && decoded_ten_players[9].name == "Bot",
+                "ten-slot arena snapshot page round-trip");
+    Snapshot extended_slots = ten_slots;
+    extended_slots.slot_count = 16;
+    for (std::uint8_t slot = 10; slot < extended_slots.slot_count; ++slot) {
+        PlayerSnapshot player;
+        player.slot = slot;
+        player.bot = true;
+        player.name = "Bot";
+        extended_slots.players.push_back(std::move(player));
+    }
+    const auto extended_pages = split_snapshot(extended_slots);
+    bool extended_pages_decoded = extended_pages.size() == 8;
+    std::size_t extended_player_count = 0;
+    for (const Snapshot& page : extended_pages) {
+        const auto bytes = encode_snapshot(page);
+        Snapshot decoded_page;
+        extended_pages_decoded &= decode_snapshot(bytes, decoded_page);
+        extended_player_count += decoded_page.players.size();
+    }
+    ok &= check(extended_pages_decoded && extended_player_count == 16,
+                "sixteen-slot arena snapshot pages fit datagram limit");
     auto duplicate_slot = snapshot_bytes;
-    duplicate_slot[37 + 74 + p0.name.size()] = 0;
+    duplicate_slot[40 + 74 + p0.name.size()] = 0;
     ok &= check(!decode_snapshot(duplicate_slot, decoded_snapshot), "duplicate slot rejection");
 
     OwnerMovementState movement;
@@ -206,7 +272,7 @@ int main() {
     auto owner_truncated = owner_bytes;
     owner_truncated.pop_back();
     ok &= check(!decode_snapshot(owner_truncated, decoded_owner), "truncated owner movement block rejected");
-    const std::size_t owner_block = 37 + 74 + p0.name.size();
+    const std::size_t owner_block = 40 + 74 + p0.name.size();
     auto owner_old_schema = owner_bytes;
     owner_old_schema[owner_block] = 1;
     ok &= check(!decode_snapshot(owner_old_schema, decoded_owner), "old owner movement schema rejected");
@@ -235,7 +301,7 @@ int main() {
     const std::size_t bot_record = owner_block + movement_bytes;
     const std::size_t bot_record_end = bot_record + 74 + p1.name.size();
     auto movement_on_bot = owner_bytes;
-    movement_on_bot[37 + 1] &= std::uint8_t(~64u);
+    movement_on_bot[40 + 1] &= std::uint8_t(~64u);
     movement_on_bot[bot_record + 1] |= 64;
     std::vector<std::uint8_t> malformed_bot_block(movement_on_bot.begin(),
                                                   movement_on_bot.begin() + std::ptrdiff_t(owner_block));
@@ -249,7 +315,12 @@ int main() {
     Snapshot multiple_owners = owner_source;
     multiple_owners.players[1].bot = false;
     multiple_owners.players[1].owner_movement = movement;
-    ok &= check(encode_snapshot(multiple_owners).empty(), "multiple owner movement blocks rejected");
+    Snapshot decoded_multiple_owners;
+    const auto multiple_owner_bytes = encode_snapshot(multiple_owners);
+    ok &= check(decode_snapshot(multiple_owner_bytes, decoded_multiple_owners) &&
+                    decoded_multiple_owners.players[0].owner_movement.has_value() &&
+                    decoded_multiple_owners.players[1].owner_movement.has_value(),
+                "two local owner movement blocks round-trip");
 
     WorldState source_world;
     source_world.tick = 12345;

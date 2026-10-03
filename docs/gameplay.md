@@ -167,13 +167,15 @@ ammo, armour (to 50), health and bonus items, bobbing/spinning as the original, 
 (`300 * x + 1` frames at 30 Hz). Objective objects (flags, hill, uplinks, targets, blueprints, GoldenEye items) are
 `MpObjective`s drawn from their placements and simulated per mode in `arena_modes.cpp`.
 
-`nfgame --mp [--mode NAME] [--players 1..4] [--bots 0..4] [--frag-limit N] [--time-limit MIN] [--weapons 0..10]
-[--spawn near|far|random] [--handicap N] [--split-vertical] [--bot-char a,b,c] [--cam ... | --follow-bot N]` runs a
+`nfgame --mp [--mode NAME] [--players 1..4] [--ruleset ps2|gc-xbox|extended] [--bots 0..12] [--frag-limit N] [--time-limit MIN]
+[--weapons 0..10] [--spawn near|far|random] [--handicap N] [--split-vertical] [--bot-char a,b,c] [--cam ... | --follow-bot N]` runs a
 match on an arena map with 1..4 local players in split screen (Camera_CreateCameras layouts: top/bottom for 2,
 2+1 and 2x2; `--split-vertical` puts 2 players side by side) on additional gamepads, plus MP-drone bots via
-`BotMatch` (the Bots slice; bots are drones, not Players). `--frames N` + `--inputs*` + `--shot` work as in
-single-player for scripted verification. The interactive `nightfire --mp` capture path also applies an optional
-`start x y z yaw [pitch [ground_normal_y]]` record before simulation, allowing pose-matched full-render shots.
+`BotMatch` (the Bots slice; bots are drones, not Players). The default `ps2` ruleset preserves the PS2 limit of four bots;
+`gc-xbox` permits six bots and `extended` permits twelve, for a maximum of 16 combatants. Higher bot counts use the same
+BotBrain and 30 Hz simulation, but their additional perception/visit state is a rewrite extension, not original game behavior.
+`--frames N` + `--inputs*` + `--shot` work as in single-player for scripted verification. The interactive `nightfire --mp`
+capture path also applies an optional `start x y z yaw [pitch [ground_normal_y]]` record before simulation, allowing pose-matched shots.
 Humans are `HumanBody`s (Player movement + WeaponSystem combat);
 `ArenaSession` owns World + WeaponSystem + ArenaSystem and routes each frame's messages/sounds.
 The playable MP renderer advances level texture animation from its 30 Hz logic frame and `WeatherRenderer`
@@ -187,6 +189,12 @@ with world positions/names) plus `take_messages()` / `take_sounds()` / `result()
 into `HudState::mp` (`apply_arena_hud`), radar name tags (`project_name_tags`, render-camera angles), status
 messages (`to_hud_message`), clock/results text (`format_match_clock`, `describe_result`) and per-viewer
 `HudConfig` (`make_mp_config`).
+
+The multiplayer Options wheel includes a ruleset selector alongside the original options. `PS2` is the default and
+retains four human ports plus at most four bots; `GC/Xbox` permits six bots; `Extended` permits twelve bots (16 total
+slots). The extended limits are match-selected and stored with the match, while the existing PS2 menu/rule defaults
+remain unchanged. Extended bot perception and pickup-visit state are rewrite extensions: the original brain's fixed
+participant/per-bot tables cover only eight participants/four bots. The bot decision logic itself remains BotBrain.
 
 ## Known gaps (movement)
 

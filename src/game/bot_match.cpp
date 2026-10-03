@@ -15,7 +15,7 @@ BotMatch::BotMatch(GameFiles& files, const std::filesystem::path& gamedir, const
     mp_ = load_mp_data(files, gamedir, *strings);
     bank_ = open_character_bank(files, level_bin);
     nav_ = std::make_unique<NavNetwork>(level, world.collision(), NavLimits::for_level(level_id_));
-    const int count = std::clamp(options_.count, 0, 4);
+    const int count = std::clamp(options_.count, 0, int(kMpMaxBots));
     const std::vector<int> chars = parse_bot_characters(options_.characters, count);
     for (int i = 0; i < count; ++i) roster_.push_back(default_bot_spec(mp_, i, chars[std::size_t(i)], true));
 }

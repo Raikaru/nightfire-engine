@@ -207,6 +207,7 @@ int run_match(const MatchLaunch& request) {
     World world(level, InputTables::from_elf(action_elf), params);
     MatchOptions options = launch.options;
     options.enabled = true;
+    options.bots = std::min(options.bots, int(mp_rule_slot_limit(options.rules) - kMpMaxHumans));
     std::unique_ptr<bots::BotMatch> bot_match;
     if (options.bots > 0) {
         bots::BotMatchOptions bo;

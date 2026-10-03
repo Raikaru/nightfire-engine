@@ -8,6 +8,7 @@
 #include "core/rng.hpp"
 #include <vector>
 
+#include "assets/mp_data.hpp"
 #include "assets/character.hpp"
 #include "assets/weapon_data.hpp"
 #include "game/damage.hpp"
@@ -173,7 +174,7 @@ public:
         float radius = 0.0f;
     };
     struct LagCompVolumes {
-        std::array<LagCompVolume, 8> values{};
+        std::array<LagCompVolume, kMpSlots> values{};
         std::size_t count = 0;
     };
     using LagCompProvider = std::function<LagCompVolumes(int shooter)>;

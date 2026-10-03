@@ -16,9 +16,10 @@ namespace nf {
 // P_MPCONFIRM record) -> ArenaSettings.
 struct MatchOptions {
     bool enabled = false;                       // --mp
+    MpRuleSet rules = MpRuleSet::Ps2;           // --ruleset ps2|gc-xbox|extended
     std::uint32_t mode = mp_mode::kArena;       // --mode
     int humans = 1;                             // --players 1..4
-    int bots = 0;                               // --bots 0..4
+    int bots = 0;                               // --bots 0..12, capped by ruleset capacity
     std::int32_t score_limit = 10;              // --frag-limit N (-1 unlimited)
     float time_limit = 600.0f;                  // --time-limit MINUTES (<= 0 disables the match timer)
     bool friendly_fire = false;                 // --friendly-fire

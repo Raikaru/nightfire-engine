@@ -2,6 +2,19 @@
 
 Behaviour notes of the 2D layer, one section per subsystem. Data formats are in `docs/formats.md`.
 
+## Aspect-aware presentation
+
+`src/ui/layout.hpp` provides `ui::Layout`, a height-448 virtual canvas whose logical width expands with the current
+window aspect. Existing 640x448 authored coordinates remain centred and keep their proportions; `x(value, Left/Center/Right)`
+and `safe_left()` / `safe_right()` let screen-specific elements use the added horizontal space instead of stretching.
+Generic menu title/logo chrome and online overlays anchor to those expanded edges.
+Use `Layout::from_canvas_width(renderer.canvas_width())` after `Renderer::begin` when the renderer's active viewport
+(including pillarbox mode) is the source of the layout. The renderer maps the legacy horizontal 512-to-640 display
+stretch back out, uses the entire window by default, and offers `Renderer::set_pillarbox(true)` for a centred original
+4:3 canvas. `nightfire.cfg` persists this choice as `pillarbox=0|1` (default 0). Game cameras use the window aspect with
+a fixed vertical FOV unless pillarboxing is enabled; split-screen viewports are divided inside that selected game
+viewport. PSS frames preserve the original 512x448-to-4:3 pixel aspect and are fitted inside a cleared full-window background.
+
 ## Multiplayer setup model
 
 `src/assets/mp_data.{hpp,cpp}` (tables from `ACTION.ELF`, layouts in `docs/formats.md` "Multiplayer data") and
@@ -132,8 +145,14 @@ mode, level and participants), and `MP_CheckForEndCondition`'s HUD timer sprite.
 `Hud` re-implements `HUD_Init` / `HUD_Update` and the pane functions of ACTION.ELF: every pane is created from the
 original tables (`HudData`, see docs/formats.md "HUD data"), and each `Hud::update` runs the original `HUD_Update*Pane`
 logic over the live sprites (positions, uv rectangles, colours, layers, fades and blink timers are the ELF constants).
-`Hud::draw` sorts the sprites by layer and draws them with the original textures, fonts and English strings on the
-640x448 canvas (x scaled by 1.25: the game draws into a 512x448 buffer that the display stretches to 4:3).
+`Hud::draw` sorts the sprites by layer and draws them with the original textures, fonts and English strings in legacy
+640x448 coordinates. The renderer converts the original horizontal stretch to proportion-correct pixels and expands
+the available canvas with window aspect; edge-sensitive panes can use `ui::Layout` anchors.
+
+On expanded single-view layouts (and two-player top/bottom views), health / MP score panes anchor to the left edge and
+ammo / radar panes to the right edge. Centered timer, aim and reticle content stays centred. The per-view split HUD
+coordinates remain scoped to their original viewer rectangles. When the scope pane is visible, opaque side fills extend
+its mask through the newly exposed horizontal canvas without covering HUD sprites.
 
 ```cpp
 HudData data = load_hud_data(Elf32(read_file(gamedir / "ACTION.ELF")));      // once
@@ -212,13 +231,19 @@ history stack and overlays. `Frontend` (`frontend.hpp`, handlers in `frontend.cp
 `Handler_HandleMessage`'s `P_*_Handler` / `C_*_Handler` on top of it, plus the `MpSetup` model for
 the multiplayer pages.
 
+Screens drawn outside the script in the same visual language (the online choice lists and server browser,
+`docs/net.md`) use `ui::MenuChrome` (`menu_chrome.{hpp,cpp}`): the page title, logo, glyph prompt row, the P_MPJOIN
+agent panel (nine-sliced), script skin components (`append_skin`, Component_SetupInstance) and Label_Update text
+placement, all from the script's authored 640x480 boxes through `fixup_resolution`. Its page margins (script x 50 / 590)
+follow `Layout`'s left/right anchors; `menu_style` holds the label/item colours and sprite hashes.
+
 ```cpp
 MenuFile menu = load_menu_from_bin(front_end_bin);              // or a level bin for the pause menu (its sprites in `assets`)
 MpData mp = load_mp_data(files, gamedir, assets.strings);
 Frontend fe(assets, menu, &mp);
 fe.open(FrontendMode::MainMenu);                                // or FrontendMode::Pause (pass the level's MenuFile)
 for each 30 Hz frame: pad.push(sample); fe.update(pad);         // PadHistory; update(std::array<PadHistory,4>) for 4 controllers
-fe.draw(renderer, text);                                        // 640x448 canvas; menu data is 512x448 and drawn x1.25
+fe.draw(renderer, text);                                        // 640x448 design coordinates on expanded aspect canvas
 if (fe.wants_close()) act on fe.result();                       // action, level_bin, level_id, launch (MpLaunch)
 ```
 

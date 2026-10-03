@@ -35,8 +35,14 @@ void set_key(AppConfig& c, const std::string& key, const std::string& value) {
     else if (key == "hud_always_on") c.hud_always_on = b;
     else if (key == "speaker") c.speaker = std::clamp(n, 0, 2);
     else if (key == "widescreen") c.widescreen = b;
+    else if (key == "pillarbox") c.pillarbox = b;
     else if (key == "screen_x") c.screen_x = n;
     else if (key == "screen_y") c.screen_y = n;
+    else if (key == "fullscreen") c.fullscreen = b;
+    else if (key == "vsync") c.vsync = b;
+    else if (key == "crosshair_style") c.crosshair_style = std::clamp(n, 0, 4);
+    else if (key == "high_contrast") c.high_contrast = b;
+    else if (key == "colorblind_teams") c.colorblind_teams = b;
     else if (key == "profile") c.profile = value;
     else if (key == "difficulty") c.difficulty = std::clamp(n, 0, 2);
 }
@@ -69,7 +75,11 @@ bool save_config(const std::filesystem::path& path, const AppConfig& c) {
     out << "manual_aim=" << (c.manual_aim ? 1 : 0) << "\nweapon_auto_switch=" << (c.weapon_auto_switch ? 1 : 0) << "\n";
     out << "hud_always_on=" << (c.hud_always_on ? 1 : 0) << "\n";
     out << "speaker=" << c.speaker << "\nwidescreen=" << (c.widescreen ? 1 : 0) << "\n";
+    out << "pillarbox=" << (c.pillarbox ? 1 : 0) << "\n";
     out << "screen_x=" << c.screen_x << "\nscreen_y=" << c.screen_y << "\n";
+    out << "fullscreen=" << (c.fullscreen ? 1 : 0) << "\nvsync=" << (c.vsync ? 1 : 0) << "\n";
+    out << "crosshair_style=" << c.crosshair_style << "\nhigh_contrast=" << (c.high_contrast ? 1 : 0) << "\n";
+    out << "colorblind_teams=" << (c.colorblind_teams ? 1 : 0) << "\n";
     out << "profile=" << c.profile << "\ndifficulty=" << c.difficulty << "\n";
     return bool(out);
 }
@@ -117,20 +127,14 @@ Camera camera_for_eye_yaw_pitch(const Vec3& eye, float yaw, float pitch) {
 
 float camera_aspect(int width, int height) { return float(width) / float(std::max(height, 1)); }
 
-float game_aspect(const AppConfig& cfg) { return cfg.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f; }
+float game_aspect(const AppConfig& cfg) { return cfg.pillarbox ? 4.0f / 3.0f : 16.0f / 9.0f; }
 
 GameView game_view(const AppConfig& cfg, int width, int height) {
-    const float ga = game_aspect(cfg);
-    int gw = width, gh = height;
-    if (float(width) / float(std::max(height, 1)) > ga) gw = int(float(height) * ga + 0.5f);  // pillarbox
-    else gh = int(float(width) / ga + 0.5f);                                                 // letterbox
-    GameView gv;
-    gv.x = (width - gw) / 2;
-    gv.y = (height - gh) / 2;
-    gv.w = gw;
-    gv.h = gh;
-    gv.aspect = ga;
-    return gv;
+    const float aspect = cfg.pillarbox ? 4.0f / 3.0f : camera_aspect(width, height);
+    int view_w = width, view_h = height;
+    if (float(width) / float(std::max(height, 1)) > aspect) view_w = int(float(height) * aspect + 0.5f);
+    else view_h = int(float(width) / aspect + 0.5f);
+    return {(width - view_w) / 2, (height - view_h) / 2, view_w, view_h, aspect};
 }
 
 }  // namespace nf::app

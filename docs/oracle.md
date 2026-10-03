@@ -21,9 +21,6 @@ read its memory over PINE and drive it with a virtual pad.
 - `pine.py`: PINE client (batched reads, writes, savestate slots, game id, status).
 - `vpad.py`: uinput Xbox 360 pad served on `$XDG_RUNTIME_DIR/nf-vpad.sock`
   (`press cross 300`, `axis LY -1`, `release`, ...). Menus need ~1.5 s between presses.
-  Start with `--dual` to create Pad2 as a second SDL device; bind it to PCSX2 Pad2
-  (`SDL-1`) and prefix its socket commands with `p2` (for example `p2 press cross 400`).
-  `mp_scenario.py --second-human` joins that Pad2 at the P_MPJOIN screen; the default remains Pad1-only.
 - `trace.py out.jsonl [--frames N] [--load-slot 2] [--script scenario.txt]`: logs player state and the pad
   input the game saw once per logic frame, optionally loading a savestate and driving vpad from a frame-timed
   script (`tools/oracle/scenarios/`).
@@ -243,12 +240,14 @@ python3 tools/oracle/mp_record.py match.jsonl --load-slot 12 --frames 1800 \
 ```
 
 `--rng-calls` temporarily hooks `Rand_Random`, `Rand_Rand`, `Rand_FRand`, and
-`Rand_FRand_MVar2`. Each row's `rng_calls[]` records the sampled frame, function,
-caller return address and result bits; `rng_trace` reports ring overflow and
-lost-event counts for the 1024-entry EE RAM ring. This was smoke-verified on a
-live match with the EE interpreter enabled (`EnableEE=false`). The previous
-EE-recompiler attempt faulted in `recRecompile`, so do not use that mode for
-this hook instrumentation.
+`Rand_FRand_MVar2` in a running EE-interpreter session. For the EE recompiler,
+install those trampolines and the ring buffer from the game-specific PCSX2
+pnach before loading the savestate, then use `--rng-calls-preinstalled`. The
+recorder verifies the pnach entry words and trampoline bodies, waits through
+three forward logic frames after the load to avoid a stale ring snapshot, and
+then consumes new events without removing the persistent hooks. Each accepted
+row's `rng_calls[]` records sampled frame, function, caller return address and
+result bits; `rng_trace` reports ring overflow and lost-event counts.
 
 The sampled source paths are distinct: `Env_Update` calls `Rand_Rand(20000)`
 once per live-world frame before player updates; `Player_Update` decrements
@@ -540,6 +539,12 @@ within the bracketed read; the counters need not have a fixed relative offset.
 On a slow EE interpreter, `--page-settle` controls the wait after each menu
 page transition (default 10 s); raise it alongside `--press-ms 2000` if a tap
 arrives before the page is ready.
+
+The scenario wheel driver starts with Arena highlighted; it reads the selected
+mask after confirmation and advances one row at a time, so avoid holding
+navigation buttons long enough to skip modes. `--time-limit-sec N` sets
+`MPGame+0x194` after the live match is detected and before its start savestate
+is saved; the value is seconds.
 Standard split: MI6 human (Bond) + Dominique vs Phoenix Snow Guard + Yakuza.
 Reproduce a setup and match-start savestate (example: Skyrail Arena, three
 bots) and record the running match:
@@ -565,6 +570,23 @@ never run two PINE clients simultaneously. `mp_record.py` samples a batched
 state snapshot bracketed by logic-frame counters, writes one JSONL line per
 accepted frame, and includes a human pad sample. Pass a frame-timed
 `--script` to inject virtual-pad commands during recording.
+
+For recompiler captures, install the four RNG trampolines and ring buffer from
+the game-specific PCSX2 pnach before loading a savestate, with entry redirects
+reapplied while the game runs. For Nightfire, the configured file is
+`~/.config/PCSX2/patches/SLUS-20579_5B86BB62.pnach`. Keep EE recompilation
+enabled (`EnableEE = true`); the original one-shot `--rng-calls` installer is
+intended for interpreter sessions. `--rng-calls-preinstalled` verifies the
+pnach entry words and trampoline bodies, discards events produced before
+attachment, then records new caller/result events per accepted frame. It leaves
+the pnach hooks installed when the recorder exits. Create menu/match savestates
+with the pnach active; older states do not contain its trampoline code or ring
+state.
+
+```sh
+python3 tools/oracle/mp_record.py recompiler.jsonl --load-slot 10 \
+  --frames 1200 --seedable --rng-calls-preinstalled
+```
 
 For a controlled combat capture, `--freeze-bot SLOT` holds a bot's sampled
 position/yaw on each recorded frame. `--face-bot SLOT` additionally places the

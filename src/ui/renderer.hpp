@@ -9,12 +9,13 @@
 
 namespace nf::ui {
 
-// The PS2 frame buffer the original draws 2D into: 640x448 (NTSC). Menu pages are authored for
-// 640x480 and remapped by FixupResolution (x * 0.8 about the centre for widescreen data, y * 0.9333).
-// The canvas is shown at 4:3 like a PS2 output. NOTE: the game's data is authored for its 512x448 draw
-// buffer which the display stretches x1.25, so data x coordinates/widths are multiplied by 1.25 here.
+// The PS2 UI's 640x448 authored coordinates, with horizontal scaling corrected for
+// the original 512-to-640 display stretch. Renderer::begin expands the viewport canvas.
 constexpr float kScreenW = 640.0f;
 constexpr float kScreenH = 448.0f;
+constexpr float kScreenXScale = 7.0f / 7.5f;  // undo the 512-to-640 design-space stretch
+// PSS frame pixels are mapped to the original 640x448, 4:3 canvas before display.
+constexpr float kPssPixelAspect = (640.0f / 512.0f) * kScreenXScale;
 
 struct Rect {
     float x = 0, y = 0, w = 0, h = 0;
@@ -42,11 +43,13 @@ public:
     Renderer& operator=(const Renderer&) = delete;
 
     const SpriteLibrary& sprites() const { return sprites_; }
+    float canvas_width() const { return canvas_w_ / kScreenXScale; }
 
-    // Letterboxes the canvas to a 4:3 area of a window of the given pixel size (the viewport is set).
-    // `clear` fills the whole window with `background` first.
+    // Uses the full window by default. set_pillarbox retains the original centred 4:3 viewport.
+    // Existing 640x448 coordinates remain centred and proportion-correct in either mode.
+    void set_pillarbox(bool enabled) { pillarbox_ = enabled; }
     void begin(int window_w, int window_h, bool clear = true, Color background = {0, 0, 0, 0x80});
-    void end();  // flushes
+    void end();
 
     void set_blend(Blend blend);
 
@@ -76,6 +79,8 @@ private:
     const SpriteLibrary& sprites_;
     GLuint program_ = 0, vao_ = 0, vbo_ = 0, white_ = 0, bound_ = 0, frame_ = 0;
     int frame_w_ = 0, frame_h_ = 0;
+    float canvas_w_ = kScreenW;
+    bool pillarbox_ = false;
     GLint u_size_ = -1;
     Blend blend_ = Blend::Alpha;
     std::unordered_map<std::uint32_t, GLuint> textures_;

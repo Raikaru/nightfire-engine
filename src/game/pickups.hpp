@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "assets/mp_data.hpp"
 #include "core/math.hpp"
 #include "game/arena_data.hpp"
 
@@ -64,7 +65,7 @@ struct Pickup {
     std::uint32_t lifetime_total_frames = 0;  // dropped pickup removal interval; zero for map placements
     bool dynamic = false;               // no backing map placement; registered into MPpickups at runtime
     bool radar_hidden = false;          // obj+0xF0 bit 0x10: do not expose this special ammo drop on radar
-    std::array<float, 4> visit_until{}; // MP_PICKUP+0x80: per-bot "visited until" clock (seconds)
+    std::array<float, kMpMaxBots> visit_until{}; // Extended match: per-bot visit clocks (first four mirror PS2 data).
 
     bool available() const { return state == State::Active; }
 };

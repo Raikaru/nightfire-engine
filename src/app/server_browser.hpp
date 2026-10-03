@@ -19,6 +19,8 @@ struct ServerBrowserEntry {
     bool password_required = false;
     std::uint64_t match_revision = 0;
     std::uint8_t bots = 0;
+    std::uint8_t slot_count = 8;
+    bool modified_rules = false;
 };
 
 // Synchronous, bounded discovery used by the Online join page. Game-info data is always queried

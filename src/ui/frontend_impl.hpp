@@ -7,6 +7,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <utility>
 #include "assets/credit_data.hpp"
 #include "assets/mp_data.hpp"
 #include "assets/sp_menu.hpp"
@@ -38,8 +39,10 @@ struct Frontend::Impl : ui::MenuHost {
     std::unordered_map<std::uint32_t, Handler> handlers;
     bool closed = false;
     bool start_hint_shown = false;   // cGpffff8cf9
-    bool online_choice_pending = false;  // pending Local/Online or Online Host/Join chooser
-    std::uint8_t online_choice_stage = 0;  // 0: local/online; 1: host/join
+    static constexpr unsigned kOnlineChoiceBox = 0x4F4E4C;   // option_box type of the online choice lists
+    bool online_choice_pending = false;  // the Local/Online (stage 0) or Online Host/Join (stage 1) list is up
+    std::uint8_t online_choice_stage = 0;
+    int online_choice_leaving = -1;      // frames since a choice started fading to its page (-1: not leaving)
     bool listen_host = false;            // route the original MP setup into the listen-server path
     std::array<bool, 4> controllers_present{true, false, false, false};   // PlayerSetting+0x155 per controller
     std::uint32_t rand_state = 0x1234567;   // Rand_Random for Quick Game
@@ -108,6 +111,9 @@ struct Frontend::Impl : ui::MenuHost {
     bool p_main(ui::Control&, const ui::Msg&);
     bool p_paris_enum(ui::Control&, const ui::Msg&);
     bool p_language(ui::Control&, const ui::Msg&);
+    void open_online_choice(std::uint8_t stage);
+    void draw_online_choice(ui::Renderer& renderer, ui::TextRenderer& text);
+    void open_settings();
     bool c_language(ui::Control&, const ui::Msg&);
     bool c_go_nightfire(ui::Control&, const ui::Msg&);
     bool c_go_multiplayer(ui::Control&, const ui::Msg&);
@@ -117,6 +123,12 @@ struct Frontend::Impl : ui::MenuHost {
     struct WheelItem {                       // one M_ITEM row of a wheel (Menu_UpdateWheel)
         std::uint32_t sprite = 0, name = 0, description = 0, disabled = 0, value = 0;
         bool enabled = true;
+        std::string display_name;            // non-localized extension rows
+        WheelItem() = default;
+        WheelItem(std::uint32_t sprite_, std::uint32_t name_, std::uint32_t description_,
+                  std::uint32_t disabled_, std::uint32_t value_, bool enabled_, std::string display_name_ = {})
+            : sprite(sprite_), name(name_), description(description_), disabled(disabled_), value(value_),
+              enabled(enabled_), display_name(std::move(display_name_)) {}
     };
     struct Iris { int state = 0; int tick = -1; bool hold = false; bool active = false; } iris;
     int send_ex(std::uint32_t control, std::uint32_t index, std::uint32_t type, std::uint32_t a = 0, std::uint32_t b = 0) {

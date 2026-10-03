@@ -50,7 +50,8 @@ int ArenaSettings::bot_count() const {
 ArenaSystem::ArenaSystem(World& world, ArenaSettings settings, const WeaponSets& sets, PickupWeaponFn weapon,
                          const StringTable* strings)
     : world_(world), settings_(std::move(settings)), sets_(sets), weapon_info_(std::move(weapon)), strings_(strings) {
-    if (settings_.mode == mp_mode::kQuickGame) settings_.mode = mp_mode::kArena;   // the front end resolves it; be safe
+    settings_.slot_count = std::clamp<std::size_t>(settings_.slot_count, kMpMaxHumans,
+                                                   mp_rule_slot_limit(settings_.rules));
     // MP_Init: the round timer of Demolition / Protection is 60 s when the match is untimed.
     if ((settings_.mode == mp_mode::kDemolition || settings_.mode == mp_mode::kProtection) && settings_.time_limit < 0)
         settings_.time_limit = 60.0f;
@@ -168,13 +169,13 @@ void ArenaSystem::restore_snapshot(const ArenaSeedSnapshot& snapshot) {
 }
 
 void ArenaSystem::register_body(int slot, ArenaBody* body) {
-    if (slot < 0 || slot >= int(kMpSlots) || !settings_.slots[std::size_t(slot)].present) return;
+    if (slot < 0 || slot >= int(settings_.slot_count) || !settings_.slots[std::size_t(slot)].present) return;
     slots_[std::size_t(slot)].body = body;
     slots_[std::size_t(slot)].spawn_frame = frame_;
 }
 
 bool ArenaSystem::valid(int slot) const {
-    return slot >= 0 && slot < int(kMpSlots) && settings_.slots[std::size_t(slot)].present;
+    return slot >= 0 && slot < int(settings_.slot_count) && settings_.slots[std::size_t(slot)].present;
 }
 
 bool ArenaSystem::alive(int slot) const {
@@ -183,7 +184,7 @@ bool ArenaSystem::alive(int slot) const {
 
 std::vector<int> ArenaSystem::present_slots() const {
     std::vector<int> out;
-    for (int i = 0; i < int(kMpSlots); ++i)
+    for (int i = 0; i < int(settings_.slot_count); ++i)
         if (valid(i)) out.push_back(i);
     return out;
 }

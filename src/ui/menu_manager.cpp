@@ -4,17 +4,18 @@
 #include <algorithm>
 #include <cmath>
 
-#include "ui/menu.hpp"
+#include "ui/layout.hpp"
 
+#include "ui/menu.hpp"
 namespace nf::ui {
 
 namespace {
 
 constexpr std::uint32_t kAllControls = 0xFFFFFFFF;
 
-// FixupResolution(NEW_CONTROL / M_KEYFRAME): authored 640x480 -> the 512x448 buffer.
-struct Box { int x, y, w, h; };
+}  // namespace
 
+// FixupResolution(NEW_CONTROL / M_KEYFRAME): authored 640x480 -> the 512x448 buffer.
 Box fixup_resolution(Box b, bool scroll) {
     int w = int(float(b.w) * 0.8f);
     if (w < 2) w = 2;
@@ -28,8 +29,6 @@ Box fixup_resolution(Box b, bool scroll) {
     int y = int((float(b.y + (b.h >> 1) - 240) * 0.9333334f + 224.0f) - float(h >> 1));
     return {x, y, w, h};
 }
-
-}  // namespace
 
 // ---------------------------------------------------------------------------------------------
 // MenuInput
@@ -699,6 +698,7 @@ void MenuManager::update(const PadInputs& pads) {
 
 void MenuManager::draw(Renderer& renderer, TextRenderer& text) const {
     constexpr float kScaleX = 1.25f;   // the 512-wide buffer is stretched to 4:3
+    const Layout layout = Layout::from_canvas_width(renderer.canvas_width());
     struct Item {
         const DrawCmd* cmd;
         int layer;
@@ -715,12 +715,22 @@ void MenuManager::draw(Renderer& renderer, TextRenderer& text) const {
     std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.layer > b.layer; });
     for (const Item& it : items) {
         const DrawCmd& d = *it.cmd;
+        const float x = d.is_text ? d.x : d.dst.x;
+        const float y = d.is_text ? d.y : d.dst.y;
+        const bool top_chrome = y >= 24.0f && y <= 72.0f;
+        const bool left_anchor = x < 256.0f;
         if (d.is_text) {
             TextStyle st = d.style;
             st.scale_x = kScaleX;
-            text.draw(d.x * kScaleX, d.y, d.text, st);
+            const float draw_x = d.x * kScaleX;
+            text.draw(top_chrome ? layout.x(draw_x, left_anchor ? HorizontalAnchor::Left : HorizontalAnchor::Right) : draw_x,
+                      d.y, d.text, st);
         } else {
             Rect dst{d.dst.x * kScaleX, d.dst.y, d.dst.w * kScaleX, d.dst.h};
+            if (top_chrome && dst.w <= 200.0f)
+                dst.x = layout.x(dst.x + (left_anchor ? 0.0f : dst.w),
+                                 left_anchor ? HorizontalAnchor::Left : HorizontalAnchor::Right) -
+                        (left_anchor ? 0.0f : dst.w);
             renderer.draw(d.hash, dst, d.src, d.color);
         }
     }

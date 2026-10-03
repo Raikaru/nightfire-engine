@@ -105,14 +105,16 @@ void Renderer::begin(int window_w, int window_h, bool clear, Color background) {
         glClearColor(background.r / 128.0f, background.g / 128.0f, background.b / 128.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
     }
-    // The 640x448 canvas is shown on a 4:3 display (the 512x448 PS2 draw buffer is stretched to 4:3).
-    int vw = std::min(window_w, window_h * 4 / 3), vh = vw * 3 / 4;
-    glViewport((window_w - vw) / 2, (window_h - vh) / 2, vw, vh);
+    const int viewport_w = pillarbox_ ? std::min(window_w, window_h * 4 / 3) : window_w;
+    const int viewport_h = pillarbox_ ? viewport_w * 3 / 4 : window_h;
+    glViewport((window_w - viewport_w) / 2, (window_h - viewport_h) / 2, viewport_w, viewport_h);
+    const float aspect = float(viewport_w) / float(std::max(viewport_h, 1));
+    canvas_w_ = kScreenH * aspect;
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     glEnable(GL_BLEND);
     glUseProgram(program_);
-    glUniform4f(u_size_, kScreenW, kScreenH, 0, 0);
+    glUniform4f(u_size_, canvas_w_, kScreenH, 0, 0);
     glActiveTexture(GL_TEXTURE0);
     glBindVertexArray(vao_);
     set_blend(Blend::Alpha);
@@ -131,9 +133,12 @@ void Renderer::set_blend(Blend blend) {
 }
 
 void Renderer::push_quad(Rect d, float u0, float v0, float u1, float v1, Color c) {
+    constexpr float x_scale = kScreenXScale;
+    const float x = canvas_w_ * 0.5f + (d.x - kScreenW * 0.5f) * x_scale;
+    const float right = x + d.w * x_scale;
     std::uint32_t rgba = std::uint32_t(c.r) | std::uint32_t(c.g) << 8 | std::uint32_t(c.b) << 16 | std::uint32_t(c.a) << 24;
-    Vertex a{d.x, d.y, u0, v0, rgba}, b{d.x + d.w, d.y, u1, v0, rgba}, cc{d.x + d.w, d.y + d.h, u1, v1, rgba},
-        e{d.x, d.y + d.h, u0, v1, rgba};
+    Vertex a{x, d.y, u0, v0, rgba}, b{right, d.y, u1, v0, rgba}, cc{right, d.y + d.h, u1, v1, rgba},
+        e{x, d.y + d.h, u0, v1, rgba};
     batch_.insert(batch_.end(), {a, b, cc, a, cc, e});
 }
 

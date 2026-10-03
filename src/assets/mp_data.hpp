@@ -43,10 +43,21 @@ constexpr std::uint32_t kTeamKingOfTheHill = kTeamFlag | kObjectiveFlag | 0x1000
 constexpr std::uint32_t kMpTeamPhoenix = 0, kMpTeamMi6 = 1, kMpTeamNone = 2;
 constexpr std::uint32_t kMpTeamLabels[2] = {0x1c7, 0x1c8};
 
-constexpr std::size_t kMpMaxHumans = 4;      // 4 controller ports (multitap)
-constexpr std::size_t kMpMaxBots = 4;        // MP_Start clamps MPSettings.bot_count to 4; the bots menu has 4 rows
-constexpr std::size_t kMpSlots = 8;          // MPSettings/MPGame slot arrays: humans 0-3, bots 4-7
-constexpr std::size_t kMpBotTable = 10;      // rows in the `mpbots` array (only the first 4 reach a match)
+constexpr std::size_t kMpMaxHumans = 4;      // Local controller/connection slots.
+constexpr std::size_t kMpMaxBots = 12;       // Extended set: 16 total slots minus 4 humans.
+constexpr std::size_t kMpPs2Slots = 8;
+constexpr std::size_t kMpGcXboxSlots = 10;
+constexpr std::size_t kMpSlots = 16;         // Storage capacity; ArenaSettings::slot_count is the active match limit.
+constexpr std::size_t kMpBotTable = 10;      // Original `mpbots` table rows; extensions synthesize extra rows.
+enum class MpRuleSet : std::uint8_t { Ps2, GcXbox, Extended };
+constexpr std::size_t mp_rule_slot_limit(MpRuleSet rules) {
+    switch (rules) {
+    case MpRuleSet::Ps2: return kMpPs2Slots;
+    case MpRuleSet::GcXbox: return kMpGcXboxSlots;
+    case MpRuleSet::Extended: return kMpSlots;
+    }
+    return kMpPs2Slots;
+}
 constexpr std::size_t kMpCharacters = 29;    // mp_characters / mp_characters_small / MP_skins / default_bot_stats rows
 
 // An M_ITEM of a menu wheel/list (0x18 bytes in ACTION.ELF): the shared row layout of mp_level,

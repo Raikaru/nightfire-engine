@@ -12,12 +12,14 @@
 
 namespace nf::net {
 
-constexpr std::uint16_t kProtocolVersion = 6;
+constexpr std::uint16_t kProtocolVersion = 7;
 constexpr std::uint8_t kOwnerMovementSchemaVersion = 2;
-constexpr std::uint8_t kMaxServerBots = 4;
+constexpr std::uint8_t kMaxServerBots = 12;
 constexpr std::size_t kDataHashBytes = 32;
 constexpr std::size_t kMaxDatagramBytes = 1200;
 constexpr std::size_t kMaxPasswordBytes = 64;
+constexpr std::uint8_t kMaxLocalPlayers = 4;
+constexpr std::size_t kInputRedundancy = 3;
 enum class Message : std::uint8_t {
     Hello = 1,
     Welcome = 2,
@@ -38,8 +40,9 @@ struct PadInput {
     std::uint16_t buttons = 0;
     std::array<std::uint8_t, 4> sticks{0x80, 0x80, 0x80, 0x80};
     std::uint32_t view_tick = 0;  // newest server snapshot represented by the client's rendered/interpolated pose
-};
+    std::uint8_t local_player = 0;  // per-connection local player index
 
+};
 struct Header {
     Message message = Message::Ack;
     std::uint32_t sequence = 0;
@@ -58,7 +61,11 @@ std::vector<std::uint8_t> encode(const Packet& packet);
 std::optional<Packet> decode(std::span<const std::uint8_t> bytes);
 
 std::vector<std::uint8_t> encode_hello(const std::array<std::uint8_t, kDataHashBytes>& data_hash,
-                                      std::string_view player_name, std::string_view password = {});
+                                      std::string_view player_name, std::string_view password = {},
+                                      std::uint8_t local_players = 1);
+bool decode_hello(std::span<const std::uint8_t> payload,
+                  std::array<std::uint8_t, kDataHashBytes>& data_hash, std::string& player_name,
+                  std::string& password, std::uint8_t& local_players);
 bool decode_hello(std::span<const std::uint8_t> payload,
                   std::array<std::uint8_t, kDataHashBytes>& data_hash, std::string& player_name,
                   std::string& password);
@@ -74,6 +81,8 @@ struct ServerInfo {
     bool password_required = false;
     std::uint64_t match_revision = 0;
     std::uint8_t bots = 0;
+    std::uint8_t slot_count = 8;
+    bool modified_rules = false;
 };
 std::vector<std::uint8_t> encode_server_query(std::uint32_t query_id);
 bool decode_server_query(std::span<const std::uint8_t> payload, std::uint32_t& query_id);
@@ -86,7 +95,7 @@ std::vector<std::uint8_t> encode_input(const PadInput& input);
 bool decode_input(std::span<const std::uint8_t> payload, PadInput& input);
 struct InputBatch {
     std::uint8_t count = 0;
-    std::array<PadInput, 3> samples{};
+    std::array<PadInput, kMaxLocalPlayers * kInputRedundancy> samples{};
 };
 std::vector<std::uint8_t> encode_input_batch(const InputBatch& batch);
 bool decode_input_batch(std::span<const std::uint8_t> payload, InputBatch& batch);
@@ -146,6 +155,7 @@ struct PlayerSnapshot {
     std::optional<OwnerMovementState> owner_movement;
 };
 
+constexpr std::size_t kSnapshotPlayersPerPage = 2;
 struct Snapshot {
     std::uint32_t tick = 0;
     std::uint32_t ack_input_tick = 0;
@@ -156,8 +166,10 @@ struct Snapshot {
     float elapsed = 0, time_left = -1;
     std::array<float, 2> team_score{};
     std::uint64_t match_revision = 0;
+    std::uint8_t page_index = 0, page_count = 1;
     std::vector<PlayerSnapshot> players;
 };
+std::vector<Snapshot> split_snapshot(const Snapshot& snapshot);
 std::vector<std::uint8_t> encode_snapshot(const Snapshot& snapshot);
 bool decode_snapshot(std::span<const std::uint8_t> payload, Snapshot& snapshot);
 

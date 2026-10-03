@@ -35,25 +35,16 @@ from pine import Pine, WRITE8, WRITE16, WRITE32
 PRESS_MS = 400
 NAV_MS = 800
 
-def _vpad(controller, words):
+def vpad(*words):
     if len(words) >= 3 and words[0] == "press" and words[2] == 400:
         duration = PRESS_MS if words[1] == "cross" else NAV_MS
         words = (*words[:2], duration, *words[3:])
-    command = words if controller == 1 else ("p2", *words)
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "nf-vpad.sock"))
-    s.sendall((" ".join(map(str, command)) + "\n").encode())
+    s.sendall((" ".join(map(str, words)) + "\n").encode())
     reply = s.recv(256)
     s.close()
     return reply
-
-
-def vpad(*words):
-    return _vpad(1, words)
-
-
-def vpad2(*words):
-    return _vpad(2, words)
 
 
 def hold(btn, secs=2.0):
@@ -90,8 +81,8 @@ def main():
                     help="logic frames after first live player before saving a match-start state")
     ap.add_argument("--weapon-set", type=int, default=None,
                     help="override MP PickupMatrix row (0..10) before match start")
-    ap.add_argument("--second-human", action="store_true",
-                    help="join Pad2 from the P_MPJOIN screen (requires vpad.py --dual and PCSX2 Pad2 = SDL-1)")
+    ap.add_argument("--time-limit-sec", type=float, default=None,
+                    help="override the live MP match timer before saving its start state")
     args = ap.parse_args()
     global PRESS_MS, NAV_MS
     PRESS_MS = args.press_ms
@@ -99,6 +90,8 @@ def main():
 
     if args.weapon_set is not None and not 0 <= args.weapon_set <= 10:
         ap.error("--weapon-set must be in 0..10")
+    if args.time_limit_sec is not None and args.time_limit_sec <= 0:
+        ap.error("--time-limit-sec must be positive")
     if args.spawn_stabilize < 0:
         ap.error("--spawn-stabilize must be non-negative")
 
@@ -111,8 +104,6 @@ def main():
             time.sleep(1.0)
 
     pine = Pine()
-    if args.second_human:
-        vpad2("release")
     vpad("release")
     before = pine.read32(A.GS_FRAME_START)
     pine.load_state(args.load_slot)
@@ -127,10 +118,6 @@ def main():
     hold("cross")
     time.sleep(args.page_settle)
     snap("02-join")
-    if args.second_human:
-        vpad2("press", "cross", args.press_ms)
-        time.sleep(args.settle)
-        snap("02-join-two-players")
     hold("cross")
     time.sleep(args.settle)
     hold("cross")
@@ -149,10 +136,8 @@ def main():
         pine.write(WRITE32, A.MPSETTINGS + A.MPS_SCENARIO_MASK, 0xAAAAAAAA)
 
     snap("03-scenario")
-    # Quick Game shares Arena's default scenario mask and skips the map wheel.
-    # Leave that entry before observing the selected scenario in RAM.
-    vpad("press", "down", 400)
-    time.sleep(args.settle)
+    # The wheel opens with Arena highlighted. Quick Game has already been
+    # passed on the preceding ready/options page, so do not step down again.
     want_mask = A.MP_SCENARIOS[args.scenario][0]
     for attempt in range(14):
         pine.write(WRITE8, A.MENU_UNLOCK_EVERYTHING, 1)
@@ -221,8 +206,8 @@ def main():
     vpad("press", "cross", 400)
     time.sleep(args.page_settle)
     snap("09-options")
-    if args.bot_chars:
-        vpad("press", "cross", 400)   # Continue directly; roster already poked
+    if args.bot_chars or args.bots == 0:
+        vpad("press", "cross", 400)   # Continue; roster is poked or no bots requested
         time.sleep(args.page_settle)
     else:
         vpad("press", "down", 400)
@@ -278,6 +263,10 @@ def main():
             if frame1 - first_live_frame < args.spawn_stabilize:
                 continue
             live = True
+            if args.time_limit_sec is not None:
+                limit = struct.unpack("<I", struct.pack("<f", args.time_limit_sec))[0]
+                pine.write(WRITE32, A.MPGAME + A.MPG_LIMIT, limit)
+                print("poked live MP time limit (seconds)", args.time_limit_sec, flush=True)
             pine.save_state(args.slot)
             print("live:", live, "saved slot", args.slot, "at frame", frame1, flush=True)
             break

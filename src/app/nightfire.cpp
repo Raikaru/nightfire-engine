@@ -125,7 +125,7 @@ void sync_config_to_frontend(const AppConfig& cfg, Frontend& frontend) {
     o.weapon_auto_switch = cfg.weapon_auto_switch;
     o.hud_always_on = cfg.hud_always_on;
     o.speaker = cfg.speaker;
-    o.widescreen = cfg.widescreen;
+    o.widescreen = !cfg.pillarbox;
     o.screen_x = cfg.screen_x;
     o.screen_y = cfg.screen_y;
     PlayerOptions& p = frontend.player_options();
@@ -189,9 +189,9 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
             background.draw(ui);
             frontend.draw(ui, text);
             ui.end();
-            window.swap();
             if (!window.save_bmp(shot)) throw std::runtime_error("could not save frontend screenshot");
             std::printf("frontend page 0x%08x -> %s\n", frontend.page_id(), shot.c_str());
+            window.swap();
         }
         return false;
     }
@@ -230,6 +230,7 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
         }
         int w, h;
         window.begin_frame(w, h);
+        ui.begin(w, h);
         background.draw(ui);
         frontend.draw(ui, text);
         ui.end();
@@ -252,14 +253,15 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
     cfg.manual_aim = o.manual_aim;
     cfg.weapon_auto_switch = o.weapon_auto_switch;
     cfg.hud_always_on = o.hud_always_on;
-    cfg.speaker = o.speaker;
     cfg.widescreen = o.widescreen;
+    cfg.pillarbox = !o.widescreen;
     cfg.screen_x = o.screen_x;
     cfg.screen_y = o.screen_y;
     const PlayerOptions& p = frontend.player_options();
     cfg.controller_style = p.controller_style;
     cfg.invert_y = p.invert_y;
     save_config(config_path(), cfg);
+    ui.set_pillarbox(cfg.pillarbox);
     report_result(frontend.result());
     out = frontend.result();
     return true;
@@ -297,6 +299,8 @@ struct Args {
     int listen_port = 27500;
     float host_time_limit = -1.0f;  // optional minutes; useful for short rotation tests
     int give = -1;
+    int local_players = 1;
+    int width = kWindowW, height = kWindowH;
 };
 bool parse_args(int argc, char** argv, Args& a) {
     if (argc < 2) return false;
@@ -326,6 +330,11 @@ bool parse_args(int argc, char** argv, Args& a) {
         }
         else if (v == "--mp") a.mp = true;
         else if (v == "--connect") need(a.connect);
+        else if (v == "--local-players" && i + 1 < argc) {
+            a.local_players = std::atoi(argv[++i]);
+            if (a.local_players < 1 || a.local_players > int(nf::net::kMaxLocalPlayers))
+                throw std::runtime_error("--local-players must be 1..4");
+        }
         else if (v == "--password") need(a.password);
         else if (v == "--browse-lan") a.browse_lan = true;
         else if (v == "--browse-master") { a.browse_master = true; need(a.master); }
@@ -349,6 +358,15 @@ bool parse_args(int argc, char** argv, Args& a) {
         else if (v == "--drive") need(a.drive);
         else if (v == "--car") need(a.car);
         else if (v == "--movie") need(a.movie);
+        else if (v == "--size" && i + 1 < argc) {
+            const std::string size = argv[++i];
+            const std::size_t separator = size.find_first_of("xX,");
+            if (separator == std::string::npos) throw std::runtime_error("--size must be WIDTHxHEIGHT");
+            a.width = std::stoi(size.substr(0, separator));
+            a.height = std::stoi(size.substr(separator + 1));
+            if (a.width < 320 || a.height < 240 || a.width > 8192 || a.height > 8192)
+                throw std::runtime_error("--size must be between 320x240 and 8192x8192");
+        }
         else if (v == "--frames" && i + 1 < argc) a.frames = std::atol(argv[++i]);
         else if (v == "--shot") need(a.shot);
         else if (v == "--inputs") need(a.inputs);
@@ -433,7 +451,7 @@ void usage(const char* prog) {
     std::fprintf(stderr,
                  "usage: %s <gamedir> [--mission level.bin [--difficulty 0|1|2] [--channel CH=VAL]] [--mp MAP_OPTS] "
                  "[--drive name [--car name]] [--movie hexid] [--frames N] [--shot out.bmp] [--inputs file] "
-                 "[--press a,b,...] [--page 0x40000002] [--mute] [--give ID]\n"
+                 "[--press a,b,...] [--page 0x40000002] [--size WIDTHxHEIGHT] [--mute] [--give ID]\n"
                  "  --connect IPv4[:port] [--password text] [--map file.bin] [--name name] [--chat message] [--frames N] "
                  "[--net-sim-loss 0..100] [--net-sim-latency ms] joins a network server.\n"
                  "  --browse-lan, --browse-master IPv4[:port], or --browse-ip IPv4[:port] query server lists/info; the main-menu Multiplayer entry opens Host/Join.\n"
@@ -514,7 +532,7 @@ int run(int argc, char** argv) {
                         !args.movie.empty() || !args.connect.empty();
     const bool headless_opts = args.frames >= 0 || !args.shot.empty() || !args.press.empty() || !args.inputs.empty();
     const bool hidden = (direct && headless_opts) || (!direct && (!args.press.empty() || !args.shot.empty()));
-    Window window("nightfire", kWindowW, kWindowH, hidden);
+    Window window("nightfire", args.width, args.height, hidden);
 
     // Frontend menu audio (best effort: the shared SFX ids, volumes from the settings).
     SoundArchive archive(args.gamedir);
@@ -524,6 +542,7 @@ int run(int argc, char** argv) {
     audio::AudioSystem* menu_audio_ptr = args.mute ? nullptr : &menu_audio;
     if (menu_audio_ptr && !menu_audio_ptr->open_device()) menu_audio_ptr = nullptr;
     ui::Renderer ui(ctx->assets.sprites);
+    ui.set_pillarbox(cfg.pillarbox);
     ui::TextRenderer text(ui, ctx->assets.fonts);
     if (!args.connect.empty()) {
         NetworkClientOptions options;
@@ -532,15 +551,22 @@ int run(int argc, char** argv) {
         options.password = args.password;
         options.name = args.player_name;
         options.chat = args.chat;
+        options.local_players = std::uint8_t(args.local_players);
         options.loss_percent = args.net_sim_loss;
         options.latency_ms = args.net_sim_latency;
-        NetworkSession network(*ctx, std::move(options));
+        const auto server_info = ServerBrowser().direct(options.endpoint);
         MpDirect direct_mp;
         direct_mp.level_bin = args.map;
         direct_mp.inputs[0] = args.inputs;
         direct_mp.options.enabled = true;
-        direct_mp.options.humans = 4;
-        direct_mp.options.bots = 4;  // local drone rigs are hidden/posed from authoritative network bot snapshots
+        direct_mp.options.humans = int(nf::kMpMaxHumans);
+        if (!server_info.empty()) {
+            direct_mp.options.bots = server_info.front().bots;
+            direct_mp.options.rules = server_info.front().slot_count == 10 ? nf::MpRuleSet::GcXbox :
+                                      server_info.front().slot_count == 16 ? nf::MpRuleSet::Extended :
+                                                                           nf::MpRuleSet::Ps2;
+        }
+        NetworkSession network(*ctx, std::move(options));
         MpSession session(*ctx, window, ui, text, direct_mp, cfg);
         if (!session.ready()) return 1;
         const long frames = args.frames >= 0 ? args.frames : (!args.shot.empty() ? 300 : -1);
@@ -673,13 +699,19 @@ int run(int argc, char** argv) {
                 ServerBrowser browser;
                 while (true) {
                     const std::string map = connection.map;
+                    const std::vector<ServerBrowserEntry> server_info = ServerBrowser().direct(connection.endpoint);
                     NetworkSession network(*ctx, connection);
                     MpDirect direct_mp;
                     direct_mp.level_bin = map;
                     direct_mp.options.enabled = true;
                     direct_mp.options.mode = mode;
                     direct_mp.options.humans = int(nf::kMpMaxHumans);
-                    direct_mp.options.bots = int(nf::kMpMaxBots);
+                    if (!server_info.empty()) {
+                        direct_mp.options.bots = server_info.front().bots;
+                        direct_mp.options.rules = server_info.front().slot_count == 10 ? nf::MpRuleSet::GcXbox :
+                                                  server_info.front().slot_count == 16 ? nf::MpRuleSet::Extended :
+                                                                                       nf::MpRuleSet::Ps2;
+                    }
                     nf::GameRng client_rng;
                     nf::ScopedGameRng client_rng_binding(client_rng);
                     MpSession session(*ctx, window, ui, text, direct_mp, cfg);
@@ -744,6 +776,7 @@ int run(int argc, char** argv) {
                     client_options.map = before.map;
                     client_options.password = args.password;
                     client_options.name = args.player_name;
+                    client_options.local_players = std::uint8_t(args.local_players);
                     client_options.loss_percent = args.net_sim_loss;
                     client_options.latency_ms = args.net_sim_latency;
                     MpDirect client_mp;
@@ -751,7 +784,6 @@ int run(int argc, char** argv) {
                     client_mp.options = mp.options;
                     client_mp.options.mode = before.mode;
                     client_mp.options.humans = int(nf::kMpMaxHumans);
-                    client_mp.options.bots = int(nf::kMpMaxBots);
                     nf::GameRng client_rng;
                     nf::ScopedGameRng client_rng_binding(client_rng);
                     NetworkSession network(*ctx, std::move(client_options));

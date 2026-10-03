@@ -67,8 +67,11 @@ std::string vec_str(const Vec3& v) { return fmt("(%.1f,%.1f,%.1f)", double(v[0])
 // Roster helpers
 
 void fill_bot_slots(ArenaSettings& settings, const std::vector<BotSpec>& roster) {
-    for (int i = 4; i < 8; ++i) settings.slots[std::size_t(i)] = {};
+    for (std::size_t i = kMpMaxHumans; i < settings.slots.size(); ++i) settings.slots[i] = {};
     for (const BotSpec& s : roster) {
+        if (s.slot < int(kMpMaxHumans) || std::size_t(s.slot) >= settings.slot_count ||
+            std::size_t(s.slot) >= settings.slots.size())
+            throw std::invalid_argument("bot slot exceeds the match ruleset capacity");
         ArenaSettings::Slot& slot = settings.slots[std::size_t(s.slot)];
         slot.present = true;
         slot.bot = true;
@@ -135,9 +138,12 @@ public:
     bool location_damage() const override { return sys_.impl_->cfg.weapons->tuning().location_damage; }
     bool professional_mode() const override { return false; }
 
+    int participant_count() const override {
+        return int(sys_.impl_->cfg.arena->settings().slot_count);
+    }
     Participant participant(int slot) const override {
         Participant p;
-        if (slot < 0 || slot >= 8) return p;
+        if (slot < 0 || std::size_t(slot) >= sys_.impl_->cfg.arena->settings().slot_count) return p;
         const ArenaSettings& s = sys_.impl_->cfg.arena->settings();
         const ArenaSettings::Slot& sl = s.slots[std::size_t(slot)];
         if (!sl.present) return p;
@@ -189,7 +195,7 @@ public:
         v.category = p.state == Pickup::State::Gone ? 99 : p.category;
         v.item = p.item;
         v.respawning = p.state == Pickup::State::Waiting;
-        for (int k = 0; k < 4; ++k) v.visit_until[k] = p.visit_until[std::size_t(k)];
+        for (int k = 0; k < int(kMpMaxBots); ++k) v.visit_until[k] = p.visit_until[std::size_t(k)];
         return v;
     }
     void set_pickup_visit(int i, int bot_index, float until) override {
@@ -222,8 +228,9 @@ public:
     }
     bool bot_mirror(int slot, int other, float* sq_dist, bool* visible) const override {
         Bot* b = sys_.bot_at_slot(slot);
-        if (!b || !b->brain || other < 0 || other >= 8 || !sq_dist || !visible) return false;
-        const OtherInfo& o = b->brain->v.other[std::size_t(other)];
+        if (!b || !b->brain || other < 0 ||
+            std::size_t(other) >= sys_.impl_->cfg.arena->settings().slot_count || !sq_dist || !visible) return false;
+        const OtherInfo& o = b->brain->v.other_info(other);
         if ((o.flags & otherflag::kValid) == 0) return false;
         *sq_dist = o.sq_dist;
         *visible = (o.flags & otherflag::kVisible) != 0;

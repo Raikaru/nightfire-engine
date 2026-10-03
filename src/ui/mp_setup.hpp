@@ -55,9 +55,12 @@ struct MpSettings {
     std::int32_t grapple = 0;                 // +0x1d0
     std::int32_t explosive_scenery = 0;       // +0x1d4 (0x10 = the locked placeholder, masked to 0 by P_MPCONFIRM)
     std::array<MpPlayerSlot, kMpSlots> slots;
-    std::array<MpBot, kMpBotTable> bots;      // mpbots rows
+    std::array<MpBot, kMpMaxBots> bots;          // Original first 10 mpbots rows plus extension rows 10..11.
     bool bots_prepared = false;               // mpbots[0]: Menu_PrepareBots ran, MP_Start reads `bots` instead of the defaults
     std::uint32_t prepared_bot_count = 0;     // mpbots[1]
+    MpRuleSet rules = MpRuleSet::Ps2;
+    std::uint32_t slot_count = 8;
+    std::uint32_t bot_limit() const { return slot_count > kMpMaxHumans ? slot_count - kMpMaxHumans : 0; }
 
     bool team_game() const { return (mode & mp_mode::kTeamFlag) != 0; }            // MPSettings+0x18c
     bool objective_scored() const { return (mode & mp_mode::kObjectiveFlag) != 0; } // MPSettings+0x190
@@ -180,6 +183,7 @@ public:
     std::vector<MpChoice> rule_choices(MpRule r) const;         // Explosive Scenery collapses to {Locked} until unlocked
     bool set_rule(MpRule r, std::int32_t value);                // false if `value` is not one of rule_choices
     void cycle_rule(MpRule r, int direction);                   // the radio control's left/right, wrapping
+    void set_ruleset(MpRuleSet rules);
     std::uint32_t score_caption(std::uint32_t mode) const;      // label of the ScoreLimit row ("Points" / "Lives")
     // The P_MPCONFIRM summary's unit label of the score row (Lives / Points, "Minutes" for an unlimited hill game).
     std::uint32_t score_unit_label(std::uint32_t mode, std::int32_t limit) const;

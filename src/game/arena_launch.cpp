@@ -6,6 +6,8 @@ namespace nf {
 ArenaSettings ArenaSystem::settings_from_launch(const MpLaunch& launch) {
     const MpSettings& in = launch.settings;
     ArenaSettings out;
+    out.rules = in.rules;
+    out.slot_count = in.slot_count;
     out.mode = in.mode == mp_mode::kQuickGame ? mp_mode::kArena : in.mode;
     out.score_limit = in.score_limit;
     out.time_limit = launch.time_limit_seconds < 0 ? -1.0f : float(launch.time_limit_seconds);   // MPGame+0x194

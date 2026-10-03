@@ -42,10 +42,9 @@ CAPS = {
 
 
 class Pad:
-    def __init__(self, number=1):
+    def __init__(self):
         # Xbox 360 VID/PID so SDL applies its built-in gamepad mapping.
-        name = "Microsoft X-Box 360 pad" if number == 1 else f"Microsoft X-Box 360 pad {number}"
-        self.ui = UInput(CAPS, name=name, vendor=0x045E, product=0x028E, version=0x110, bustype=e.BUS_USB)
+        self.ui = UInput(CAPS, name="Microsoft X-Box 360 pad", vendor=0x045E, product=0x028E, version=0x110, bustype=e.BUS_USB)
         self.lock = threading.Lock()
 
     def _emit(self, typ, code, value):
@@ -77,19 +76,8 @@ class Pad:
             self.trigger(t, 0.0)
 
 
-def handle(pads, line):
+def handle(pad, line):
     parts = line.split()
-    if not parts:
-        return
-    if parts[0] in ("p2", "pad2"):
-        if len(pads) < 2:
-            raise ValueError("Pad2 is disabled; start vpad.py with --dual")
-        pad = pads[1]
-        parts = parts[1:]
-        if not parts:
-            raise ValueError("Pad2 command is missing")
-    else:
-        pad = pads[0]
     cmd, args = parts[0], parts[1:]
     if cmd == "press":
         pad.button(args[0], True)
@@ -105,15 +93,15 @@ def handle(pads, line):
         pad.release()
     else:
         raise ValueError(f"unknown command: {line}")
-def serve(pads, path):
-    if not isinstance(pads, (list, tuple)):
-        pads = [pads]
+
+
+def serve(pad, path):
     if os.path.exists(path):
         os.unlink(path)
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     srv.bind(path)
     srv.listen(4)
-    print(f"vpad ready on {path} ({len(pads)} pad(s))", flush=True)
+    print(f"vpad ready on {path}", flush=True)
 
     def client(conn):
         with conn, conn.makefile("rw") as f:
@@ -122,7 +110,7 @@ def serve(pads, path):
                 if not line:
                     continue
                 try:
-                    handle(pads, line)
+                    handle(pad, line)
                     f.write("ok\n")
                 except Exception as ex:  # report to client, keep serving
                     f.write(f"err {ex}\n")
@@ -134,13 +122,4 @@ def serve(pads, path):
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dual", action="store_true", help="also create an independent Pad2 SDL device")
-    parser.add_argument("--socket", default=os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "nf-vpad.sock"))
-    args = parser.parse_args()
-    pads = [Pad()]
-    if args.dual:
-        pads.append(Pad(2))
-    serve(pads, args.socket)
+    serve(Pad(), os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "nf-vpad.sock"))

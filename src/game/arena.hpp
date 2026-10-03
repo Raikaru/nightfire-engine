@@ -34,8 +34,11 @@ constexpr int kAttackerNone = -1, kAttackerEnvironment = -2;
 // Respawn point choice, MPSettings+0x1C0 (labels 0x1B0 / 0x1B1 / 0x1B2).
 enum class SpawnSelection : int { Near = 0, Far = 1, Random = 2 };
 
+
 // MPSettings / the parts of MPGame that are configuration.
 struct ArenaSettings {
+    MpRuleSet rules = MpRuleSet::Ps2;
+    std::size_t slot_count = 8;                 // Active participant capacity, humans plus bots.
     struct Slot {
         bool present = false;
         bool bot = false;

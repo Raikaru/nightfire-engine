@@ -441,7 +441,7 @@ struct MpSession::Impl {
             audio->play_sfx(std::uint32_t(sound.id), options);
         }
     }
-    void draw_views(int viewer_only = -1) {
+    void draw_views(int viewer_only = -1, int viewer_count = 0) {
         drain_messages();
         update_network_replication();
         const int humans = session->humans();
@@ -450,15 +450,12 @@ struct MpSession::Impl {
         glDisable(GL_SCISSOR_TEST);
         glClearColor(0, 0, 0, 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        // Game viewport first (4:3 pillarbox unless widescreen; the full-window black
-        // clear above is the bar color); viewer rects subdivide the game rect, so every
-        // 3D view projects with the game aspect, not the window aspect.
         const GameView gv = game_view(config, width, height);
-        const int view_count = viewer_only < 0 ? humans : 1;
+        const int view_count = viewer_count > 0 ? viewer_count : (viewer_only < 0 ? humans : 1);
         const auto rects = split_screen_layout(view_count, gv.w, gv.h, session->options().side_by_side);
         glEnable(GL_SCISSOR_TEST);
         for (int view = 0; view < view_count; ++view) {
-            const int i = viewer_only < 0 ? view : viewer_only;
+            const int i = viewer_count > 0 ? viewer_only + view : (viewer_only < 0 ? view : viewer_only);
             ViewRect r = rects[std::size_t(view)];
             r.x += gv.x;
             r.y += gv.y;
@@ -739,7 +736,7 @@ MpResult MpSession::run_interactive() {
 MpResult MpSession::run_network_interactive(NetworkSession& network, long frames, const std::string& shot) {
     Impl& s = *impl_;
     s.network = &network;
-    s.pads = open_local_pads(1);
+    s.pads = open_local_pads(nf::net::kMaxLocalPlayers);
     int gamepad_count = 0;
     if (SDL_JoystickID* ids = SDL_GetGamepads(&gamepad_count)) {
         if (gamepad_count > 0) s.menu_pad_handle = SDL_OpenGamepad(ids[0]);
@@ -824,8 +821,9 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
             if (held.first <= frame && frame <= held.last) return held.pad;
         return compensate_sticks(PadState{});
     };
-    auto input_for_frame = [&](long frame) {
-        return use_script ? scripted_pad(frame) : (s.pads.empty() ? PadState{} : s.pads[0].sample());
+    auto input_for_frame = [&](long frame, std::size_t local) {
+        if (use_script) return local == 0 ? scripted_pad(frame) : PadState{};
+        return local < s.pads.size() ? s.pads[local].sample() : PadState{};
     };
     std::uint8_t viewer = 0;
     bool running = true, captured = false, match_over = false;
@@ -838,12 +836,12 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
         nf::ActionInput mapped;
     };
     std::deque<nf::net::Snapshot> snapshot_history;
-    std::deque<UnackedInput> unacked_inputs;
+    std::array<std::deque<UnackedInput>, nf::net::kMaxLocalPlayers> unacked_inputs;
     std::array<nf::Vec3, nf::kMpSlots> previous_remote_render{};
     std::array<bool, nf::kMpSlots> has_previous_remote_render{};
     std::vector<float> correction_magnitudes;
     std::vector<float> remote_position_jitter_cm;
-    bool have_prediction_baseline = false;
+    std::array<bool, nf::net::kMaxLocalPlayers> have_prediction_baseline{};
     double previous_render_tick = 0.0;
     bool have_previous_render_tick = false;
     std::uint32_t local_input_tick = 0;
@@ -860,15 +858,15 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
             const std::size_t slot = state.slot;
             nf::Player* player = s.world->player(int(slot));
             if (!player) continue;
-            const bool is_viewer = state.slot == viewer;
+            const bool is_viewer = state.slot >= viewer && state.slot < viewer + network.local_players();
+            const std::size_t local = is_viewer ? std::size_t(state.slot - viewer) : 0;
             s.network_body_visible[slot] = state.present && state.alive && (state.visible || is_viewer);
             if (!state.present) continue;
             if (is_viewer) {
                 const nf::Vec3 authoritative{state.x, state.y, state.z};
                 const nf::Vec3 predicted_before = player->pos;
                 const float server_state_delta = nf::length(authoritative - predicted_before);
-                // Standing MP spawns use the default up normal; the wire snapshot carries no contact normal.
-                if (!state.owner_movement && !have_prediction_baseline &&
+                if (!state.owner_movement && !have_prediction_baseline[local] &&
                     state.substate == static_cast<std::uint8_t>(nf::SubState::Walk))
                     player->place_at_rest(authoritative, state.yaw, state.pitch, 1.0f);
                 if (state.owner_movement) {
@@ -883,20 +881,21 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
                 player->vitals.health = state.health;
                 player->vitals.armour = state.armor;
                 player->life = state.alive ? nf::LifeState::Alive : nf::LifeState::Dead;
-                while (!unacked_inputs.empty() && unacked_inputs.front().tick <= snapshot.ack_input_tick)
-                    unacked_inputs.pop_front();
-                for (const UnackedInput& input : unacked_inputs)
-                    s.world->replay_player(int(viewer), input.mapped);
-                if (!have_prediction_baseline) {
-                    have_prediction_baseline = true;
-                    std::printf("net prediction baseline tick=%u snapshot delta=%.2f cm\n", snapshot.tick,
-                                server_state_delta * 100.0f);
+                auto& pending = unacked_inputs[local];
+                while (!pending.empty() && pending.front().tick <= snapshot.ack_input_tick) pending.pop_front();
+                for (const UnackedInput& input : pending)
+                    s.world->replay_player(int(state.slot), input.mapped);
+                if (!have_prediction_baseline[local]) {
+                    have_prediction_baseline[local] = true;
+                    std::printf("net prediction baseline slot=%u tick=%u snapshot delta=%.2f cm\n", state.slot,
+                                snapshot.tick, server_state_delta * 100.0f);
                 } else {
                     const float correction = nf::length(player->pos - predicted_before);
                     correction_magnitudes.push_back(correction);
                     if (correction > 0.01f)
-                        std::printf("net prediction correction tick=%u ack=%u pending=%zu %.2f cm\n",
-                                    snapshot.tick, snapshot.ack_input_tick, unacked_inputs.size(), correction * 100.0f);
+                        std::printf("net prediction correction slot=%u tick=%u ack=%u pending=%zu %.2f cm\n",
+                                    state.slot, snapshot.tick, snapshot.ack_input_tick, pending.size(),
+                                    correction * 100.0f);
                 }
             } else {
                 player->life = state.alive ? nf::LifeState::Alive : nf::LifeState::Dead;
@@ -959,7 +958,7 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
         const double render_tick = double(latest_snapshot_tick) + extrapolated - 3.0;
         rendered_view_tick = render_tick;
         for (std::uint8_t slot = 0; slot < nf::World::kMaxPlayers; ++slot) {
-            if (slot == viewer) continue;
+            if (slot >= network.slot() && slot < std::uint8_t(network.slot() + network.local_players())) continue;
             nf::net::PlayerSnapshot state;
             if (!sample_player(slot, render_tick, state)) {
                 has_previous_remote_render[slot] = false;
@@ -984,12 +983,12 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
             player->pos = state_position;
             player->yaw = state.yaw;
         }
-        std::array<nf::drone::Drone*, 4> bot_drones{};
-        std::array<nf::Vec3, 4> bot_positions{};
-        std::array<float, 4> bot_yaws{};
-        std::array<bool, 4> bot_hidden{};
+        std::array<nf::drone::Drone*, nf::kMpMaxBots> bot_drones{};
+        std::array<nf::Vec3, nf::kMpMaxBots> bot_positions{};
+        std::array<float, nf::kMpMaxBots> bot_yaws{};
+        std::array<bool, nf::kMpMaxBots> bot_hidden{};
         if (s.bot_match) {
-            for (std::uint8_t bot_index = 0; bot_index < 4; ++bot_index) {
+            for (std::uint8_t bot_index = 0; bot_index < nf::kMpMaxBots; ++bot_index) {
                 const std::uint8_t slot = std::uint8_t(nf::World::kMaxPlayers + bot_index);
                 auto* bot = s.bot_match->bots().bot_at_slot(slot);
                 if (!bot || !bot->drone) continue;
@@ -1022,7 +1021,8 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
         }
         previous_render_tick = render_tick;
         have_previous_render_tick = true;
-        s.draw_views(network.connected() ? int(network.slot()) : int(viewer));
+        s.draw_views(network.connected() ? int(network.slot()) : int(viewer),
+                     network.connected() ? int(network.local_players()) : 0);
         for (std::size_t i = 0; i < players.size(); ++i) {
             if (!players[i]) continue;
             players[i]->pos = saved_positions[i];
@@ -1117,24 +1117,29 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
         while (network.connected() && !match_over && accumulator >= kStep) {
             viewer = network.slot();
             PadInputs pads{};
+            std::array<PadState, nf::net::kMaxLocalPlayers> local_pads{};
             for (const ScheduledGive& give : scheduled_gives) {
                 if (give.frame == input_frames &&
                     !s.session->weapons().give_weapon(network.slot(), give.weapon, give.rounds))
                     throw std::runtime_error("scripted network weapon grant was refused");
             }
-            const PadState input = input_for_frame(input_frames);
-            pads[viewer] = input;
+            for (std::size_t local = 0; local < network.local_players(); ++local) {
+                local_pads[local] = input_for_frame(input_frames, local);
+                pads[std::size_t(viewer) + local] = local_pads[local];
+            }
             if (!input_tick_initialized) {
                 local_input_tick = network.server_tick();
                 input_tick_initialized = true;
             }
             const std::uint32_t input_tick = ++local_input_tick;
             const std::uint32_t view_tick = std::uint32_t(std::max(0.0, std::floor(rendered_view_tick)));
-            network.send_input(input, view_tick);
+            network.send_inputs(std::span<const PadState>(local_pads.data(), network.local_players()), view_tick);
             s.session->tick(pads);
-            const nf::ActionInput mapped_input = s.world->input(viewer);
-            unacked_inputs.push_back({input_tick, mapped_input});
-            if (unacked_inputs.size() > 64) unacked_inputs.pop_front();
+            for (std::size_t local = 0; local < network.local_players(); ++local) {
+                auto& pending = unacked_inputs[local];
+                pending.push_back({input_tick, s.world->input(int(viewer) + int(local))});
+                if (pending.size() > 64) pending.pop_front();
+            }
             s.tick_bodies();
             if (has_audio) s.audio_frame();
             s.effects->consume(s.session->weapons().events());

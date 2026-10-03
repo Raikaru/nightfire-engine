@@ -31,8 +31,8 @@
 
 namespace {
 void usage() {
-    std::puts("usage: nfserver <gamedir> [--config file] [--map file.bin] [--mode arena] [--bots N] [--port 27500]"
-              " [--name server] [--password text] [--master host:port]"
+    std::puts("usage: nfserver <gamedir> [--config file] [--map file.bin] [--mode arena] [--ruleset ps2|gc-xbox|extended]"
+              " [--bots N] [--port 27500] [--name server] [--password text] [--master host:port]"
               " [--frag-limit N] [--time-limit minutes] [--net-sim-loss percent] [--net-sim-latency ms]"
               " [--visibility-culling|--no-visibility-culling] [--ticks N]");
 }
@@ -43,8 +43,10 @@ struct Peer {
     std::string host, name;
     std::uint16_t port = 0;
     nf::net::Reliability reliability;
-    std::uint8_t slot = 0;
-    std::uint32_t last_input_tick = 0, last_received_input_tick = 0, view_tick = 0;  // ack only consumed samples
+    std::uint8_t slot = 0, local_players = 1;
+    std::array<std::uint32_t, nf::net::kMaxLocalPlayers> last_input_tick{};
+    std::array<std::uint32_t, nf::net::kMaxLocalPlayers> last_received_input_tick{};
+    std::array<std::uint32_t, nf::net::kMaxLocalPlayers> view_tick{};
     std::array<nf::net::PadInput, kPendingInputCapacity> pending_inputs{};
     std::size_t pending_input_head = 0, pending_input_count = 0;
     Clock::time_point last_seen{};
@@ -182,7 +184,7 @@ nf::net::Snapshot make_snapshot(std::uint32_t tick, nf::World& world, nf::ArenaS
     nf::net::Snapshot snapshot;
     const nf::ArenaSystem& arena = session.arena();
     snapshot.tick = tick;
-    snapshot.slot_count = nf::kMpSlots;
+    snapshot.slot_count = std::uint8_t(arena.settings().slot_count);
     snapshot.match_phase = std::uint8_t(arena.phase());
     snapshot.state_code = std::uint8_t(arena.state_code());
     snapshot.score_limit = std::int16_t(std::clamp(arena.settings().score_limit, -1, 32767));
@@ -190,8 +192,8 @@ nf::net::Snapshot make_snapshot(std::uint32_t tick, nf::World& world, nf::ArenaS
     snapshot.time_left = arena.time_left();
     snapshot.team_score = arena.team_score();
     const auto scoreboard = arena.scoreboard();
-    snapshot.players.reserve(nf::kMpSlots);
-    for (std::uint8_t slot = 0; slot < nf::kMpSlots; ++slot) {
+    snapshot.players.reserve(arena.settings().slot_count);
+    for (std::uint8_t slot = 0; slot < snapshot.slot_count; ++slot) {
         nf::net::PlayerSnapshot state;
         const auto& settings = arena.settings().slots[slot];
         state.slot = slot;
@@ -486,6 +488,7 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
         }
     } catch (const std::exception& e) { std::fprintf(stderr, "nfserver: %s\n", e.what()); return 2; }
     }
+    options.bots = std::min(options.bots, int(nf::mp_rule_slot_limit(options.rules) - nf::kMpMaxHumans));
 
     try {
         auto ctx = nf::app::load_context(game_dir.string());
@@ -543,7 +546,7 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
         std::array<std::array<std::uint32_t, nf::kMpSlots>, 4> last_visible_tick{};
         std::array<nf::PadState, 4> current_inputs{};
         std::uint32_t tick = 0;
-        std::array<std::uint32_t, 4> shooter_view_ticks{};
+        std::array<std::uint32_t, nf::kMpMaxHumans> shooter_view_ticks{};
         std::array<HitHistoryFrame, 32> hit_history{};
         hit_history[0] = capture_hit_history(0, world, bots.get());
         session.weapons().set_lag_comp_provider([&](int shooter) {
@@ -592,20 +595,31 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                                                      peer.host.c_str(), unsigned(peer.port));
                 } else if (name == "kick") {
                     int slot = -1;
-                    if (!(command >> slot) || slot < 0 || slot >= int(peers.size()) || !peers[std::size_t(slot)].active) {
+                    if (!(command >> slot) || slot < 0 || slot >= int(nf::kMpMaxHumans)) {
                         std::puts("nfserver: usage: kick <human-slot>");
                         continue;
                     }
-                    Peer& peer = peers[std::size_t(slot)];
+                    auto peer_it = std::find_if(peers.begin(), peers.end(), [slot](const Peer& peer) {
+                        return peer.active && slot >= peer.slot && slot < peer.slot + peer.local_players;
+                    });
+                    if (peer_it == peers.end()) {
+                        std::puts("nfserver: usage: kick <connected-human-slot>");
+                        continue;
+                    }
                     nf::net::Packet reject;
                     reject.header.message = nf::net::Message::Reject;
                     const std::string reason = "kicked by server admin";
                     reject.payload.assign(reason.begin(), reason.end());
-                    socket.send(peer.host, peer.port,
-                                peer.reliability.prepare(std::move(reject), true, Clock::now()));
-                    std::printf("nfserver: kicked %s from slot %d\n", peer.name.c_str(), slot);
-                    current_inputs[std::size_t(slot)] = {};
-                    peer = {};
+                    socket.send(peer_it->host, peer_it->port,
+                                peer_it->reliability.prepare(std::move(reject), true, Clock::now()));
+                    std::printf("nfserver: kicked %s from slots %u..%u\n", peer_it->name.c_str(),
+                                unsigned(peer_it->slot), unsigned(peer_it->slot + peer_it->local_players - 1));
+                    for (std::size_t local = 0; local < peer_it->local_players; ++local) {
+                        const std::size_t human_slot = std::size_t(peer_it->slot) + local;
+                        current_inputs[human_slot] = {};
+                    }
+                    last_visible_tick[peer_it->slot].fill(0);
+                    *peer_it = {};
                 } else if (name == "say") {
                     std::string text;
                     std::getline(command >> std::ws, text);
@@ -689,9 +703,15 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                         std::lock_guard lock(runtime_state->mutex);
                         info.match_revision = runtime_state->status.revision;
                     }
-                    info.players = std::uint8_t(std::count_if(peers.begin(), peers.end(), [](const Peer& p) { return p.active; }));
+                    info.players = 0;
+                    for (const Peer& peer : peers)
+                        if (peer.active) info.players = std::uint8_t(info.players + peer.local_players);
                     info.max_players = 4;
                     info.bots = std::uint8_t(options.bots);
+                    info.slot_count = std::uint8_t(session.arena().settings().slot_count);
+                    info.modified_rules = options.score_limit != 10 || options.time_limit != 600.0f ||
+                                          options.friendly_fire || options.weapon_set != 0 ||
+                                          options.spawn != nf::SpawnSelection::Random || options.handicap != 0;
                     info.password_required = !password.empty();
                     nf::net::Packet response;
                     response.header.message = nf::net::Message::ServerInfo;
@@ -700,10 +720,14 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                     continue;
                 }
                 auto peer_it = std::find_if(peers.begin(), peers.end(), [&](const Peer& p) { return same_endpoint(p, incoming); });
+                bool newly_joined = peer_it == peers.end();
                 if (incoming.packet.header.message == nf::net::Message::Hello) {
                     std::array<std::uint8_t, nf::net::kDataHashBytes> client_hash{};
                     std::string client_name, client_password;
-                    if (!nf::net::decode_hello(incoming.packet.payload, client_hash, client_name, client_password)) continue;
+                    std::uint8_t local_players = 1;
+                    if (!nf::net::decode_hello(incoming.packet.payload, client_hash, client_name, client_password,
+                                               local_players))
+                        continue;
                     nf::net::Packet response;
                     if (client_password != password) {
                         response.header.message = nf::net::Message::Reject;
@@ -719,28 +743,71 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                         socket.send(incoming.address, incoming.port, response);
                         continue;
                     }
-                    if (peer_it == peers.end()) peer_it = std::find_if(peers.begin(), peers.end(), [](const Peer& p) { return !p.active; });
-                    if (peer_it == peers.end()) continue;
-                    const bool newly_joined = !peer_it->active;
-                    if (!peer_it->active) {
-                        peer_it->active = true; peer_it->host = incoming.address; peer_it->port = incoming.port;
-                        peer_it->slot = std::uint8_t(peer_it - peers.begin()); peer_it->name = client_name;
-                        peer_it->last_input_tick = tick;
-                        peer_it->last_received_input_tick = tick;
-                        peer_it->view_tick = 0;
+                    if (peer_it != peers.end() && peer_it->local_players != local_players) {
+                        response.header.message = nf::net::Message::Reject;
+                        const std::string reason = "local player count changed during connection";
+                        response.payload.assign(reason.begin(), reason.end());
+                        socket.send(incoming.address, incoming.port, response);
+                        continue;
+                    }
+                    if (peer_it == peers.end()) {
+                        peer_it = std::find_if(peers.begin(), peers.end(), [](const Peer& p) { return !p.active; });
+                        if (peer_it == peers.end()) {
+                            response.header.message = nf::net::Message::Reject;
+                            const std::string reason = "server connection capacity reached";
+                            response.payload.assign(reason.begin(), reason.end());
+                            socket.send(incoming.address, incoming.port, response);
+                            continue;
+                        }
+                        std::array<bool, nf::kMpMaxHumans> occupied{};
+                        for (const Peer& peer : peers) {
+                            if (!peer.active) continue;
+                            for (std::size_t local = 0; local < peer.local_players; ++local)
+                                occupied[std::size_t(peer.slot) + local] = true;
+                        }
+                        int base = -1;
+                        for (int candidate = 0; candidate + local_players <= int(occupied.size()); ++candidate) {
+                            bool free = true;
+                            for (int local = 0; local < local_players; ++local)
+                                free = free && !occupied[std::size_t(candidate + local)];
+                            if (free) { base = candidate; break; }
+                        }
+                        if (base < 0) {
+                            response.header.message = nf::net::Message::Reject;
+                            const std::string reason = "not enough free player slots";
+                            response.payload.assign(reason.begin(), reason.end());
+                            socket.send(incoming.address, incoming.port, response);
+                            continue;
+                        }
+                        peer_it->active = true;
+                        peer_it->host = incoming.address;
+                        peer_it->port = incoming.port;
+                        peer_it->slot = std::uint8_t(base);
+                        peer_it->local_players = local_players;
+                        peer_it->name = client_name;
+                        peer_it->last_input_tick.fill(tick);
+                        peer_it->last_received_input_tick.fill(tick);
+                        peer_it->view_tick.fill(0);
                         peer_it->pending_input_head = 0;
                         peer_it->pending_input_count = 0;
-                        current_inputs[peer_it->slot] = {};
-                        shooter_view_ticks[peer_it->slot] = 0;
-                        last_visible_tick[peer_it->slot].fill(0);
-                        session.arena().mutable_settings().slots[peer_it->slot].name = client_name;
-                        std::printf("nfserver: %s joined slot %u\n", client_name.c_str(), unsigned(peer_it->slot));
+                        for (std::size_t local = 0; local < local_players; ++local) {
+                            const std::size_t slot = std::size_t(base) + local;
+                            current_inputs[slot] = {};
+                            shooter_view_ticks[slot] = 0;
+                            last_visible_tick[slot].fill(0);
+                            const std::string suffix = local == 0 ? "" : " " + std::to_string(local + 1);
+                            session.arena().mutable_settings().slots[slot].name =
+                                client_name.substr(0, 32 - std::min<std::size_t>(suffix.size(), 32)) + suffix;
+                        }
+                        std::printf("nfserver: %s joined slots %u..%u\n", client_name.c_str(), unsigned(base),
+                                    unsigned(base + local_players - 1));
                     }
                     peer_it->last_seen = Clock::now();
                     peer_it->reliability.observe(incoming.packet.header);
                     if (!newly_joined) continue;
                     response.header.message = nf::net::Message::Welcome;
-                    response.payload = {peer_it->slot}; put32(response.payload, tick);
+                    response.payload = {peer_it->slot, peer_it->local_players};
+                    put32(response.payload, tick);
                     socket.send(incoming.address, incoming.port,
                                 peer_it->reliability.prepare(std::move(response), true, Clock::now()));
                 } else if (peer_it != peers.end()) {
@@ -749,10 +816,11 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                     if (incoming.packet.header.message == nf::net::Message::Input) {
                         nf::net::InputBatch batch;
                         if (!nf::net::decode_input_batch(incoming.packet.payload, batch)) continue;
-                        // View time only affects lag-compensation history; stale/future views must not discard movement.
                         for (std::size_t i = batch.count; i > 0; --i) {
                             const auto& sample = batch.samples[i - 1];
-                            if (sample.tick <= peer_it->last_received_input_tick || sample.tick > tick + 6 ||
+                            if (sample.local_player >= peer_it->local_players) continue;
+                            const std::size_t local = sample.local_player;
+                            if (sample.tick <= peer_it->last_received_input_tick[local] || sample.tick > tick + 6 ||
                                 tick > sample.tick + 30 ||
                                 peer_it->pending_input_count == kPendingInputCapacity)
                                 continue;
@@ -760,7 +828,7 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                                 (peer_it->pending_input_head + peer_it->pending_input_count) % kPendingInputCapacity;
                             peer_it->pending_inputs[tail] = sample;
                             ++peer_it->pending_input_count;
-                            peer_it->last_received_input_tick = sample.tick;
+                            peer_it->last_received_input_tick[local] = sample.tick;
                         }
                     } else if (fresh && incoming.packet.header.message == nf::net::Message::Chat &&
                                incoming.packet.payload.size() <= 256) {
@@ -779,12 +847,14 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
             const auto now = Clock::now();
             for (Peer& peer : peers) {
                 if (peer.active && now - peer.last_seen > std::chrono::seconds(10)) {
-                    const std::uint8_t slot = peer.slot;
+                    const std::uint8_t base = peer.slot;
+                    const std::uint8_t local_players = peer.local_players;
                     std::printf("nfserver: %s timed out\n", peer.name.c_str());
                     peer = {};
-                    last_visible_tick[slot].fill(0);
-                    current_inputs[slot] = {};
-                }
+                    last_visible_tick[base].fill(0);
+                    for (std::size_t local = 0; local < local_players; ++local)
+                        current_inputs[std::size_t(base) + local] = {};
+            }
             }
             for (Peer& peer : peers) {
                 if (!peer.active) continue;
@@ -794,19 +864,22 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
             if (now < next_tick) { std::this_thread::sleep_until(next_tick); continue; }
             if (!session.arena().over()) {
                 for (Peer& peer : peers) {
-                    if (!peer.active || peer.pending_input_count == 0 ||
-                        peer.pending_inputs[peer.pending_input_head].tick > tick)
-                        continue;
-                    const nf::net::PadInput input = peer.pending_inputs[peer.pending_input_head];
-                    peer.pending_input_head = (peer.pending_input_head + 1) % kPendingInputCapacity;
-                    --peer.pending_input_count;
-                    peer.last_input_tick = input.tick;
-                    peer.view_tick = input.view_tick;
-                    shooter_view_ticks[peer.slot] = input.view_tick;
-                    auto& pad = current_inputs[peer.slot];
-                    pad.buttons = input.buttons;
-                    pad.rx = input.sticks[0]; pad.ry = input.sticks[1];
-                    pad.lx = input.sticks[2]; pad.ly = input.sticks[3];
+                    if (!peer.active) continue;
+                    while (peer.pending_input_count != 0 &&
+                           peer.pending_inputs[peer.pending_input_head].tick <= tick) {
+                        const nf::net::PadInput input = peer.pending_inputs[peer.pending_input_head];
+                        peer.pending_input_head = (peer.pending_input_head + 1) % kPendingInputCapacity;
+                        --peer.pending_input_count;
+                        const std::size_t local = input.local_player;
+                        const std::size_t slot = std::size_t(peer.slot) + local;
+                        peer.last_input_tick[local] = input.tick;
+                        peer.view_tick[local] = input.view_tick;
+                        shooter_view_ticks[slot] = input.view_tick;
+                        auto& pad = current_inputs[slot];
+                        pad.buttons = input.buttons;
+                        pad.rx = input.sticks[0]; pad.ry = input.sticks[1];
+                        pad.lx = input.sticks[2]; pad.ly = input.sticks[3];
+                    }
                 }
             }
             nf::PadInputs pads{};
@@ -847,24 +920,26 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                 for (Peer& peer : peers) {
                     if (!peer.active) continue;
                     nf::net::Snapshot recipient_snapshot = snapshot;
-                    recipient_snapshot.ack_input_tick = peer.last_input_tick;
-                    if (peer.slot < nf::World::kMaxPlayers) {
-                        const nf::Player* owner = world.player(peer.slot);
-                        if (owner) {
-                            auto owner_record = std::find_if(
-                                recipient_snapshot.players.begin(), recipient_snapshot.players.end(),
-                                [&peer](const nf::net::PlayerSnapshot& player) {
-                                    return player.slot == peer.slot && player.present && !player.bot;
-                                });
-                            if (owner_record != recipient_snapshot.players.end())
-                                owner_record->owner_movement = owner_movement_state(owner->prediction_state());
-                        }
+                    recipient_snapshot.ack_input_tick =
+                        *std::min_element(peer.last_input_tick.begin(),
+                                          peer.last_input_tick.begin() + peer.local_players);
+                    for (std::size_t local = 0; local < peer.local_players; ++local) {
+                        const std::uint8_t slot = std::uint8_t(peer.slot + local);
+                        const nf::Player* owner = world.player(slot);
+                        if (!owner) continue;
+                        auto owner_record = std::find_if(
+                            recipient_snapshot.players.begin(), recipient_snapshot.players.end(),
+                            [slot](const nf::net::PlayerSnapshot& player) {
+                                return player.slot == slot && player.present && !player.bot;
+                            });
+                        if (owner_record != recipient_snapshot.players.end())
+                            owner_record->owner_movement = owner_movement_state(owner->prediction_state());
                     }
                     if (visibility_culling) {
-                        const nf::Player* observer = world.player(peer.slot);
-                        const nf::Vec3 eye = observer ? observer->eye() : nf::Vec3{};
                         for (nf::net::PlayerSnapshot& target : recipient_snapshot.players) {
-                            if (!target.present || !target.alive || target.slot == peer.slot) continue;
+                            const bool owner_target =
+                                target.slot >= peer.slot && target.slot < peer.slot + peer.local_players;
+                            if (!target.present || !target.alive || owner_target) continue;
                             nf::Vec3 position{target.x, target.y, target.z};
                             if (target.slot < nf::World::kMaxPlayers) {
                                 if (const nf::Player* target_player = world.player(target.slot)) position = target_player->eye();
@@ -872,11 +947,18 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                                 if (auto* bot = bots->bots().bot_at_slot(target.slot); bot && bot->drone)
                                     position = nf::drone::head_pos(*bot->drone);
                             }
-                            const float dx = position[0] - eye[0], dy = position[1] - eye[1], dz = position[2] - eye[2];
-                            const bool within_sound_radius = dx * dx + dy * dy + dz * dz <= 50.0f * 50.0f;
-                            const bool clear_line = observer && world.collision().line_of_sight(eye, position);
-                            if (clear_line || within_sound_radius) last_visible_tick[peer.slot][target.slot] = tick;
-                            target.visible = clear_line || within_sound_radius ||
+                            bool visible = false;
+                            for (std::size_t local = 0; local < peer.local_players && !visible; ++local) {
+                                const nf::Player* observer = world.player(peer.slot + std::uint8_t(local));
+                                if (!observer) continue;
+                                const nf::Vec3 eye = observer->eye();
+                                const float dx = position[0] - eye[0], dy = position[1] - eye[1],
+                                            dz = position[2] - eye[2];
+                                const bool within_sound_radius = dx * dx + dy * dy + dz * dz <= 50.0f * 50.0f;
+                                visible = within_sound_radius || world.collision().line_of_sight(eye, position);
+                            }
+                            if (visible) last_visible_tick[peer.slot][target.slot] = tick;
+                            target.visible = visible ||
                                              (last_visible_tick[peer.slot][target.slot] != 0 &&
                                               tick - last_visible_tick[peer.slot][target.slot] <= 11);
                             if (!target.visible) {
@@ -889,11 +971,14 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                             }
                         }
                     }
-                    nf::net::Packet packet;
-                    packet.header.message = nf::net::Message::Snapshot;
-                    packet.payload = nf::net::encode_snapshot(recipient_snapshot);
-                    socket.send(peer.host, peer.port,
-                                peer.reliability.prepare(std::move(packet), false, Clock::now()));
+                    for (const nf::net::Snapshot& page : nf::net::split_snapshot(recipient_snapshot)) {
+                        nf::net::Packet packet;
+                        packet.header.message = nf::net::Message::Snapshot;
+                        packet.payload = nf::net::encode_snapshot(page);
+                        if (!packet.payload.empty())
+                            socket.send(peer.host, peer.port,
+                                        peer.reliability.prepare(std::move(packet), false, Clock::now()));
+                    }
                 }
                 const auto world_payload = nf::net::encode_world_state(make_world_state(tick, session.arena()));
                 const auto projectile_pages = nf::net::split_projectiles(tick, make_projectiles(session.weapons()));

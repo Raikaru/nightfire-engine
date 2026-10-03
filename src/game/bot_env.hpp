@@ -10,6 +10,7 @@
 #include <source_location>
 #include <vector>
 
+#include "assets/mp_data.hpp"
 #include "core/math.hpp"
 
 namespace nf::bots {
@@ -58,7 +59,7 @@ struct PickupView {
     int category = 0;              // PICKUPINFO+0x22: 0 weapon, 1 ammo, 3 armour/health
     int item = 0;                  // PICKUPINFO+0x24 weapon-def id
     bool respawning = false;       // PICKUPINFO+0x20 == 2
-    float visit_until[4] = {};     // MPpickups[i]+0x80 per-bot lock (game-clock seconds, 0 = free)
+    float visit_until[kMpMaxBots] = {};   // MPpickups[i]+0x80 per-bot lock (game-clock seconds, 0 = free)
 };
 
 // Scenario objective object (MPOBJECT) reduced to what the bot goal code needs. `kind` is the goal kind of
@@ -83,6 +84,7 @@ public:
     virtual int weapon_set_start() const = 0;            // startweap (base id of PickupMatrix[set].slot0)
 
     virtual Participant participant(int slot) const = 0;
+    virtual int participant_count() const { return int(kMpSlots); }
     virtual bool match_playing() const { return true; }       // GameFlow_GetState() == 2
     virtual bool location_damage() const { return true; }     // MPSettings+0x1c8 (P_MPPLAYERMODS "location damage")
     virtual bool professional_mode() const { return false; }  // MPSettings+0x1bc (x3 damage taken)
