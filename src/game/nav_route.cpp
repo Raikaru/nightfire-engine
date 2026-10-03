@@ -38,9 +38,9 @@ float route_f32(std::span<const std::byte> raw, std::size_t offset) {
     return std::bit_cast<float>(route_u32(raw, offset));
 }
 
-CelPos route_cel_pos(std::span<const std::byte> raw, std::size_t offset) {
-    return {{route_f32(raw, offset), route_f32(raw, offset + 4), route_f32(raw, offset + 8)},
-            std::bit_cast<std::int32_t>(route_u32(raw, offset + 12))};
+CelPos route_cel_pos(const NavNetwork& net, std::span<const std::byte> raw, std::size_t offset) {
+    Vec3 pos{route_f32(raw, offset), route_f32(raw, offset + 4), route_f32(raw, offset + 8)};
+    return {pos, net.find_cel(pos)};
 }
 
 bool route_status(std::uint8_t raw, RouteStatus& status) {
@@ -84,9 +84,9 @@ bool NavAgent::restore_movement_route(std::span<const std::byte> route_raw,
     route.prev_first = route_u16(route_raw, 0x0c);
     route.first_node = route_u16(route_raw, 0x0e);
     route.dest_node = route_u16(route_raw, 0x10);
-    route.start = route_cel_pos(route_raw, 0x20);
-    route.goal = route_cel_pos(route_raw, 0x40);
-    route.waypoint = route_cel_pos(route_raw, 0x60);
+    route.start = route_cel_pos(*net_, route_raw, 0x20);
+    route.goal = route_cel_pos(*net_, route_raw, 0x40);
+    route.waypoint = route_cel_pos(*net_, route_raw, 0x60);
     route.index = std::bit_cast<std::int16_t>(route_u16(route_raw, 0x80));
     const bool goal_or_once = route.mode() == RouteMode::Goal || route.mode() == RouteMode::Once;
     if (route.index < -1 || route.index > int(node_count) || (route.index == int(node_count) && !goal_or_once))
@@ -117,7 +117,23 @@ bool NavAgent::restore_movement_route(std::span<const std::byte> route_raw,
     move_route_ = std::move(route);
     return true;
 }
-
+bool NavAgent::restore_movement_goal(std::span<const std::byte> point_raw,
+                                     std::span<const std::byte> target_raw) {
+    if (point_raw.size() < 0x30 || target_raw.size() < 0x58) return false;
+    goal_set_ = std::to_integer<std::uint8_t>(point_raw[0x04]) != 0;
+    point_radius_ = route_f32(point_raw, 0x14);
+    point_goal_ = route_cel_pos(*net_, point_raw, 0x20);
+    target_.mask = route_u32(target_raw, 0x00);
+    target_.object = std::to_integer<std::uint8_t>(target_raw[0x04]) != 0;
+    target_.goal = route_cel_pos(*net_, target_raw, 0x10);
+    target_.prev = route_cel_pos(*net_, target_raw, 0x30);
+    target_.direct = std::bit_cast<std::int16_t>(route_u16(target_raw, 0x50));
+    target_.fallback = std::bit_cast<std::int16_t>(route_u16(target_raw, 0x52));
+    target_.stamp = route_u32(target_raw, 0x54);
+    goal_is_object_ = target_.object;
+    goal_is_player_ = target_.mask == NavTarget::kPlayerMask;
+    return true;
+}
 
 
 // ---- route bookkeeping --------------------------------------------------------------------------

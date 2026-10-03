@@ -663,10 +663,10 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
             dst.item = int_number(p.at("item"));
             dst.amount = int_number(*amount);
             if (const Json* hidden = p.find("radar_hidden")) dst.radar_hidden = hidden->boolean();
-            const std::uint64_t lifetime = uint_number(*remaining) + (world.timer_frame_ - dst.stamp);
-            if (lifetime > std::numeric_limits<std::uint32_t>::max())
+            const std::uint64_t lifetime = uint_number(*remaining);
+            if (lifetime > std::numeric_limits<std::uint16_t>::max())
                 throw std::runtime_error("MP seed: dynamic pickup lifetime exceeds the supported range");
-            dst.lifetime_total_frames = std::uint32_t(lifetime);
+            dst.lifetime_frames = std::uint16_t(lifetime);
             dst.has_lifetime = true;
         }
     }

@@ -71,8 +71,11 @@ void BotMatch::install(ArenaSession& session) {
         spec.team = settings.slots[std::size_t(spec.slot)].team;
         bots_->add_bot(spec);
     }
-    world_.add_system(std::move(drones));
+    // Original MP_Update runs MP_Pickup_Process before BOT_update (MP_Update__Fv.s: 0x184CD4-0x184CE8).
+    // Game_Run then calls control_movement_object_handler (Game_Run__Fv.s: 0x1C97F0-0x1C9880), so a
+    // DroneWeap_DropWeapon created during BOT_update reaches Pickup_Update in the same frame's object pass.
     world_.add_system(std::move(bots));
+    world_.add_system(std::move(drones));
 }
 
 void BotMatch::start() {

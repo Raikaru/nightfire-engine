@@ -299,26 +299,24 @@ void CharacterRenderer::draw(const Camera& cam, float aspect, const SkinDef& ski
 
     glUniformMatrix4fv(u_bones_, GLsizei(palette.skin.size()), GL_FALSE, palette.skin[0].data());
     const MorphSelection morph = select_morph_weights(facial);
+    auto root_branch = [&](int bone) {
+        if (bone < 0 || std::size_t(bone) >= skin.parent.size()) return -1;
+        while (std::size_t(bone) < skin.parent.size()) {
+            const int parent = skin.bone_parent(std::size_t(bone));
+            if (parent == 0x7F) return -1;
+            if (parent == 0) break;
+            bone = parent;
+        }
+        return bone;
+    };
+    int hand_branch = -1;
     if (weapon_arm_only) {
         std::array<GLfloat, kMaxBones> visible{};
         visible.fill(1.0f);
-        int hand_branch = -1;
         for (const MeshRef& part : skin.parts) {
-            int bone = part.bone;
-            if (part.hash == 0xFFFFFFFFu || bone < 0 || std::size_t(bone) >= skin.parent.size()) continue;
-            while (std::size_t(bone) < skin.parent.size()) {
-                const int parent = skin.bone_parent(std::size_t(bone));
-                if (parent == 0x7F) {
-                    bone = -1;
-                    break;
-                }
-                if (parent == 0) break;
-                bone = parent;
-            }
-            if (bone >= 0) {
-                hand_branch = bone;
-                break;
-            }
+            if (part.hash == 0xFFFFFFFFu) continue;
+            hand_branch = root_branch(part.bone);
+            if (hand_branch >= 0) break;
         }
         // Unarmed rigs have no rigid weapon part to identify the hand branch; their right-hand arm is the last
         // direct child of the skeleton root (the paired branch is the earlier child).
@@ -328,16 +326,7 @@ void CharacterRenderer::draw(const Camera& cam, float aspect, const SkinDef& ski
         }
         if (hand_branch >= 0) {
             for (std::size_t i = 0; i < skin.parent.size() && i < visible.size(); ++i) {
-                int branch = int(i);
-                while (std::size_t(branch) < skin.parent.size()) {
-                    const int parent = skin.bone_parent(std::size_t(branch));
-                    if (parent == 0x7F) {
-                        branch = -1;
-                        break;
-                    }
-                    if (parent == 0) break;
-                    branch = parent;
-                }
+                const int branch = root_branch(int(i));
                 if (branch >= 0 && branch != hand_branch) visible[i] = 0.0f;
             }
             glUniform1fv(u_bone_visible_, GLsizei(visible.size()), visible.data());
@@ -360,9 +349,11 @@ void CharacterRenderer::draw(const Camera& cam, float aspect, const SkinDef& ski
 
     // Rigid parts are modelled in their bone's space and ride its world matrix.
     glUniformMatrix4fv(u_bones_, GLsizei(palette.world.size()), GL_FALSE, palette.world[0].data());
-    for (const auto& ref : skin.parts)
-        if (ref.hash != 0xFFFFFFFFu && ref.hash != hidden_part)
-            if (auto m = bank_.find_model(ref.hash)) draw_mesh(part_mesh(*m, ref.bone), fade);
+    for (const auto& ref : skin.parts) {
+        if (ref.hash == 0xFFFFFFFFu || ref.hash == hidden_part) continue;
+        if (weapon_arm_only && hand_branch >= 0 && root_branch(ref.bone) != hand_branch) continue;
+        if (auto m = bank_.find_model(ref.hash)) draw_mesh(part_mesh(*m, ref.bone), fade);
+    }
     // Attached datum model (silenced muzzle suppressor): single bone matrix, same object/world setup.
     if (attached_hash != 0)
         if (auto m = bank_.find_model(attached_hash)) {

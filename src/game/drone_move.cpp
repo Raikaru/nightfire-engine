@@ -544,14 +544,15 @@ void collision_step(Drone& d) {
         d.fall_velocity = {};
         d.pos = d.pos + d.fly_velocity * timing.rec();
         if (d.flags & 0x40) d.fly_velocity = d.fly_velocity * 0.9f;
-    } else {
-        if (!d.on_ground || d.ground_normal_y < 0.5f) {
-            d.fall_velocity[1] -= 9.8f * timing.rec();
-        } else {
-            d.fall_velocity = {};
+    }
+
+    // NDrone2_Collision applies the AI-boundary push before Collide_Update builds the capsule hit list.
+    if (NavNetwork* nav = d.sys->nav()) {
+        Vec3 push{};
+        if (nav->bounds_push_vector(0.4f, nav->locate(d.pos), push)) {
+            d.pos[0] += push[0];
+            d.pos[2] += push[2];
         }
-        d.fall_velocity[1] = std::clamp(d.fall_velocity[1], -45.0f, 45.0f);
-        d.pos = d.pos + d.fall_velocity * timing.rec();
     }
 
     const float h = d.stand_height;
@@ -573,16 +574,17 @@ void collision_step(Drone& d) {
     d.on_ground = feet.on_ground;
     d.ground_normal_y = feet.ground_normal_y;
     if (!r.hits.empty()) d.pos += r.push_out;
-    if (d.on_ground && d.fall_velocity[1] < 0) d.fall_velocity = {};
-
-    // AINetwork_GetBoundsPushVectorForSphere(r = 0.4): stay inside the nav boundaries.
-    if (NavNetwork* nav = d.sys->nav()) {
-        Vec3 push{};
-        if (nav->bounds_push_vector(0.4f, nav->locate(d.pos), push)) {
-            d.pos[0] += push[0];
-            d.pos[2] += push[2];
+    // Drone_CollisionHandler applies NDrone2_DoGravity after collision and feet resolution.
+    if (!d.mv.disabled) {
+        if (!d.on_ground || d.ground_normal_y < 0.5f) {
+            d.fall_velocity[1] -= 9.8f * timing.rec();
+        } else {
+            d.fall_velocity = {};
         }
+        d.fall_velocity[1] = std::clamp(d.fall_velocity[1], -45.0f, 45.0f);
+        d.pos = d.pos + d.fall_velocity * timing.rec();
     }
+
 }
 
 void place_on_floor(Drone& d) {

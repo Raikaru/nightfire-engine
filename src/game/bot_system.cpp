@@ -590,11 +590,15 @@ BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
     restored.targeted_by_bot = raw_u8(bv_raw, 0x770) != 0;
     restored.in_zone = raw_u8(bv_raw, 0x771) != 0;
     restored.armour = raw_u8(bv_raw, 0x769);
-    // BOTSTATE_gotoGoal also installs the nonserialized runtime body target.
+    // Recreate the body goal from the serialized navigation target mode and point.
     if (restored.active_goal >= 0) {
         const BotGoal& goal = restored.goal[std::size_t(restored.active_goal)];
-        if (goal.type == goaltype::kPlayer)
+        if (goal.type == goaltype::kPlayer && raw_u8(drone_raw, 0xa84) != 0)
             bot->brain->body->setup_goal_participant(goal.target, bot->brain->speed_mul());
+        else if (goal.type == goaltype::kPlayer)
+            bot->brain->body->setup_goal_position(
+                {raw_f32(drone_raw, 0x710), raw_f32(drone_raw, 0x714), raw_f32(drone_raw, 0x718)},
+                bot->brain->speed_mul());
         else if (goal.type != goaltype::kNone)
             bot->brain->body->setup_goal_position(goal.pos, bot->brain->speed_mul());
     }
@@ -674,6 +678,19 @@ BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
                 raw_f32(drone_raw, 0x8ec), raw_u32(drone_raw, 0xba8) != 0))
             return fail(Code::UnsupportedNavigation, Blob::Drone, 0x860);
         const NavRoute& route = d.nav->route();
+        if (!d.nav->restore_movement_goal(drone_raw.subspan(0x6f0, 0x40),
+                                          drone_raw.subspan(0xa80, 0x58)))
+            return fail(Code::UnsupportedNavigation, Blob::Drone, 0x6f0);
+        if (restored.active_goal >= 0 &&
+            restored.goal[std::size_t(restored.active_goal)].type == goaltype::kPlayer &&
+            raw_u8(drone_raw, 0xa84) != 0) {
+            const int target = restored.goal[std::size_t(restored.active_goal)].target;
+            if (target >= 0) {
+                d.mv.goal_is_object = true;
+                d.mv.goal_target = target < 4 ? TargetRef::player(target) :
+                                   TargetRef::drone(bot_at_slot(target)->drone->id);
+            }
+        }
         d.mv.disabled = raw_u8(drone_raw, 0x23) != 0;
         d.mv.fly = raw_u8(drone_raw, 0x24) != 0;
         d.mv.fly_speed = raw_f32(drone_raw, 0x50);

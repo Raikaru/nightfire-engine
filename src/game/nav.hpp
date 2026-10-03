@@ -448,6 +448,9 @@ public:
     NavMove move_to_goal(const Vec3& feet, int cel = kNoCel);
     // AINetwork_CalcRouteToPosition / ToObject (result == Approximate additionally runs AlterDestFor_DROUTE_Nearest).
     RouteStatus calc_route_to_goal(const Vec3& feet, int cel = kNoCel);
+    // Restores the captured AIPoint and AITarget state used by the next movement tick.
+    bool restore_movement_goal(std::span<const std::byte> point_raw,
+                               std::span<const std::byte> target_raw);
     // Restores the captured AIRoute and its per-drone node list without recalculating the route.
     bool restore_movement_route(std::span<const std::byte> route_raw,
                                 std::span<const std::byte> route_nodes_raw, int path,

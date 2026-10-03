@@ -138,17 +138,43 @@ def main():
         assert team_override is not None or set(teams) == {0, 1} or args.scenario in (0, 1), \
             "team modes need both teams populated"
         stats = pine.read_block(0x26D2F0, 29 * 14)   # default_bot_stats
-        pine.write(WRITE8, 0x2DEEA8, 1)
-        pine.write(WRITE8, 0x2DEEA8 + 1, len(chars))
+        writes = [
+            (WRITE32, A.MPSETTINGS + A.MPS_HUMANS, 1),
+            (WRITE32, A.MPSETTINGS + A.MPS_BOTS, len(chars)),
+            (WRITE32, A.MPSETTINGS + A.MPS_PARTICIPANTS, 1 + len(chars)),
+            (WRITE32, A.MPSETTINGS + 0x20, 1),
+            (WRITE32, A.MPSETTINGS + 0x24, 1),
+            (WRITE32, A.MPSETTINGS + 0x28, 1),
+            (WRITE32, A.MPSETTINGS + 0x2C, 0),
+            (WRITE8, 0x2DEEA8, 1),
+            (WRITE8, 0x2DEEA8 + 1, len(chars)),
+        ]
+        formats = {WRITE8: "<B", WRITE16: "<H", WRITE32: "<I"}
         for k, (ch, tm) in enumerate(zip(chars, teams)):
             base = 0x2DEEAA + k * 0x12
             row = stats[ch * 14:(ch + 1) * 14]
-            for j in range(0, 14, 2):
-                pine.write(WRITE16, base + j, struct.unpack_from("<H", row, j)[0])
-            pine.write(WRITE8, base + 0x0E, 1)
-            pine.write(WRITE8, base + 0x0F, tm)
-            pine.write(WRITE8, base + 0x10, ch)
-            pine.write(WRITE8, base + 0x11, 1)
+            writes.extend(
+                (WRITE16, base + j, struct.unpack_from("<H", row, j)[0])
+                for j in range(0, 14, 2)
+            )
+            writes.extend((
+                (WRITE8, base + 0x0E, 1),
+                (WRITE8, base + 0x0F, tm),
+                (WRITE8, base + 0x10, ch),
+                (WRITE8, base + 0x11, 1),
+            ))
+            slot = A.MPSETTINGS + (4 + k) * A.MP_SLOT_STRIDE
+            writes.extend((
+                (WRITE32, slot + 0x20, 2),
+                (WRITE32, slot + 0x24, ch),
+                (WRITE32, slot + 0x28, 1),
+                (WRITE32, slot + 0x2C, tm),
+            ))
+        body = b"".join(
+            struct.pack("<BI", op, addr) + struct.pack(formats[op], value)
+            for op, addr, value in writes
+        )
+        pine._transact(body)
         print("poked bot roster", list(zip(chars, teams)), flush=True)
     # Keep the Arena wheel's early validation happy when the requested team mode
     # is committed directly at Confirm; the intended teams are re-poked there.
@@ -257,9 +283,12 @@ def main():
     vpad("press", "cross", 400)
     live = False
     first_live_frame = None
+    target_frame = None
+    active_seen = False
+    missed_frame = None
     deadline = time.monotonic() + args.live_timeout
     while time.monotonic() < deadline:
-        time.sleep(0.2)
+        time.sleep(0.002 if active_seen else 0.05)
         try:
             frame0, mp, player, done0, done1, frame1 = pine.read_ranges([
                 (A.GS_FRAME_START, 4), (A.MPSETTINGS + A.MPS_MP_ACTIVE, 4),
@@ -271,25 +300,40 @@ def main():
                 for value in (frame0, mp, player, done0, done1, frame1))
             if frame0 != frame1 or done0 != done1:
                 continue
-            is_live = (mp == 1 and player and pine.read_block(
+            active_seen = mp == 1 and player != 0
+            is_live = (active_seen and pine.read_block(
                 player + A.OBJ_TYPE, 1)[0] == 3)
             if not is_live:
                 first_live_frame = None
+                target_frame = None
                 continue
             if first_live_frame is None:
                 first_live_frame = frame1
-            if frame1 - first_live_frame < args.spawn_stabilize:
+                target_frame = first_live_frame + args.spawn_stabilize
+                print("first live player frame", first_live_frame,
+                      "target frame", target_frame, flush=True)
+            if frame1 < target_frame:
                 continue
+            if frame1 > target_frame:
+                missed_frame = (target_frame, frame1)
+                break
             live = True
             if args.time_limit_sec is not None:
                 limit = struct.unpack("<I", struct.pack("<f", args.time_limit_sec))[0]
                 pine.write(WRITE32, A.MPGAME + A.MPG_LIMIT, limit)
                 print("poked live MP time limit (seconds)", args.time_limit_sec, flush=True)
             pine.save_state(args.slot)
-            print("live:", live, "saved slot", args.slot, "at frame", frame1, flush=True)
+            print("live:", live, "saved slot", args.slot, "at frame", frame1,
+                  "(first live", first_live_frame, "+", args.spawn_stabilize, ")",
+                  flush=True)
             break
         except Exception:
             pass
+    if missed_frame:
+        raise RuntimeError(
+            f"missed exact spawn-stabilize frame {missed_frame[0]} "
+            f"(sampled {missed_frame[1]})"
+        )
     if not live:
         print("live:", live, flush=True)
     snap("13-spawn")

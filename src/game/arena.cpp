@@ -153,7 +153,7 @@ void ArenaSystem::restore_snapshot(const ArenaSeedSnapshot& snapshot) {
         if (i >= pickups_->static_count()) {
             if (!source.dynamic || !source.has_pos) continue;
             if (!pickups_->add_dynamic_weapon(world_.collision(), source.pos, source.item, source.amount, source.stamp,
-                                              source.lifetime_total_frames, source.radar_hidden, i))
+                                              source.lifetime_frames, source.radar_hidden, i))
                 throw std::invalid_argument("arena snapshot dynamic pickup cannot be reconstructed");
         }
         Pickup& pickup = pickups[i];
@@ -171,7 +171,7 @@ void ArenaSystem::restore_snapshot(const ArenaSeedSnapshot& snapshot) {
             pickup.stamp = world_.timer_frame();
         }
         pickup.radar_hidden = source.radar_hidden;
-        if (source.has_lifetime) pickup.lifetime_total_frames = source.lifetime_total_frames;
+        if (source.has_lifetime) pickup.lifetime_frames = source.lifetime_frames;
         pickup.visit_until = source.visit_until;
     }
 }
@@ -366,8 +366,8 @@ bool ArenaSystem::hit_applies(int attacker, int victim) {
 
 bool ArenaSystem::drop_weapon(const Vec3& pos, int weapon_id, int rounds, bool radar_hidden) {
     if (rounds <= 0 || !pickups_ || rate_ <= 0.0f) return false;
-    const auto lifetime = static_cast<std::uint32_t>(std::lround(30.0f * rate_));  // Pickup_CreateSimple MP lifetime.
-    return pickups_->add_dynamic_weapon(world_.collision(), pos, weapon_id, rounds, world_.frame(), lifetime, radar_hidden);
+    const auto lifetime = static_cast<std::uint16_t>(std::lround(30.0f * rate_));  // Pickup_CreateSimple MP lifetime.
+    return pickups_->add_dynamic_weapon(world_.collision(), pos, weapon_id, rounds, world_.timer_frame(), lifetime, radar_hidden);
 }
 
 void ArenaSystem::environment_kill(int victim) {
@@ -561,8 +561,9 @@ void ArenaSystem::update_pickups(World& world, FrameTiming timing) {
         touchers.push_back({i, settings_.slots[std::size_t(i)].bot, s.body->position(), s.body});
     }
     pickup_events_.clear();
-    pickups_->update(world.collision(), touchers, frame_, world.timer_frame(), timing.FRAME_RATE,
-                     timing.REC_FRAME_RATE, pickup_events_);
+    // Pickup_Update decrements dynamic PICKUPINFO+0x2E once per non-touch call.
+    pickups_->update(world.collision(), touchers, world.timer_frame(), timing.FRAME_RATE, timing.REC_FRAME_RATE,
+                     pickup_events_);
     for (const PickupEvent& ev : pickup_events_) {
         std::string text;
         if (ev.count > 0) text = std::to_string(ev.count) + "x " + (strings_ ? std::string(strings_->label(ev.arg_label)) : std::string());
@@ -584,7 +585,7 @@ void ArenaSystem::before_player_update(World&, FrameTiming timing) {
     }
 }
 
-void ArenaSystem::tick(World& world, FrameTiming timing) {
+void ArenaSystem::tick(World&, FrameTiming timing) {
     dt_ = timing.rec();
     rate_ = timing.FRAME_RATE;
 
@@ -609,7 +610,6 @@ void ArenaSystem::tick(World& world, FrameTiming timing) {
 
     switch (state_code_) {
         case 0:
-            update_pickups(world, timing);
             update_objectives(timing);
             check_end_condition(dt_);
             break;
@@ -652,6 +652,10 @@ void ArenaSystem::tick(World& world, FrameTiming timing) {
         default:
             break;
     }
+}
+
+void ArenaSystem::after_tick(World& world, FrameTiming timing) {
+    update_pickups(world, timing);
 }
 
 // ---- HUD ------------------------------------------------------------------------------------------------------
