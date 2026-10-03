@@ -398,6 +398,12 @@ void MpSetup::cycle_rule(MpRule r, int direction) {
     if (it != choices.end()) at = ((at + direction) % n + n) % n;
     *rule_field(r) = choices[std::size_t(at)].value;
 }
+void MpSetup::set_ruleset(MpRuleSet rules) {
+    settings_.rules = rules;
+    settings_.slot_count = std::uint32_t(mp_rule_slot_limit(rules));
+    settings_.bot_count = std::min(settings_.bot_count, settings_.bot_limit());
+    settings_.prepared_bot_count = std::min(settings_.prepared_bot_count, settings_.bot_limit());
+}
 
 std::uint32_t MpSetup::score_caption(std::uint32_t mode) const {
     // P_MPRULES 0x4c: "Lives" for Top Agent, the rule's own "Points" caption otherwise.
@@ -414,17 +420,15 @@ std::uint32_t MpSetup::score_unit_label(std::uint32_t mode, std::int32_t limit) 
 
 void MpSetup::begin_options() {
     if (bots_defaulted_) return;
-    // C_SBMPOPTIONS 0x51: bots 1..6 start with Snow Guard, Black Ops, Yakuza, Phoenix Commando, Phoenix
-    // Soldier and Ninja (characters 6..11); later visits keep the player's choices.
-    for (std::size_t i = 0; i < 6; ++i) settings_.bots[i].character = std::uint8_t(6 + i);
+    // The original presets the six GC/Xbox roster rows; the Extended-only rows start from the same safe character.
+    for (std::size_t i = 0; i < kMpMaxBots; ++i) settings_.bots[i].character = std::uint8_t(6 + i);
     bots_defaulted_ = true;
 }
 
 void MpSetup::prepare_bots() {
-    // Menu_PrepareBots: enabled bots of the first four rows move to the front (rows swap, only the
-    // destination's slot name is rewritten), then the count is published.
+    // Enabled bots move to the front; rows outside the chosen ruleset are not match participants.
     std::size_t out = 0;
-    for (std::size_t i = 0; i < kMpMaxBots; ++i) {
+    for (std::size_t i = 0; i < settings_.bot_limit(); ++i) {
         if (!settings_.bots[i].enabled) continue;
         if (i != out) {
             std::string name = settings_.slots[kMpMaxHumans + i].name;
@@ -467,7 +471,9 @@ MpContinueResult MpSetup::continue_to_confirm() {
     return r;
 }
 
-void MpSetup::begin_bot_choose(std::size_t bot) { editing_bot_ = std::min(bot, kMpMaxBots - 1); }
+void MpSetup::begin_bot_choose(std::size_t bot) {
+    editing_bot_ = std::min(bot, std::size_t(settings_.bot_limit() - 1));
+}
 
 bool MpSetup::bot_character_available(std::size_t bot, std::uint32_t character) const {
     if (!character_available(kAll, character)) return false;
@@ -610,10 +616,10 @@ MpLaunch MpSetup::start() {
     settings_.active = true;
     settings_.human_count = std::uint32_t(joined.size());
 
-    // MP_Start: the bot list is capped at four; MPBOTS supplies stats and team when Menu_PrepareBots ran.
+    // PS2 keeps four bot slots; GC/Xbox adds two and Extended uses the full participant capacity.
     MpLaunch launch;
     if (settings_.bots_prepared) settings_.bot_count = settings_.prepared_bot_count;
-    settings_.bot_count = std::min<std::uint32_t>(settings_.bot_count, kMpMaxBots);
+    settings_.bot_count = std::min(settings_.bot_count, settings_.bot_limit());
     for (std::uint32_t i = 0; i < settings_.human_count; ++i) {
         MpParticipant p;
         p.slot = i;

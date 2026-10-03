@@ -172,6 +172,15 @@ struct BotVars {
     bool targeted_by_bot = false;                 // +0x770
     bool in_zone = false;                         // +0x771
     int armour = 0;                               // +0x769 armour points (cap 50)
+    std::array<OtherInfo, kMpSlots - 8> extended_other{};
+    OtherInfo& other_info(int participant_slot) {
+        return participant_slot < 8 ? other[std::size_t(participant_slot)]
+                                    : extended_other[std::size_t(participant_slot - 8)];
+    }
+    const OtherInfo& other_info(int participant_slot) const {
+        return participant_slot < 8 ? other[std::size_t(participant_slot)]
+                                    : extended_other[std::size_t(participant_slot - 8)];
+    }
     Personality personality() const { return Personality(stats.personality); }
     bool has_flag(std::uint8_t f) const { return (stats.ability_flags & f) != 0; }
 };

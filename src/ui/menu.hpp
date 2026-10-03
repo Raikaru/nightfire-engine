@@ -94,6 +94,19 @@ struct DrawCmd {
     float x = 0, y = 0;
 };
 
+// A control rectangle in the 512x448 buffer.
+struct Box {
+    int x, y, w, h;
+};
+
+// The script's 640x480 authored rectangles mapped into the 512x448 buffer (control creation).
+Box fixup_resolution(Box b, bool scroll);
+
+// Component_SetupInstance: lays the instances of skin component `comp` out inside (x, y, w, h) and appends
+// the ones visible in state `mask` (0x10 idle, 0x20 selected, 0x40/0x80 pressed) as image commands.
+void append_skin(const MenuComponent& comp, unsigned mask, int x, int y, int w, int h, int layer,
+                 std::vector<DrawCmd>& out);
+
 // One row of a radio (value selector) or list.
 struct Row {
     std::array<std::string, 5> cell;   // cell[0] is the radio text

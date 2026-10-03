@@ -1474,15 +1474,31 @@ struct Hud::Impl {
             float ox, oy;
         };
         std::vector<Item> items;
-        for (const Pane& p : panes) {
+        const bool full_width_view = cfg.players == 1 || (cfg.players == 2 && !cfg.side_by_side);
+        const float edge_shift = full_width_view ? (r.canvas_width() - ui::kScreenW) * 0.4f : 0.0f;
+        for (std::size_t pane_index = 0; pane_index < panes.size(); ++pane_index) {
+            const Pane& p = panes[pane_index];
             if (!p.present) continue;
+            float offset_x = 0.0f;
+            if (pane_index == std::size_t(HudPane::Health) || pane_index == std::size_t(HudPane::MpScore))
+                offset_x = -edge_shift;
+            else if (pane_index == std::size_t(HudPane::Ammo) || pane_index == std::size_t(HudPane::Radar))
+                offset_x = edge_shift;
             for (const Spr& s : p.sprites)
-                if (s.s.layer != kHidden) items.push_back({&s, 0, 0});
+                if (s.s.layer != kHidden) items.push_back({&s, offset_x, 0});
             for (const Spr& s : p.extra)
-                if (s.s.layer != kHidden) items.push_back({&s, 0, 0});
+                if (s.s.layer != kHidden) items.push_back({&s, offset_x, 0});
         }
         if (mp_clock_ready && mp_clock.s.layer != kHidden) items.push_back({&mp_clock, 0, 0});
         if (crosshair.s.layer != kHidden) items.push_back({&crosshair, viewer.x0, viewer.y0});
+        const float extension = r.canvas_width() - ui::kScreenW;
+        const Pane& sight = pane(HudPane::Sight);
+        const bool scoped = std::any_of(sight.sprites.begin(), sight.sprites.end(),
+                                        [](const Spr& sprite) { return sprite.s.layer != kHidden; });
+        if (scoped && full_width_view && extension > 0.0f) {
+            r.fill({-extension * 0.5f, viewer.y0, extension * 0.5f, viewer.h}, {0, 0, 0, 0x80});
+            r.fill({ui::kScreenW, viewer.y0, extension * 0.5f, viewer.h}, {0, 0, 0, 0x80});
+        }
         std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.spr->s.layer < b.spr->s.layer; });
         for (const Item& i : items) draw_sprite(r, t, *i.spr, i.ox, i.oy);
         r.set_blend(ui::Blend::Alpha);

@@ -110,20 +110,29 @@ std::vector<Frontend::Impl::WheelItem> Frontend::Impl::option_items() const {
         const MpMenuItem& it = mp_data->options[i];
         v.push_back({it.sprite, it.name, it.description, it.disabled_label, it.value, mp->option_available(i)});
     }
+    const char* rules = "PS2";
+    if (mp->settings().rules == MpRuleSet::GcXbox) rules = "GC/Xbox";
+    else if (mp->settings().rules == MpRuleSet::Extended) rules = "Extended";
+    v.push_back({0, 0, 0, 0, 0, true, std::string("Ruleset: ") + rules});
     return v;
 }
 
-// mp_bots: row 0 is "Continue"; rows 1..4 show the character of the bot (its portrait, name of the row).
+// Row 0 continues; remaining entries expose each bot up to the selected ruleset's cap.
 std::vector<Frontend::Impl::WheelItem> Frontend::Impl::bot_list_items() const {
     std::vector<WheelItem> v;
-    for (std::size_t i = 0; i < mp_data->bot_menu.size() && i < 5; ++i) {
-        const MpMenuItem& it = mp_data->bot_menu[i];
-        WheelItem w{it.sprite, it.name, it.description, it.disabled_label, it.value, it.enabled};
-        if (i > 0) {
-            const MpCharacter* ch = mp_data->find_character(mp->settings().bots[i - 1].character);
-            if (ch) w.sprite = ch->large.sprite;
+    const std::size_t count = std::min<std::size_t>(mp->settings().bot_limit(), kMpMaxBots);
+    for (std::size_t i = 0; i <= count; ++i) {
+        if (i == 0) {
+            const MpMenuItem& it = mp_data->bot_menu[0];
+            v.push_back({it.sprite, it.name, it.description, it.disabled_label, it.value, it.enabled});
+            continue;
         }
-        v.push_back(w);
+        const MpMenuItem& it = mp_data->bot_menu[std::min(i, mp_data->bot_menu.size() - 1)];
+        WheelItem w{it.sprite, it.name, it.description, it.disabled_label, it.value, it.enabled};
+        const MpCharacter* ch = mp_data->find_character(mp->settings().bots[i - 1].character);
+        if (ch) w.sprite = ch->large.sprite;
+        if (i > 4) w.display_name = "Bot " + std::to_string(i);
+        v.push_back(std::move(w));
     }
     return v;
 }
@@ -173,7 +182,11 @@ void Frontend::Impl::update_wheel(ui::Control& scroll, const std::vector<WheelIt
     for (int i = 0; i < 5; ++i) {
         const bool ok = valid(rows[i]) && rows[i] < int(items.size());
         send_ex(labels, std::uint32_t(i), kSetText, 0, 0);
-        mgr->send_ex(labels, std::uint32_t(i), kSetText, ok ? label(items[std::size_t(rows[i])].name) : std::string(" "));
+        mgr->send_ex(labels, std::uint32_t(i), kSetText,
+                     ok ? (items[std::size_t(rows[i])].display_name.empty()
+                               ? label(items[std::size_t(rows[i])].name)
+                               : items[std::size_t(rows[i])].display_name)
+                        : std::string(" "));
         send_ex(labels, std::uint32_t(i), kSetColor, ok && items[std::size_t(rows[i])].enabled ? on[i] : off[i]);
     }
     if (by_user) iris_start(2, fader);
@@ -237,7 +250,8 @@ bool Frontend::Impl::c_lb_msg_options(ui::Control&, const ui::Msg& m) {
         mgr->send_manager(kPageBack, 1, 0);
     } else if (m.type == kAltOnControl) {
         mgr->send_manager(kPageBack, 1, 0);
-        box_answer = box_ok_only ? 4 : 2;
+        // Back answers "No" on yes/no questions; the online choice lists are menus, so Back leaves them.
+        box_answer = box_ok_only || box_type == kOnlineChoiceBox ? 4 : 2;
     }
     return true;
 }
@@ -455,13 +469,22 @@ bool Frontend::Impl::c_sb_mp_options(ui::Control& c, const ui::Msg& m) {
     switch (m.type) {
         case 0x51:
             mp->begin_options();
-            mgr->send_to(c, ui::Msg{kScrollRange, 0, 4});
+            mgr->send_to(c, ui::Msg{kScrollRange, 0, std::uint32_t(items.size() - 1)});
             break;
         case 0x49: case 0x54:
             update_wheel(c, items, 0x100000F3, 0x100000F5, 0x100001EF, 0x10000107, m.type == 0x49);
             break;
         case kAccept: {
             const int index = mgr->send_to(c, ui::Msg{kScrollGet});
+            if (index == int(mp_data->options.size())) {
+                const MpRuleSet next = mp->settings().rules == MpRuleSet::Ps2
+                                           ? MpRuleSet::GcXbox
+                                           : mp->settings().rules == MpRuleSet::GcXbox ? MpRuleSet::Extended
+                                                                                        : MpRuleSet::Ps2;
+                mp->set_ruleset(next);
+                update_wheel(c, option_items(), 0x100000F3, 0x100000F5, 0x100001EF, 0x10000107, false);
+                break;
+            }
             if (index < 0 || index >= int(items.size()) || !mp->option_available(std::size_t(index))) break;
             switch (index) {
                 case 0: {
@@ -686,8 +709,7 @@ bool Frontend::Impl::c_sb_bots(ui::Control& c, const ui::Msg& m) {
             return true;
         }
         case 0x51:
-            mgr->send_to(c, ui::Msg{kScrollRange, 0, 4});
-            mgr->send_to(c, ui::Msg{kScrollSet, 1, 0});
+            mgr->send_to(c, ui::Msg{kScrollRange, 0, std::uint32_t(mp->settings().bot_limit())});
             return true;
         case 0x49: case 0x54: {
             const int row = mgr->send_to(c, ui::Msg{kScrollGet});

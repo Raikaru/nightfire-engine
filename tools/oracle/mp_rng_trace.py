@@ -5,6 +5,7 @@ original body. Events are written to a bounded EE RAM ring and consumed by the
 PINE recorder; uninstall restores the four entry words.
 """
 
+import time
 import struct
 
 from pine import WRITE32, WRITE64
@@ -166,6 +167,57 @@ def install(pine):
             "ring_base": RING_BASE, "capacity": RING_CAPACITY,
             "code_base": CODE_BASE, "installed": True}
 
+
+def attach(pine):
+    """Attach to pnach-installed hooks without rewriting executable memory."""
+    functions = []
+    for index, (name, entry, kind, result_class, first_words) in enumerate(FUNCTIONS):
+        stub = CODE_BASE + index * 0x100
+        _, words = _trampoline(entry, kind, result_class, first_words, stub)
+        expected_code = struct.pack("<" + "I" * len(words), *words)
+        actual_entry = pine.read_block(entry, 8)
+        expected_entry = struct.pack("<II", _j(0x02, stub), 0)
+        if actual_entry != expected_entry:
+            raise RuntimeError(
+                f"{name} pnach entry mismatch at {entry:#x}: "
+                f"got {actual_entry.hex()}, expected {expected_entry.hex()}")
+        actual_code = pine.read_block(stub, len(expected_code))
+        if actual_code != expected_code:
+            raise RuntimeError(
+                f"{name} pnach trampoline mismatch at {stub:#x}: "
+                f"got {actual_code.hex()}, expected {expected_code.hex()}")
+        functions.append({"name": name, "entry": entry, "kind": kind,
+                          "result": result_class, "stub": stub,
+                          "original": struct.pack("<II", *first_words)})
+
+    def counters():
+        frame, ring = pine.read_ranges([(GS_FRAME, 4), (RING_BASE, 12)])
+        head, _, overflow = struct.unpack("<III", ring)
+        return struct.unpack("<I", frame)[0], head, overflow
+
+    frame, head, overflow = counters()
+    stable_frames = 0
+    deadline = time.monotonic() + 5.0
+    while stable_frames < 3 and time.monotonic() < deadline:
+        time.sleep(0.02)
+        next_frame, next_head, next_overflow = counters()
+        deltas = ((next_frame - frame) & 0xFFFFFFFF,
+                  (next_head - head) & 0xFFFFFFFF,
+                  (next_overflow - overflow) & 0xFFFFFFFF)
+        if 0 < deltas[0] < 0x80000000 and all(
+                delta < 0x80000000 for delta in deltas[1:]):
+            stable_frames += 1
+        else:
+            stable_frames = 0
+        frame, head, overflow = next_frame, next_head, next_overflow
+    if stable_frames < 3:
+        raise RuntimeError("RNG pnach counters did not settle after savestate load")
+
+    _, head, overflow = counters()
+    pine.write(WRITE32, RING_BASE + 4, head)
+    return {"functions": functions, "cursor": head, "overflow": overflow,
+            "ring_base": RING_BASE, "capacity": RING_CAPACITY,
+            "code_base": CODE_BASE, "installed": True, "preinstalled": True}
 
 def read_events(pine, state):
     """Return completed events since the last call, with loss accounting."""

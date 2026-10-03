@@ -211,29 +211,38 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) {
 }
 
 std::vector<std::uint8_t> encode_hello(const std::array<std::uint8_t, kDataHashBytes>& hash, std::string_view name,
-                                       std::string_view password) {
-    if (password.size() > kMaxPasswordBytes) return {};
+                                       std::string_view password, std::uint8_t local_players) {
+    if (password.size() > kMaxPasswordBytes || local_players == 0 || local_players > kMaxLocalPlayers) return {};
     const auto n = std::min(name.size(), kMaxNameBytes);
     std::vector<std::uint8_t> out(hash.begin(), hash.end());
     out.push_back(std::uint8_t(n));
     out.push_back(std::uint8_t(password.size()));
+    out.push_back(local_players);
     out.insert(out.end(), name.begin(), name.begin() + std::ptrdiff_t(n));
     out.insert(out.end(), password.begin(), password.end());
     return out;
 }
 
 bool decode_hello(std::span<const std::uint8_t> payload, std::array<std::uint8_t, kDataHashBytes>& hash,
-                  std::string& name, std::string& password) {
-    if (payload.size() < kDataHashBytes + 2 || payload[kDataHashBytes] > kMaxNameBytes ||
+                  std::string& name, std::string& password, std::uint8_t& local_players) {
+    if (payload.size() < kDataHashBytes + 3 || payload[kDataHashBytes] > kMaxNameBytes ||
         payload[kDataHashBytes + 1] > kMaxPasswordBytes ||
-        payload.size() != kDataHashBytes + 2 + payload[kDataHashBytes] + payload[kDataHashBytes + 1])
+        payload[kDataHashBytes + 2] == 0 || payload[kDataHashBytes + 2] > kMaxLocalPlayers ||
+        payload.size() != kDataHashBytes + 3 + payload[kDataHashBytes] + payload[kDataHashBytes + 1])
         return false;
     std::copy_n(payload.begin(), kDataHashBytes, hash.begin());
     const std::size_t name_size = payload[kDataHashBytes];
     const std::size_t password_size = payload[kDataHashBytes + 1];
-    name.assign(reinterpret_cast<const char*>(payload.data() + kDataHashBytes + 2), name_size);
-    password.assign(reinterpret_cast<const char*>(payload.data() + kDataHashBytes + 2 + name_size), password_size);
+    local_players = payload[kDataHashBytes + 2];
+    name.assign(reinterpret_cast<const char*>(payload.data() + kDataHashBytes + 3), name_size);
+    password.assign(reinterpret_cast<const char*>(payload.data() + kDataHashBytes + 3 + name_size), password_size);
     return true;
+}
+
+bool decode_hello(std::span<const std::uint8_t> payload, std::array<std::uint8_t, kDataHashBytes>& hash,
+                  std::string& name, std::string& password) {
+    std::uint8_t local_players = 1;
+    return decode_hello(payload, hash, name, password, local_players);
 }
 
 bool decode_hello(std::span<const std::uint8_t> payload, std::array<std::uint8_t, kDataHashBytes>& hash,
@@ -257,10 +266,11 @@ bool decode_server_query(std::span<const std::uint8_t> payload, std::uint32_t& q
 
 std::vector<std::uint8_t> encode_server_info(const ServerInfo& info) {
     if (info.name.size() > kMaxServerNameBytes || info.map.size() > kMaxMapNameBytes ||
-        info.max_players > 8 || info.players > info.max_players || info.bots > kMaxServerBots)
+        info.max_players > 16 || info.players > info.max_players || info.bots > kMaxServerBots ||
+        (info.slot_count != 8 && info.slot_count != 10 && info.slot_count != 16))
         return {};
     std::vector<std::uint8_t> out;
-    out.reserve(22 + info.name.size() + info.map.size());
+    out.reserve(24 + info.name.size() + info.map.size());
     put32(out, info.query_id);
     put32(out, info.mode);
     put64(out, info.match_revision);
@@ -272,15 +282,19 @@ std::vector<std::uint8_t> encode_server_info(const ServerInfo& info) {
     out.insert(out.end(), info.name.begin(), info.name.end());
     out.insert(out.end(), info.map.begin(), info.map.end());
     out.push_back(info.bots);
+    out.push_back(info.slot_count);
+    out.push_back(info.modified_rules ? 1 : 0);
     return out;
 }
 
 bool decode_server_info(std::span<const std::uint8_t> payload, ServerInfo& info) {
-    if (payload.size() < 22) return false;
+    if (payload.size() < 24) return false;
     const std::size_t name_size = payload[19], map_size = payload[20];
+    const std::uint8_t slot_count = payload[payload.size() - 2];
     if (payload[18] > 1 || name_size > kMaxServerNameBytes || map_size > kMaxMapNameBytes ||
-        payload.size() != 22 + name_size + map_size || payload[16] > payload[17] || payload[17] > 8 ||
-        payload.back() > kMaxServerBots)
+        payload.size() != 24 + name_size + map_size || payload[16] > payload[17] || payload[17] > 16 ||
+        payload[payload.size() - 3] > kMaxServerBots || payload.back() > 1 ||
+        (slot_count != 8 && slot_count != 10 && slot_count != 16))
         return false;
     ServerInfo decoded;
     decoded.query_id = get32(payload.data());
@@ -291,38 +305,60 @@ bool decode_server_info(std::span<const std::uint8_t> payload, ServerInfo& info)
     decoded.password_required = payload[18] != 0;
     decoded.name.assign(reinterpret_cast<const char*>(payload.data() + 21), name_size);
     decoded.map.assign(reinterpret_cast<const char*>(payload.data() + 21 + name_size), map_size);
-    decoded.bots = payload.back();
+    decoded.bots = payload[payload.size() - 3];
+    decoded.slot_count = slot_count;
+    decoded.modified_rules = payload.back() != 0;
     info = std::move(decoded);
     return true;
 }
 
 std::vector<std::uint8_t> encode_input(const PadInput& input) {
+    if (input.local_player >= kMaxLocalPlayers) return {};
     std::vector<std::uint8_t> out;
-    out.reserve(14);
+    out.reserve(15);
     put32(out, input.tick);
     put16(out, input.buttons);
     out.insert(out.end(), input.sticks.begin(), input.sticks.end());
     put32(out, input.view_tick);
+    out.push_back(input.local_player);
     return out;
 }
 
 bool decode_input(std::span<const std::uint8_t> payload, PadInput& input) {
-    if (payload.size() != 14) return false;
+    if (payload.size() != 15 || payload[14] >= kMaxLocalPlayers) return false;
     input.tick = get32(payload.data());
     input.buttons = get16(payload.data() + 4);
     std::copy_n(payload.begin() + 6, 4, input.sticks.begin());
     input.view_tick = get32(payload.data() + 10);
+    input.local_player = payload[14];
     return true;
 }
 
+namespace {
+bool valid_input_batch_order(const InputBatch& batch) {
+    if (batch.count == 0 || batch.count > batch.samples.size()) return false;
+    for (std::size_t i = 0; i < batch.count; ++i) {
+        const PadInput& sample = batch.samples[i];
+        if (sample.local_player >= kMaxLocalPlayers) return false;
+        if (i && (batch.samples[i - 1].tick < sample.tick ||
+                  (batch.samples[i - 1].tick == sample.tick &&
+                   batch.samples[i - 1].local_player >= sample.local_player)))
+            return false;
+        for (std::size_t j = 0; j < i; ++j) {
+            const PadInput& previous = batch.samples[j];
+            if (previous.local_player == sample.local_player &&
+                (previous.tick <= sample.tick || previous.view_tick < sample.view_tick))
+                return false;
+        }
+    }
+    return true;
+}
+}  // namespace
+
 std::vector<std::uint8_t> encode_input_batch(const InputBatch& batch) {
-    if (batch.count == 0 || batch.count > batch.samples.size()) return {};
-    for (std::size_t i = 1; i < batch.count; ++i)
-        if (batch.samples[i - 1].tick <= batch.samples[i].tick ||
-            batch.samples[i - 1].view_tick < batch.samples[i].view_tick)
-            return {};
+    if (!valid_input_batch_order(batch)) return {};
     std::vector<std::uint8_t> out;
-    out.reserve(1 + std::size_t(batch.count) * 14);
+    out.reserve(1 + std::size_t(batch.count) * 15);
     out.push_back(batch.count);
     for (std::size_t i = 0; i < batch.count; ++i) {
         const auto bytes = encode_input(batch.samples[i]);
@@ -332,33 +368,59 @@ std::vector<std::uint8_t> encode_input_batch(const InputBatch& batch) {
 }
 
 bool decode_input_batch(std::span<const std::uint8_t> payload, InputBatch& batch) {
-    if (payload.empty() || payload[0] == 0 || payload[0] > 3 ||
-        payload.size() != 1 + std::size_t(payload[0]) * 14) return false;
+    if (payload.empty() || payload[0] == 0 || payload[0] > kMaxLocalPlayers * kInputRedundancy ||
+        payload.size() != 1 + std::size_t(payload[0]) * 15)
+        return false;
     InputBatch decoded;
     decoded.count = payload[0];
-    for (std::size_t i = 0; i < decoded.count; ++i) {
-        if (!decode_input(payload.subspan(1 + i * 14, 14), decoded.samples[i])) return false;
-        if (i && (decoded.samples[i - 1].tick <= decoded.samples[i].tick ||
-                  decoded.samples[i - 1].view_tick < decoded.samples[i].view_tick))
-            return false;
-    }
+    for (std::size_t i = 0; i < decoded.count; ++i)
+        if (!decode_input(payload.subspan(1 + i * 15, 15), decoded.samples[i])) return false;
+    if (!valid_input_batch_order(decoded)) return false;
     batch = decoded;
     return true;
 }
 
+std::vector<Snapshot> split_snapshot(const Snapshot& snapshot) {
+    if (snapshot.slot_count > 16 || snapshot.players.size() != snapshot.slot_count) return {};
+    const std::size_t page_count =
+        std::max<std::size_t>(1, (snapshot.players.size() + kSnapshotPlayersPerPage - 1) /
+                                     kSnapshotPlayersPerPage);
+    std::vector<Snapshot> pages;
+    pages.reserve(page_count);
+    for (std::size_t i = 0; i < page_count; ++i) {
+        const std::size_t first = i * kSnapshotPlayersPerPage;
+        const std::size_t end = std::min(snapshot.players.size(), first + kSnapshotPlayersPerPage);
+        Snapshot page = snapshot;
+        page.page_index = std::uint8_t(i);
+        page.page_count = std::uint8_t(page_count);
+        page.players.assign(snapshot.players.begin() + std::ptrdiff_t(first),
+                            snapshot.players.begin() + std::ptrdiff_t(end));
+        pages.push_back(std::move(page));
+    }
+    return pages;
+}
+
 std::vector<std::uint8_t> encode_snapshot(const Snapshot& snapshot) {
-    constexpr std::size_t kHeaderSize = 37, kPlayerFixedSize = 74, kMaxPlayerName = 32;
-    if (snapshot.slot_count > 8 || snapshot.players.size() != snapshot.slot_count || snapshot.match_phase > 3)
+    constexpr std::size_t kHeaderSize = 40, kPlayerFixedSize = 74, kMaxPlayerName = 32;
+    const std::size_t expected_pages =
+        std::max<std::size_t>(1, (snapshot.slot_count + kSnapshotPlayersPerPage - 1) /
+                                     kSnapshotPlayersPerPage);
+    if (snapshot.slot_count > 16 || snapshot.match_phase > 3 || snapshot.page_count != expected_pages ||
+        snapshot.page_index >= snapshot.page_count)
         return {};
-    bool has_owner_movement = false;
+    const std::size_t first_slot = std::size_t(snapshot.page_index) * kSnapshotPlayersPerPage;
+    const std::size_t expected_players =
+        std::min<std::size_t>(kSnapshotPlayersPerPage, std::size_t(snapshot.slot_count) - first_slot);
+    if (snapshot.players.size() != expected_players) return {};
+    std::size_t owner_movement_count = 0;
     for (const PlayerSnapshot& p : snapshot.players) {
         if (!p.owner_movement) continue;
-        if (has_owner_movement || p.slot >= 4 || !p.present || p.bot) return {};
-        has_owner_movement = true;
+        if (p.slot >= 4 || !p.present || p.bot) return {};
+        ++owner_movement_count;
     }
     std::vector<std::uint8_t> out;
     out.reserve(kHeaderSize + snapshot.players.size() * (kPlayerFixedSize + kMaxPlayerName) +
-                (has_owner_movement ? kOwnerMovementBytes : 0));
+                owner_movement_count * kOwnerMovementBytes);
     put32(out, snapshot.tick);
     put32(out, snapshot.ack_input_tick);
     out.push_back(snapshot.slot_count);
@@ -370,11 +432,15 @@ std::vector<std::uint8_t> encode_snapshot(const Snapshot& snapshot) {
     put32(out, std::bit_cast<std::uint32_t>(snapshot.team_score[0]));
     put32(out, std::bit_cast<std::uint32_t>(snapshot.team_score[1]));
     put64(out, snapshot.match_revision);
-    std::uint8_t seen = 0;
+    out.push_back(snapshot.page_index);
+    out.push_back(snapshot.page_count);
+    out.push_back(std::uint8_t(snapshot.players.size()));
+    std::uint16_t seen = 0;
     for (const PlayerSnapshot& p : snapshot.players) {
-        if (p.slot >= snapshot.slot_count || (seen & (1u << p.slot)) || p.name.size() > kMaxPlayerName)
+        if (p.slot < first_slot || p.slot >= first_slot + expected_players ||
+            (seen & (std::uint16_t(1u) << p.slot)) || p.name.size() > kMaxPlayerName)
             return {};
-        seen |= std::uint8_t(1u << p.slot);
+        seen |= std::uint16_t(1u << p.slot);
         out.push_back(p.slot);
         out.push_back(std::uint8_t((p.present ? 1 : 0) | (p.alive ? 2 : 0) | (p.bot ? 4 : 0) |
                                    (p.visible ? 8 : 0) | (p.out ? 16 : 0) | (p.aiming ? 32 : 0) |
@@ -406,14 +472,16 @@ std::vector<std::uint8_t> encode_snapshot(const Snapshot& snapshot) {
         if (p.owner_movement) put_owner_movement(out, *p.owner_movement);
         if (out.size() > kMaxDatagramBytes - kHeaderBytes) return {};
     }
-    if (snapshot.slot_count && seen != std::uint8_t((1u << snapshot.slot_count) - 1u)) return {};
+    const std::uint16_t expected_seen =
+        expected_players ? std::uint16_t(((1u << expected_players) - 1u) << first_slot) : 0;
+    if (seen != expected_seen) return {};
     return out;
 }
 
 bool decode_snapshot(std::span<const std::uint8_t> payload, Snapshot& snapshot) {
-    constexpr std::size_t kHeaderSize = 37, kPlayerFixedSize = 74, kMaxPlayerName = 32;
+    constexpr std::size_t kHeaderSize = 40, kPlayerFixedSize = 74, kMaxPlayerName = 32;
     if (payload.size() < kHeaderSize || payload.size() > kMaxDatagramBytes - kHeaderBytes ||
-        payload[8] > 8 || payload[9] > 3)
+        payload[8] > 16 || payload[9] > 3)
         return false;
     Snapshot decoded;
     decoded.tick = get32(payload.data());
@@ -427,21 +495,36 @@ bool decode_snapshot(std::span<const std::uint8_t> payload, Snapshot& snapshot) 
     decoded.team_score[0] = std::bit_cast<float>(get32(payload.data() + 21));
     decoded.team_score[1] = std::bit_cast<float>(get32(payload.data() + 25));
     decoded.match_revision = get64(payload.data() + 29);
-    decoded.players.reserve(decoded.slot_count);
-    std::uint8_t seen = 0;
-    bool has_owner_movement = false;
+    decoded.page_index = payload[37];
+    decoded.page_count = payload[38];
+    const std::size_t page_players = payload[39];
+    const std::size_t expected_pages =
+        std::max<std::size_t>(1, (decoded.slot_count + kSnapshotPlayersPerPage - 1) /
+                                     kSnapshotPlayersPerPage);
+    const std::size_t first_slot = std::size_t(decoded.page_index) * kSnapshotPlayersPerPage;
+    const std::size_t expected_players =
+        first_slot < decoded.slot_count
+            ? std::min<std::size_t>(kSnapshotPlayersPerPage, std::size_t(decoded.slot_count) - first_slot)
+            : 0;
+    if (decoded.page_count != expected_pages || decoded.page_index >= decoded.page_count ||
+        page_players != expected_players)
+        return false;
+    decoded.players.reserve(page_players);
+    std::uint16_t seen = 0;
+    std::size_t owner_movement_count = 0;
     std::size_t at = kHeaderSize;
-    for (std::size_t i = 0; i < decoded.slot_count; ++i) {
+    for (std::size_t i = 0; i < page_players; ++i) {
         if (payload.size() - at < kPlayerFixedSize) return false;
         PlayerSnapshot p;
         p.slot = payload[at];
         const std::uint8_t flags = payload[at + 1];
         const std::size_t name_size = payload[at + 73];
         const bool has_movement = (flags & 64) != 0;
-        if (p.slot >= decoded.slot_count || (seen & (1u << p.slot)) || (flags & 0x80) ||
+        if (p.slot < first_slot || p.slot >= first_slot + expected_players ||
+            (seen & (std::uint16_t(1u) << p.slot)) || (flags & 0x80) ||
             name_size > kMaxPlayerName || payload.size() - at < kPlayerFixedSize + name_size)
             return false;
-        seen |= std::uint8_t(1u << p.slot);
+        seen |= std::uint16_t(1u << p.slot);
         p.present = (flags & 1) != 0;
         p.alive = (flags & 2) != 0;
         p.bot = (flags & 4) != 0;
@@ -474,19 +557,21 @@ bool decode_snapshot(std::span<const std::uint8_t> payload, Snapshot& snapshot) 
         p.name.assign(reinterpret_cast<const char*>(payload.data() + at + kPlayerFixedSize), name_size);
         at += kPlayerFixedSize + name_size;
         if (has_movement) {
-            if (has_owner_movement || p.slot >= 4 || !p.present || p.bot ||
+            if (p.slot >= 4 || !p.present || p.bot ||
                 payload.size() - at < kOwnerMovementBytes)
                 return false;
             OwnerMovementState movement;
             if (!get_owner_movement(payload.subspan(at, kOwnerMovementBytes), movement)) return false;
             p.owner_movement = movement;
-            has_owner_movement = true;
+            ++owner_movement_count;
             at += kOwnerMovementBytes;
         }
         decoded.players.push_back(std::move(p));
     }
-    if (at != payload.size() ||
-        (decoded.slot_count && seen != std::uint8_t((1u << decoded.slot_count) - 1u)))
+    const std::uint16_t expected_seen =
+        expected_players ? std::uint16_t(((1u << expected_players) - 1u) << first_slot) : 0;
+    if (at != payload.size() || seen != expected_seen ||
+        owner_movement_count > kSnapshotPlayersPerPage)
         return false;
     snapshot = std::move(decoded);
     return true;

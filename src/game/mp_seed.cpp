@@ -415,9 +415,9 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
     snapshot.team_score = {f32_at(mpg, 0x180), f32_at(mpg, 0x184)};
     snapshot.best_score = int(u32_at(mpg, 0x18c));
     const auto& players = source.at("pl").array();
-    if (players.size() != kMpSlots) throw std::runtime_error("MP seed: expected eight participant slots");
-    std::array<std::uint32_t, 8> participant_addresses{};
-    for (std::size_t s = 0; s < kMpSlots; ++s) {
+    if (players.size() != kMpPs2Slots) throw std::runtime_error("MP seed: expected eight participant slots");
+    std::array<std::uint32_t, kMpPs2Slots> participant_addresses{};
+    for (std::size_t s = 0; s < kMpPs2Slots; ++s) {
         const std::size_t off = s * 0x30;
         auto& state = snapshot.participants[s];
         state.kills = int(u32_at(mpg, off + 4));

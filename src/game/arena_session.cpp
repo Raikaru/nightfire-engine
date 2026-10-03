@@ -43,9 +43,15 @@ bool MatchOptions::parse(const std::vector<std::string>& args, std::size_t& i) {
         humans = std::clamp(std::atoi(value().c_str()), 1, 4);
         enabled = true;
     } else if (a == "--bots") {
-        bots = std::clamp(std::atoi(value().c_str()), 0, 4);
+        bots = std::clamp(std::atoi(value().c_str()), 0, int(kMpMaxBots));
     } else if (a == "--frag-limit") {
         score_limit = std::atoi(value().c_str());
+    } else if (a == "--ruleset") {
+        const std::string& v = value();
+        if (v == "ps2") rules = MpRuleSet::Ps2;
+        else if (v == "gc-xbox") rules = MpRuleSet::GcXbox;
+        else if (v == "extended") rules = MpRuleSet::Extended;
+        else throw std::runtime_error("--ruleset expects ps2|gc-xbox|extended");
     } else if (a == "--time-limit") {
         time_limit = float(std::atof(value().c_str())) * 60.0f;
     } else if (a == "--friendly-fire") {
@@ -78,6 +84,8 @@ bool MatchOptions::parse(const std::vector<std::string>& args, std::size_t& i) {
 
 ArenaSettings MatchOptions::settings() const {
     ArenaSettings s;
+    s.rules = rules;
+    s.slot_count = mp_rule_slot_limit(rules);
     s.mode = mode;
     s.score_limit = score_limit;
     s.time_limit = time_limit;
@@ -95,7 +103,7 @@ ArenaSettings MatchOptions::settings() const {
         slot.character = i;
         slot.health_bonus = handicap;
     }
-    for (int i = 0; i < bots; ++i, ++n) {
+    for (int i = 0; i < std::min(bots, int(s.slot_count) - 4); ++i, ++n) {
         ArenaSettings::Slot& slot = s.slots[std::size_t(4 + i)];
         slot.present = true;
         slot.bot = true;

@@ -394,8 +394,8 @@ struct SpSession::Impl {
     void draw_frame(const Camera& cam) {
         int width = 0, height = 0;
         window.begin_frame(width, height);
-        // Game viewport: 4:3 pillarbox (black bars) unless widescreen. All 3D below
-        // uses the game aspect; the HUD canvas pillarboxes itself in ui.begin.
+        // The selected game viewport is full-window Hor+ unless 4:3 pillarboxing is enabled;
+        // all 3D (including the viewmodel) uses this aspect.
         const GameView gv = game_view(config, width, height);
         const int gl_y = height - gv.y - gv.h;
         const float aspect = gv.aspect;

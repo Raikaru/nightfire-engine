@@ -13,6 +13,7 @@
 #include "game/input.hpp"
 #include "media/movie_player.hpp"
 
+#include "ui/layout.hpp"
 namespace nf::app {
 
 struct MovieScreen::Impl {
@@ -182,10 +183,20 @@ bool MovieScreen::play(std::uint32_t id, const std::string& shot, long max_frame
         int w, h;
         s.window.begin_frame(w, h);
         s.ui.begin(w, h);
-        if (!frame.rgba.empty())
-            s.ui.draw_frame({0, 0, ui::kScreenW, ui::kScreenH}, frame.width, frame.height, frame.rgba.data());
+        if (!frame.rgba.empty()) {
+            const ui::Layout layout = ui::Layout::from_canvas_width(s.ui.canvas_width());
+            float movie_w = layout.width(), movie_h = layout.height();
+            const float movie_aspect = float(frame.width) / float(std::max(frame.height, 1)) * ui::kPssPixelAspect;
+            if (layout.width() * ui::kScreenXScale / layout.height() > movie_aspect)
+                movie_w = movie_h * movie_aspect / ui::kScreenXScale;
+            else
+                movie_h = movie_w * ui::kScreenXScale / movie_aspect;
+            s.ui.draw_frame({ui::Layout::kDesignWidth * 0.5f - movie_w * 0.5f,
+                             ui::Layout::kDesignHeight * 0.5f - movie_h * 0.5f, movie_w, movie_h},
+                            frame.width, frame.height, frame.rgba.data());
+        }
         s.ui.end();
-        s.window.swap();
+        if (shot.empty() || !done) s.window.swap();
         if (shot.empty()) SDL_Delay(5);
     }
     if (!shot.empty()) {

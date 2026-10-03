@@ -1,9 +1,9 @@
 #pragma once
 
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
-
 #include "app/app.hpp"
 #include "game/input.hpp"
 #include "net/net.hpp"
@@ -20,6 +20,7 @@ struct NetworkClientOptions {
     long frames = -1;
     int loss_percent = 0;
     int latency_ms = 0;
+    std::uint8_t local_players = 1;
 };
 class NetworkSession {
 public:
@@ -29,8 +30,10 @@ public:
     NetworkSession& operator=(const NetworkSession&) = delete;
 
     void poll();
-    void send_input(const nf::PadState& pad, std::uint32_t view_tick);
+    void wait_for_connection();
+    void send_inputs(std::span<const nf::PadState> pads, std::uint32_t view_tick);
     std::uint8_t slot() const;
+    std::uint8_t local_players() const;
     std::uint32_t server_tick() const;
     std::uint32_t latest_snapshot_tick() const;
     const nf::net::Snapshot* latest_snapshot() const;

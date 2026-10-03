@@ -55,7 +55,8 @@ void append_info(nf::net::UdpSocket& socket, const std::string& endpoint, std::u
         const std::uint32_t ping = std::uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - sent).count());
         const auto existing = std::find_if(entries.begin(), entries.end(), [&](const ServerBrowserEntry& e) { return e.endpoint == address; });
         ServerBrowserEntry entry{address, std::move(info.name), std::move(info.map), info.mode, info.players,
-                                 info.max_players, ping, info.password_required, info.match_revision, info.bots};
+                                 info.max_players, ping, info.password_required, info.match_revision, info.bots,
+                                 info.slot_count, info.modified_rules};
         if (existing == entries.end()) entries.push_back(std::move(entry));
         else *existing = std::move(entry);
     }

@@ -180,8 +180,8 @@ struct DriveSessionApp::Impl {
     void draw_frame() {
         int w, h;
         window.begin_frame(w, h);
-        // Game viewport (4:3 pillarbox unless widescreen); the drive camera uses the
-        // game aspect and the text HUD below draws on the self-pillarboxing ui canvas.
+        // The drive camera uses the selected native window aspect; UI elements draw
+        // over the full window unless the saved original 4:3 pillarbox option is on.
         const GameView gv = game_view(config, w, h);
         const int gl_y = h - gv.y - gv.h;
         glDisable(GL_SCISSOR_TEST);

@@ -340,7 +340,7 @@ void BotBrain::process_goals() {
             if (!alive_participant(g.target)) {
                 valid = false;
             } else if (v.personality() == Personality::Guardian) {
-                const OtherInfo& o = v.other[std::size_t(g.target)];
+                const OtherInfo& o = v.other_info(g.target);
                 const Participant t = env->participant(g.target);
                 if ((o.flags & 10) == 10 && o.sq_dist < kGuardRadiusSq && std::fabs(me.pos[1] - t.pos[1]) < 2.0f) {
                     valid = false;

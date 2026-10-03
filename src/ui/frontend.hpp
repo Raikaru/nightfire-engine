@@ -28,6 +28,7 @@ struct FrontendResult {
         StartMultiplayer,  // P_MPCONFIRM: local split-screen multiplayer
         StartOnlineJoin,   // the multiplayer main-menu choice: open the online server browser
         StartListenServer, // the multiplayer setup finished in host mode
+        OpenSettings,      // main menu Square: the Settings screen (display, audio, accessibility)
         StartMission,      // P_NFSELECT/P_NFMAP: `level_bin` + `difficulty`
         Resume,           // the pause menu was closed (start button / "Resume")
         RestartMission,   // pause menu "Restart", or P_ENDMISSION "retry"

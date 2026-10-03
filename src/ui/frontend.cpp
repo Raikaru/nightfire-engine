@@ -3,6 +3,7 @@
 #include "ui/frontend.hpp"
 
 #include "ui/frontend_impl.hpp"
+#include "ui/menu_chrome.hpp"
 
 namespace nf {
 
@@ -16,7 +17,7 @@ constexpr std::uint32_t kPageMain = 0x40000002, kPageStart = 0x40000009, kPageIn
                         kPageMemCardInit = 0x40000048, kPagePause = 0x4000004b, kPageMpJoin = 0x40000019,
                         kPageNfSelect = 0x40000025, kPageCnSelect = 0x4000001b;
 constexpr std::uint32_t kFader = 0x100000ED;
-constexpr unsigned kOnlineChoiceBox = 0x4F4E4C;
+constexpr std::uint32_t kBoxList = 0x10000120;   // the message box's answer list (P_MESSAGEBOX)
 
 }  // namespace
 
@@ -47,6 +48,10 @@ void Frontend::Impl::after_update() {
     if (mode == FrontendMode::Pause && mgr->current_page_id() != 0 && mgr->act(ui::menu_action::kActStart, ui::menu_action::kPressed)) {
         result.action = FrontendResult::Action::Resume;
         closed = true;
+    }
+    if (online_choice_leaving >= 0) {
+        if (mgr->current_page_id() == kPageMain) ++online_choice_leaving;
+        else online_choice_leaving = -1;
     }
 }
 
@@ -96,6 +101,14 @@ bool Frontend::Impl::p_start(ui::Control& page, const ui::Msg& m) {
     return true;
 }
 
+// The online choice lists reuse the message box for their input (Up/Down, Cross and Triangle on its
+// answer list); draw_online_choice gives them the scenario page's look instead of the grey Yes/No box.
+void Frontend::Impl::open_online_choice(std::uint8_t stage) {
+    online_choice_pending = true;
+    online_choice_stage = stage;
+    option_box(stage == 0 ? "Local or online multiplayer" : "Host or join an online game", false, kOnlineChoiceBox);
+}
+
 // P_MAIN: fades in from black. (The original starts the attract movie after 2700 idle frames; there is no
 // video playback here, so the page just stays.)
 bool Frontend::Impl::p_main(ui::Control&, const ui::Msg& m) {
@@ -103,33 +116,28 @@ bool Frontend::Impl::p_main(ui::Control&, const ui::Msg& m) {
         mgr->input_reset_idle();
         fade_in_from_black(kFader);
         send(0x10000225, kLineHeight, 0x57);
+        // The prompt row (label 0x54e "~V Scroll  ~A Select") also names the Settings screen on Square.
+        if (ui::Page* main = mgr->find_page(kPageMain))
+            if (ui::Control* prompts = main->find(0x10000001))
+                mgr->send_to(*prompts, ui::Msg{kSetText, 1, 0, label(0x54E) + "  ~Y Settings"});
     } else if (m.type == kIdle && online_choice_pending) {
         unsigned type = 0;
         const unsigned answer = take_box_answer(&type);
-        if (type == kOnlineChoiceBox && answer != 0) {
-            online_choice_pending = false;
-            if (online_choice_stage == 0 && answer == 1) {
-                online_choice_stage = 0;
-                listen_host = false;
-                fade_to_page(kPageMpJoin);
-            } else if (online_choice_stage == 0) {
-                online_choice_stage = 1;
-                online_choice_pending = true;
-                option_box("Online multiplayer?\nYES: Host using the multiplayer setup\nNO: Join a network server",
-                           false, kOnlineChoiceBox);
-            } else {
-                online_choice_stage = 0;
-                if (answer == 1) {
-                    listen_host = true;
-                    fade_to_page(kPageMpJoin);
-                } else {
-                    result.action = FrontendResult::Action::StartOnlineJoin;
-                    closed = true;
-                }
-            }
-        } else if (type == kOnlineChoiceBox) {
-            online_choice_pending = false;
-            online_choice_stage = 0;
+        if (type != kOnlineChoiceBox) return true;
+        online_choice_pending = false;
+        if (answer == 4) {
+            // Back: Host/Join returns to Local/Online, which returns to the main menu.
+            if (online_choice_stage == 1) open_online_choice(0);
+        } else if (answer == 2 && online_choice_stage == 0) {
+            open_online_choice(1);
+        } else if (answer == 2) {
+            result.action = FrontendResult::Action::StartOnlineJoin;
+            closed = true;
+        } else if (answer == 1) {
+            // Local split-screen or Online Host: the original setup pages, behind a fade from the list.
+            listen_host = online_choice_stage == 1;
+            online_choice_leaving = 0;
+            fade_to_page(kPageMpJoin);
         }
     }
     return true;
@@ -158,28 +166,28 @@ bool Frontend::Impl::c_language(ui::Control&, const ui::Msg& m) {
     return true;
 }
 
+// Square on any main-menu button opens the Settings screen (an addition: the disc has no such page).
+void Frontend::Impl::open_settings() {
+    result.action = FrontendResult::Action::OpenSettings;
+    closed = true;
+}
+
 bool Frontend::Impl::c_go_nightfire(ui::Control&, const ui::Msg& m) {
     if (m.type == kAccept) fade_to_page(kPageNfSelect);
+    else if (m.type == kBack) open_settings();
     return true;
 }
 
 bool Frontend::Impl::c_go_multiplayer(ui::Control&, const ui::Msg& m) {
-    if (m.type == kAccept) {
-        online_choice_pending = true;
-        online_choice_stage = 0;
-        option_box("Choose multiplayer:\nYES: Local split-screen\nNO: Online host or join",
-                   false, kOnlineChoiceBox);
-    } else if (m.type == kAlt) {
-        online_choice_pending = true;
-        online_choice_stage = 1;
-        option_box("Online multiplayer?\nYES: Host using the multiplayer setup\nNO: Join a network server",
-                   false, kOnlineChoiceBox);
-    }
+    if (m.type == kAccept) open_online_choice(0);
+    else if (m.type == kAlt) open_online_choice(1);
+    else if (m.type == kBack) open_settings();
     return true;
 }
 
 bool Frontend::Impl::c_go_codenames(ui::Control&, const ui::Msg& m) {
     if (m.type == kAccept) fade_to_page(kPageCnSelect);
+    else if (m.type == kBack) open_settings();
     return true;
 }
 
@@ -200,6 +208,7 @@ void Frontend::open(FrontendMode mode, std::optional<std::uint32_t> page) {
     s.start_hint_shown = false;
     s.online_choice_pending = false;
     s.online_choice_stage = 0;
+    s.online_choice_leaving = -1;
     s.listen_host = false;
     std::uint32_t menu_id = 0x80000002;
     if (!s.menu.pages.empty()) menu_id = s.menu.pages.front().menu;
@@ -232,7 +241,57 @@ void Frontend::set_controller_present(std::size_t controller, bool present) {
 }
 
 void Frontend::draw(ui::Renderer& renderer, ui::TextRenderer& text) {
-    if (impl_->mgr) impl_->mgr->draw(renderer, text);
+    if (!impl_->mgr) return;
+    if (impl_->online_choice_pending || impl_->online_choice_leaving >= 0) impl_->draw_online_choice(renderer, text);
+    else impl_->mgr->draw(renderer, text);
+}
+
+// The online choice lists in the scenario page's composition (P_MPSCEN 0x4000001a): title, logo, the
+// picture in its ring, the wheel rows on the ring's bar, the description box and the prompt row.
+void Frontend::Impl::draw_online_choice(ui::Renderer& renderer, ui::TextRenderer& text) {
+    using namespace ui::menu_style;
+    ui::MenuChrome page(renderer, text, menu);
+    const bool online = online_choice_stage != 0;
+    page.title(online ? "Online Multiplayer" : label(0x149));
+    page.logo();
+
+    // The ring, its picture and the wheel rows keep their script offsets from the left margin.
+    const float dx = page.left() - ui::MenuChrome::authored(50, 53, 590, 295).x;
+    const auto at = [&](int x, int y, int w, int h) {
+        ui::Rect r = ui::MenuChrome::authored(x, y, w, h);
+        r.x += dx;
+        return r;
+    };
+    page.sprite(kEmblem, at(114, 118, 150, 150), {0, 0, 128, 128});
+    page.sprite(kRingFrame, at(114, 118, 150, 150), {0, 0, 128, 128});
+    page.sprite(kRing, at(50, 53, 590, 295), {0, 0, 512, 256});
+
+    struct Option {
+        std::string name;
+        const char* description;
+    };
+    const Option options[2][2] = {
+        {{"Split-Screen", "Up to four agents play on this console."},
+         {"Online", "Host a match or join one over the network."}},
+        {{"Host Game", "Set up a match that other agents can join."},
+         {label(0x29e), "Find a server on the network or enter its address."}}};
+    const ui::Control* list = mgr->find(kBoxList);
+    const int selected = list && list->current_row == 1 ? 1 : 0;
+    // The wheel keeps the current row in its middle slot (font 3); the other sits in the slot above or
+    // below at the script's half alpha.
+    page.label(at(304, 182, 336, 17), options[online][selected].name, 3, ui::Align::Left, kLabelColor);
+    page.label(selected == 0 ? at(333, 211, 307, 17) : at(333, 152, 307, 17), options[online][1 - selected].name, 2,
+               ui::Align::Left, (kLabelColor & 0xFFFFFF00u) | 0x80u);
+    page.label(page.span(301, 113), options[online][selected].description, 2, ui::Align::Center, kLabelColor);
+    page.prompts(label(0x218));
+
+    if (online_choice_leaving >= 0) {
+        // fade_to_page's fader: black over 0xF menu steps (two per update).
+        const float t = std::min(1.0f, float(online_choice_leaving) * 2.0f / 15.0f);
+        const ui::Layout& layout = page.layout();
+        renderer.fill({layout.x(0, ui::HorizontalAnchor::Left), 0, layout.width(), layout.height()},
+                      {0, 0, 0, std::uint8_t(t * 128.0f)});
+    }
 }
 
 bool Frontend::wants_close() const { return impl_->closed; }

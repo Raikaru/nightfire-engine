@@ -216,6 +216,8 @@ def main():
                     help="capture coherent 0x100-byte human BLData+0x7e8 objects (requires --seedable)")
     ap.add_argument("--rng-calls", action="store_true",
                     help="temporarily instrument four ACTION.ELF RNG entries and record caller/result events")
+    ap.add_argument("--rng-calls-preinstalled", action="store_true",
+                    help="attach to RNG hooks installed from PCSX2 pnach at boot")
     ap.add_argument("--freeze-bot", type=int, choices=range(4, 8),
                     help="hold this MP bot's initial position and yaw while recording")
     ap.add_argument("--face-bot", type=int, choices=range(4, 8),
@@ -227,6 +229,8 @@ def main():
     ap.add_argument("--checkpoint-slot", type=int, default=250,
                     help="temporary PCSX2 savestate slot copied into checkpoint-dir")
     args = ap.parse_args()
+    if args.rng_calls and args.rng_calls_preinstalled:
+        ap.error("choose only one RNG hook installation mode")
     valid_checkpoint_args(ap, args)
     if args.face_bot is not None and args.freeze_bot != args.face_bot:
         ap.error("--face-bot must name the same slot as --freeze-bot")
@@ -328,6 +332,8 @@ def main():
  
     refresh_projectile_cache(
         pine, cache, pine.read32(A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT), initial=True)
+    if args.rng_calls_preinstalled:
+        rng_trace = R.attach(pine)
     first = last = None
     last_new = time.monotonic()
     records, missed, resyncs = [], 0, 0
