@@ -274,7 +274,7 @@ void anim_update(Drone& d) {
     }
 
     if (!d.character) return;
-    d.character->tick();
+    d.character->tick(d.sys->timing().FRAME_RATE_MUL);
     d.mv.root_motion = d.character->root_motion();
     for (const AnimEvent& e : d.character->take_events()) {
         if (e.kind == AnimEventKind::Footstep) {

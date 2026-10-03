@@ -168,7 +168,7 @@ bool do_bullet_accuracy(Drone& d, float rand_draw) {
         // Correlated Lissajous wobble around the aim point, rotated by RotMatrix(obj+0x1c0 euler angles)
         // and ApplyMatrixLV into Drone+0x200. Replicated op-for-op in f32: the PS2Sinf range reduction is
         // exact, the VU polynomial and matrix FMA chains match to ~1e-7 (differential tolerance 1e-5).
-        const float tt = float(d.now() + d.rand_phase);
+        const float tt = float(d.now()) * d.sys->timing().FRAME_RATE_MUL + float(d.rand_phase);
         const float ph = tt * 0.01f;
         const Vec3 v{0.5f * ps2_sin(ph), 1.5f * ps2_sin(ph + 1.5707964f), 1.5f * ps2_sin(tt * 0.02f)};
         const float rx = d.aim_euler[0], ry = d.aim_euler[1], rz = d.aim_euler[2];
@@ -241,7 +241,9 @@ void next_bullet_time(Drone& d, bool new_burst, bool bot) {
             last = d.last_shot_time;
         } else {
             const float mul = aggression_mul(d);
-            extra = d.sys->rand_int(15) + std::uint32_t(60.0f / std::max(mul, 0.01f));
+            const std::uint32_t jitter = d.sys->rand_int(15);
+            const std::uint32_t pause = std::uint32_t(60.0f / std::max(mul, 0.01f));
+            extra = frames60(d, float(jitter + pause));
             d.burst_left = std::max(1, int(float(d.burst_left) * mul));
             last = d.last_shot_time;
         }

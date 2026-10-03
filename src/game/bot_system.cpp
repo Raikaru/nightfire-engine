@@ -415,7 +415,8 @@ BotSystem::Bot* BotSystem::bot_at_slot(int slot) {
 }
 BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
     int slot, std::span<const std::byte> drone_raw, std::span<const std::byte> bv_raw,
-    std::span<const std::byte> obj_raw, const std::array<std::uint32_t, 8>& participant_addresses,
+    std::span<const std::byte> obj_raw, std::span<const std::byte> route_nodes_raw, int route_path,
+    bool restore_route, const std::array<std::uint32_t, 8>& participant_addresses,
     const std::array<std::optional<int>, 2>& resolved_goal_targets) {
     using Result = SnapshotRestoreResult;
     using Code = Result::Code;
@@ -639,6 +640,31 @@ BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
             d.behaviour[i].word[std::size_t(word)] =
                 raw_u32(drone_raw, 0x4dc + std::size_t(i) * 0xc + std::size_t(word) * 4);
     d.active_behaviour = behaviour_index;
+    if (restore_route) {
+        if (!d.nav || !d.nav->restore_movement_route(
+                drone_raw.subspan(0x860, 0x100), route_nodes_raw, route_path,
+                raw_f32(drone_raw, 0x8ec), raw_u32(drone_raw, 0xba8) != 0))
+            return fail(Code::UnsupportedNavigation, Blob::Drone, 0x860);
+        const NavRoute& route = d.nav->route();
+        d.mv.disabled = raw_u8(drone_raw, 0x23) != 0;
+        d.mv.fly = raw_u8(drone_raw, 0x24) != 0;
+        d.mv.fly_speed = raw_f32(drone_raw, 0x50);
+        d.mv.speed = raw_f32(drone_raw, 0x474);
+        d.mv.turn_rate = raw_f32(drone_raw, 0x4a0);
+        d.mv.bunched = raw_u8(drone_raw, 0x17) != 0;
+        d.mv.route_status = route.status;
+        d.mv.route_distance = raw_f32(drone_raw, 0x8a0);
+        d.mv.have_dest = route.status == RouteStatus::Following ||
+                         route.status == RouteStatus::Approximate ||
+                         route.status == RouteStatus::Straight;
+        d.mv.dest = {raw_f32(drone_raw, 0x670), raw_f32(drone_raw, 0x674),
+                     raw_f32(drone_raw, 0x678)};
+        d.mv.dest_cel = d.nav->network().find_cel(d.mv.dest);
+        d.mv.dest_dist = raw_f32(drone_raw, 0x660);
+        d.mv.arrive_radius = raw_f32(drone_raw, 0x664);
+        d.mv.dest_angle = raw_f32(drone_raw, 0x694);
+        d.anim.step = raw_f32(drone_raw, 0x58c);
+    }
     d.flags = raw_u32(drone_raw, 0x4f8);
     d.alert_flags = raw_u32(drone_raw, 0x4fc);
     d.sight_flags = raw_u32(drone_raw, 0x228);

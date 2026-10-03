@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The `nf_net` library provides bounded UDP datagrams, protocol-version rejection, SHA-256 game-data hashing, redundant input/snapshot codecs, world-state and projectile-page codecs, reliable replication-event codecs, server queries, selective acknowledgements, and outbound one-way-latency/loss injection. `nfnet-test` exercises these codec boundaries and reliability behavior. `nfserver` runs the shared `ArenaSession` at 60 Hz by default (`--logic-hz 30` selects the PS2-comparison rate), validates hashes/input ticks, relays chat, and broadcasts 30 Hz authoritative player/match snapshots plus pickup/objective state, projectile pages, and gameplay events. Graphical clients use the same selected logic rate to predict local input, reconcile to acknowledged server state, interpolate remote players and bot rigs, and consume authoritative HUD/scoreboard and replicated world state. Input bounds scale with the logic rate; shot rewinds remain bounded to 200 ms (12 ticks at 60 Hz, six at 30 Hz).
+The `nf_net` library provides bounded UDP datagrams, protocol-version rejection, SHA-256 game-data hashing, redundant input/snapshot codecs, world-state and projectile-page codecs, reliable replication-event codecs, server queries, selective acknowledgements, and outbound one-way latency/loss/jitter injection. `nfnet-test` exercises these codec boundaries and reliability behavior. `nfserver` runs the shared `ArenaSession` at 60 Hz by default (`--logic-hz 30` selects the PS2-comparison rate), validates hashes/input ticks, relays chat, and broadcasts 30 Hz authoritative player/match snapshots plus pickup/objective state, projectile pages, and gameplay events. Graphical clients use the same selected logic rate to predict local input, reconcile to acknowledged server state, interpolate remote players and bot rigs, and consume authoritative HUD/scoreboard and replicated world state. Input bounds scale with the logic rate; shot rewinds remain bounded to 200 ms (12 ticks at 60 Hz, six at 30 Hz).
 
 **Online multiplayer remains in development and is not supported for general play.** Prediction, interpolation, authoritative HUD, replicated state, and lossy graphical/multiprocess localhost soaks have smoke coverage. An instrumented two-client moving-target shot registered a kill/death at 150 ms RTT: on the shot, server tick 1491 received view tick 1483, clamped the rewind to tick 1485, and selected history tick 1485. This exercises the bounded rewind path but does not establish general hit fidelity. The frontend now provides menu-driven Online hosting/joining and listen-server match transitions, but these development builds are not an Internet security boundary; do not expose them to untrusted networks.
 
@@ -14,7 +14,7 @@ Build it with `cmake --build build-netcode --target nfserver`. A local server ca
 build-netcode/nfserver ~/Projects/nightfire-data/ps2/ --map 07000024.bin --mode arena --bots 2 --port 27500
 ```
 
-Supported server options include `--config`, `--map`, `--mode`, `--ruleset ps2|gc-xbox|extended`, `--bots`, `--port`, `--name`, `--password`, `--master`, `--frag-limit`, `--time-limit`, `--net-sim-loss`, `--net-sim-latency`, repeated `--rotation map.bin,mode`, `--visibility-culling` / `--no-visibility-culling`, `--logic-hz 30|60`, and `--ticks` (bounded headless run for local tests; it cannot be combined with rotation). `--time-limit` is in minutes; zero disables the timer, matching the original MP rule that timed expiry runs only for a positive duration. Server-side visibility culling defaults on; an optional `--config server.cfg` file uses `key=value` lines for these settings, and command-line options override config values.
+Supported server options include `--config`, `--map`, `--mode`, `--ruleset ps2|gc-xbox|extended`, `--bots`, `--port`, `--name`, `--password`, `--master`, `--frag-limit`, `--time-limit`, `--net-sim-loss`, `--net-sim-latency`, `--net-sim-jitter`, repeated `--rotation map.bin,mode`, `--visibility-culling` / `--no-visibility-culling`, `--logic-hz 30|60`, and `--ticks` (bounded headless run for local tests; it cannot be combined with rotation). Jitter defaults to ±5 ms around the configured one-way delay when enabled. `--time-limit` is in minutes; zero disables the timer, matching the original MP rule that timed expiry runs only for a positive duration. Server-side visibility culling defaults on; an optional `--config server.cfg` file uses `key=value` lines for these settings, and command-line options override config values.
 Direct clients must use the same `--logic-hz` value as their server (the network protocol does not advertise the simulation rate); both default to 60 Hz, or set both to 30 Hz for PS2 comparisons. Example:
 ```ini
 map=07000024.bin
@@ -38,7 +38,7 @@ Run a scripted headless client with the same data and map:
 build-netcode/nightfire ~/Projects/nightfire-data/ps2/ --connect 127.0.0.1:27500 --map 07000024.bin --name Test --chat "hello from Nightfire" --frames 300 --press "forward+r1,wait10"
 ```
 
-The headless client prints received snapshot score records and chat; `--chat message` sends one message after joining (maximum 200 bytes). For a graphical capture, use `--connect ... --frames 30 --shot network.bmp`; `--connect` without a frame cap opens an interactive single-view preview. Both graphical and headless clients support outbound `--net-sim-loss 0..100` and `--net-sim-latency ms` injection; configure the server's matching flags for both-way simulation.
+The headless client prints received snapshot score records and chat; `--chat message` sends one message after joining (maximum 200 bytes). For a graphical capture, use `--connect ... --frames 30 --shot network.bmp`; `--connect` without a frame cap opens an interactive single-view preview. Both graphical and headless clients support outbound `--net-sim-loss 0..100`, `--net-sim-latency ms` and `--net-sim-jitter` (bounded symmetric ±5 ms) injection; configure the server's matching flags for both-way simulation.
 The server binds UDP on the requested port (default **27500**). LAN access requires no router changes; Internet access requires forwarding that one UDP port. `--ticks` is for bounded headless tests and does not represent a full match.
 
 ## Protocol foundation
@@ -50,7 +50,7 @@ The server binds UDP on the requested port (default **27500**). LAN access requi
 - `WorldState` carries pickup active/waiting/gone state and spin plus objective kind/team/carrier/state/visibility/position/health. Projectile state is split into pages of at most 32 entries and assembled by tick on clients. `Event` packets cover weapon sounds, impacts, explosions, match messages, and pickup notices; server events use selective-ack retransmission. `NetworkSession` bounds its event/chat queues and retains the latest world/projectile state.
 - `Reliability` assigns sequence numbers, tracks the latest packet plus a 32-packet acknowledgement history, suppresses duplicate receive sequences, and requests reliable retransmission after 100 ms. Welcome, chat, and server gameplay events currently use reliable sends; input, snapshots, world-state and projectile pages are best effort. Acknowledgements piggyback on regular traffic.
 
-`UdpSocket::simulate()` injects faults on outbound packets only. Loss is sampled per datagram; latency holds a datagram for the configured one-way delay and is drained during the next `receive()` poll. For a two-sided simulated link, configure both endpoint sockets. This is a deterministic test aid, not a network quality estimator.
+`UdpSocket::simulate()` injects faults on outbound packets only. Loss is sampled per datagram; latency holds a datagram for the configured one-way delay and jitter selects an independent whole-millisecond offset in `[-jitter_ms,+jitter_ms]`, clamping the resulting delay at zero. Delayed datagrams are released by due time, so jitter can reorder them. For a two-sided simulated link, configure both endpoint sockets. This is a deterministic test aid, not a network quality estimator.
 
 ## Hosting, ports, and discovery
 
@@ -168,3 +168,54 @@ The first-authoritative-snapshot reset was exercised in a linked 300-frame graph
 After the server decoupled movement-input admission from the client’s view tick, the active 1,800-input script (`build-netpredict/netpredict-active.inputs`: walk, strafe, jump, crouch, wall push) ran in graphical `xvfb-run` clients with 100 ms one-way latency configured on both ends. In the final schema-2 no-loss run, 597 reconciliations averaged 0.01 cm (p99 0.00 cm); remote-position jitter p99 was 0.000 cm. Baseline tick 321 differed by 321.95 cm; startup corrections were 3.02 cm at tick 324 (ack 320, 10 pending), 3.02 cm at tick 327 (ack 320, 12 pending), and 1.01 cm at tick 330 (ack 322, 14 pending). In the final schema-2 5% loss run, 566 reconciliations averaged 0.01 cm (p99 0.00 cm), with remote-position jitter p99 0.000 cm. Baseline tick 1965 differed by 1,874.59 cm; startup corrections were 3.02 cm at tick 1968 (ack 1963, 10 pending) and 2.01 cm at tick 1971 (ack 1964, 13 pending). The earlier post-admission 5% run recorded an additional 16.00 cm startup/warm-up correction at tick 351 (ack 343, 13 pending), after 3.02 cm corrections at ticks 345 and 348; none of these runs logged corrections over 0.01 cm after startup. Metrics exclude the first baseline and measure displacement after authoritative state application and unacknowledged-input replay. No per-datagram loss trace is available, so results are consistent with loss-only corrections after warm-up but do not directly correlate corrections to specific drops.
 
 The offline differential command `TMPDIR=$HOME/.cache/netpredict-tmp ./build-netpredict/nfnet-predict-diff <game-dir> 07000024.bin scenario:combined <checkpoint-tick>` exercised an 1,800-tick walk/strafe/jump/crouch/wall-slide fixture. At checkpoints 0, 720 and 1,080, the owner-only movement checkpoint replay was bit-identical through the remaining ticks (`mismatch_ticks=0`); the public-pose-only replay diverged. Coverage was contact_ticks=1,626, jump_ticks=61, crouch_ticks=720 and wall_slide_ticks=360. The movement DTO includes collision/motion history, aim/timing state and `WaterState`; animation body playback remains render-only in the MP path.
+The 60 Hz jitter audit found and fixed two input-timeline failures: the graphical client's local acknowledgement counter was never marked initialized, so every predicted sample reused the Welcome tick and the server de-duplicated later samples; and a delayed batch could be drained into one simulation step. The counter now advances once per logic step, and the server consumes at most one queued sample per local player per simulation step, keeping acknowledgements aligned with consumed movement. With three bots and `--net-sim-latency 12 --net-sim-jitter` on both local endpoints, the active 1,800-input script completed 898 reconciliations at p99 0.00 cm (mean 0.03 cm); one 22.32 cm startup correction was logged at tick 612 (ack 606, seven pending inputs), with no later correction above 0.01 cm. The initial spawn baseline is excluded from the correction metric. The `build-MpSlots/vps-active.inputs` fixture was not present in this checkout, so this run used `build-netpredict/netpredict-active.inputs`.
+The same 1,800-input script against the rebuilt public server at `96.30.204.141:27500` completed 898 reconciliations (mean 0.05 cm, p99 0.00 cm; remote-position jitter p99 0.000 cm). After the initial 14,140.70 cm spawn baseline, five warm-up corrections occurred at ticks 1800–1808 (4.00–12.31 cm); none were logged during the remainder of the run. Public endpoint queries reported 27–40 ms. Packet-drop events are not currently exposed by the client, so these runs establish stable post-warm-up behavior but cannot attribute each startup correction to a particular lost datagram.
+
+
+
+## Test deployment
+
+A public development deployment was started on `nih-vps` at `96.30.204.141`. The dedicated server is named **Nightfire VPS Public Test**, serves Skyrail Arena (`07000024.bin`, Arena, PS2 ruleset) with three bots, no password, and 60 Hz logic. Its config also rotates to Subpen (`07000025.bin`, Team Arena) and back after a match ends. A short-timer rotation smoke with the current VPS binary on UDP 27676 exercised the transition to Subpen and back to Skyrail; that test port was not opened in the firewall. The public server uses an unlimited time limit, so its live match stayed on the initial map during the soak.
+
+The service reads `~/nightfire/server.cfg`:
+
+```ini
+map=07000024.bin
+mode=arena
+ruleset=ps2
+bots=3
+port=27500
+name=Nightfire VPS Public Test
+master=96.30.204.141:27900
+frag-limit=32767
+time-limit=0
+logic-hz=60
+rotation=07000025.bin,team-arena
+rotation=07000024.bin,arena
+visibility-culling=true
+```
+
+
+The current working tree was copied to `~/nightfire/repo/` with `rsync` (excluding `.git`, `.omp`, and local build directories); PS2 runtime data is at `~/nightfire/data/ps2/`. On Fedora 44, the release build used:
+
+```sh
+cmake -S ~/nightfire/repo -B ~/nightfire/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build ~/nightfire/build --target nfserver nfmaster nightfire -j 8
+```
+
+After syncing the input-queue fix, the VPS server was incrementally rebuilt with `TMPDIR=~/nightfire/tmp cmake --build ~/nightfire/build --target nfserver -j 8` and restarted with `systemctl --user restart nfserver.service` before the post-fix active-input verification.
+
+
+The firewall added only the authorized game and registry UDP ports, `27500/udp` and `27900/udp` (the existing SSH management service was unchanged). `nfmaster` and `nfserver` run as enabled root user services with linger; their logs are `~/nightfire/logs/nfmaster.log` and `~/nightfire/logs/nfserver.log`. Check them with `systemctl --user status nfmaster.service nfserver.service`; stop the deployment with `systemctl --user stop nfserver.service nfmaster.service` (and prevent user-session restart with `systemctl --user disable nfserver.service nfmaster.service`).
+
+Before the final input-queue fix, a graphical client completed 1,800 input frames against the public endpoint and saved the inspected 1280×720 capture below. That earlier session logged 359 prediction corrections (mean 7.68 cm, maximum 81.55 cm) after a 101.64 m initial authoritative baseline; the post-fix active-input measurements above supersede those correction figures.
+
+![Live public Skyrail match rendered by the network client](net-vps-client.png)
+
+A VPS-side Extended capacity smoke used an `nfserver --ruleset extended --bots 0 --logic-hz 60 --port 27676 --ticks 1800` server and eight headless clients, each joining with `--local-players 2 --frames 600`. The clients were assigned adjacent slot pairs covering 0–15; all eight clients and the bounded server exited 0. Each client received 300 complete 16-slot snapshots, with 300 shared ticks and no scoreboard differences.
+
+Before the final input-queue fix, the public service completed a 1,801-second Internet soak with four headless clients (`--frames 108000`, scripted `forward+r1,wait10`) and three server bots. All four clients exited 0 after the full input run. They received 53,847, 53,871, 53,852, and 53,872 snapshots; 53,839 common ticks had identical complete scoreboards and there were no mismatches. Their final snapshots agreed: human slots 0–3 had kills/deaths 0/2, 0/2, 1/11, and 0/4; bot slots 4–6 had 6, 8, and 4 kills. On the VPS, `nfserver` stayed at the same PID and used 17.60 CPU seconds (0.98% of one core) during the run. The `enp1s0` counters increased by 46,997,530 RX bytes and 371,757,002 TX bytes, averaging 208.76 kbit/s inbound and 1,651.34 kbit/s outbound.
+
+During that pre-fix soak, 1,798 of 1,800 direct UDP server-info queries received responses (0.11% loss); the 1,798 measured RTTs ranged from 21 to 335 ms, averaged 36.03 ms, and had a 45 ms p95. Concurrent ICMP monitoring reported 1,793 replies to 1,796 packets (0.167% loss), with 19.910/23.967/273.809 ms min/average/max RTT and 19.840 ms mdev. These are observations from this route and run, not service guarantees.
+
+The services are intentionally left running for public testing. The bounded capacity server, four soak clients, ICMP monitor, and UDP probes all exited at test completion; no temporary test listener remains on port 27676. Test-service stop commands and deployment logs are listed above; only the two deployment UDP ports were added to the firewall.

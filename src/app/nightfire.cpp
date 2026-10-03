@@ -336,6 +336,7 @@ struct Args {
     std::string player_name = "Player";
     std::string chat;
     int net_sim_loss = 0, net_sim_latency = 0;
+    bool net_sim_jitter = false;
     int listen_port = 27500;
     float host_time_limit = -1.0f;  // optional minutes; useful for short rotation tests
     int give = -1;
@@ -406,6 +407,7 @@ bool parse_args(int argc, char** argv, Args& a) {
         else if (v == "--name") need(a.player_name);
         else if (v == "--net-sim-latency" && i + 1 < argc) a.net_sim_latency = std::clamp(std::atoi(argv[++i]), 0, 2000);
         else if (v == "--net-sim-loss" && i + 1 < argc) a.net_sim_loss = std::clamp(std::atoi(argv[++i]), 0, 100);
+        else if (v == "--net-sim-jitter") a.net_sim_jitter = true;
         else if (v == "--drive") need(a.drive);
         else if (v == "--car") need(a.car);
         else if (v == "--movie") need(a.movie);
@@ -517,7 +519,7 @@ void usage(const char* prog) {
                  "[--drive name [--car name]] [--movie hexid] [--logic-hz 30|60] [--frames N] [--shot out.bmp] "
                  "[--inputs file] [--press a,b,...] [--page 0x40000002] [--size WIDTHxHEIGHT] [--mute] [--give ID] "
                  "[--prompts ps|xbox|keyboard] [--virtual-pads xbox,ps,...] [--hold pad0:r1,...]\n"
-                 "[--local-players 1..4] [--net-sim-loss 0..100] [--net-sim-latency ms] joins a network server.\n"
+                 "[--local-players 1..4] [--net-sim-loss 0..100] [--net-sim-latency ms] [--net-sim-jitter] joins a network server.\n"
                  "  --browse-lan, --browse-master IPv4[:port], or --browse-ip IPv4[:port] query server lists/info; "
                  "the main-menu Multiplayer entry opens Host/Join.\n"
                  "  --online-master IPv4[:port] adds the registry to that join screen; --listen-port and "
@@ -592,6 +594,7 @@ int run(int argc, char** argv) {
         options.frames = args.frames;
         options.loss_percent = args.net_sim_loss;
         options.latency_ms = args.net_sim_latency;
+        options.jitter_ms = args.net_sim_jitter ? nf::net::kDefaultNetSimJitterMs : 0;
         options.local_players = std::uint8_t(args.local_players);
         return run_network_client(*ctx, options);
     }
@@ -642,6 +645,7 @@ int run(int argc, char** argv) {
         options.local_players = std::uint8_t(args.local_players);
         options.loss_percent = args.net_sim_loss;
         options.latency_ms = args.net_sim_latency;
+        options.jitter_ms = args.net_sim_jitter ? nf::net::kDefaultNetSimJitterMs : 0;
         const auto server_info = ServerBrowser().direct(options.endpoint);
         MpDirect direct_mp;
         direct_mp.level_bin = args.map;
@@ -792,6 +796,9 @@ int run(int argc, char** argv) {
                     continue;
                 }
                 NetworkClientOptions connection = std::move(*options);
+                connection.loss_percent = args.net_sim_loss;
+                connection.latency_ms = args.net_sim_latency;
+                connection.jitter_ms = args.net_sim_jitter ? nf::net::kDefaultNetSimJitterMs : 0;
                 const std::vector<ServerBrowserEntry> initial_info = ServerBrowser().direct(connection.endpoint);
                 std::uint32_t mode = initial_info.empty() ? nf::mp_mode::kArena : initial_info.front().mode;
                 ServerBrowser browser;
@@ -850,6 +857,7 @@ int run(int argc, char** argv) {
                 server_config.password = args.password;
                 server_config.net_sim.loss_percent = args.net_sim_loss;
                 server_config.net_sim.latency_ms = args.net_sim_latency;
+                server_config.net_sim.jitter_ms = args.net_sim_jitter ? nf::net::kDefaultNetSimJitterMs : 0;
                 if (!args.online_master.empty()) {
                     const std::size_t colon = args.online_master.rfind(':');
                     server_config.master_host = args.online_master.substr(0, colon);
@@ -879,6 +887,7 @@ int run(int argc, char** argv) {
                     client_options.local_players = std::uint8_t(args.local_players);
                     client_options.loss_percent = args.net_sim_loss;
                     client_options.latency_ms = args.net_sim_latency;
+                    client_options.jitter_ms = args.net_sim_jitter ? nf::net::kDefaultNetSimJitterMs : 0;
                     MpDirect client_mp;
                     client_mp.level_bin = before.map;
                     client_mp.options = mp.options;

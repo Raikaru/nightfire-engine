@@ -1,10 +1,11 @@
 #pragma once
 
-#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -447,6 +448,10 @@ public:
     NavMove move_to_goal(const Vec3& feet, int cel = kNoCel);
     // AINetwork_CalcRouteToPosition / ToObject (result == Approximate additionally runs AlterDestFor_DROUTE_Nearest).
     RouteStatus calc_route_to_goal(const Vec3& feet, int cel = kNoCel);
+    // Restores the captured AIRoute and its per-drone node list without recalculating the route.
+    bool restore_movement_route(std::span<const std::byte> route_raw,
+                                std::span<const std::byte> route_nodes_raw, int path,
+                                float arrive_radius, bool ignore_bounds);
     // NDrone2_InvalidateAttackRoute / AINetwork_InvalidateRoute.
     void invalidate_route() { move_route_.flags &= std::uint16_t(~NavRoute::kValid); }
     bool route_valid() const { return move_route_.valid(); }

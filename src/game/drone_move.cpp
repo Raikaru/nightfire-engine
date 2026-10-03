@@ -505,7 +505,8 @@ void move_step(Drone& d) {
     if (!d.mv.disabled && d.mv.have_dest && (w[0] == 0.0f && w[2] == 0.0f) && d.anim.step > 0.0f) {
         // Drone_AnimInfo +4: per-tick forward step when the anim system does not move the drone (a clip
         // with no root motion, e.g. a skeleton the clip was not authored for). Step along the steered heading.
-        w = {std::sin(d.yaw) * d.anim.step, 0.0f, std::cos(d.yaw) * d.anim.step};
+        w = {std::sin(d.yaw) * d.anim.step * d.sys->timing().FRAME_RATE_MUL, 0.0f,
+             std::cos(d.yaw) * d.anim.step * d.sys->timing().FRAME_RATE_MUL};
     }
     d.pos += w;
     d.mv.speed = dist2d(before, d.pos);

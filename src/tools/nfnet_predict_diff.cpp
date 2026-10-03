@@ -151,7 +151,11 @@ CompareResult compare(const nf::PlayerPredictionState& a, const nf::PlayerPredic
     const float aim_b[] = {b.aim.cursor_x, b.aim.cursor_y, b.aim.turn_x, b.aim.turn_y, b.aim.scope_x, b.aim.scope_y};
     constexpr const char* aim_names[] = {"aim.cursor_x", "aim.cursor_y", "aim.turn_x", "aim.turn_y", "aim.scope_x", "aim.scope_y"};
     for (std::size_t i = 0; i < std::size(aim_a); ++i) add_float(out, aim_names[i], aim_a[i], aim_b[i]);
-    add_float(out, "timing.rate", a.timing.rate, b.timing.rate);
+    add_float(out, "timing.FRAME_RATE", a.timing.FRAME_RATE, b.timing.FRAME_RATE);
+    add_float(out, "timing.FRAME_RATE_MUL", a.timing.FRAME_RATE_MUL, b.timing.FRAME_RATE_MUL);
+    add_float(out, "timing.REC_FRAME_RATE", a.timing.REC_FRAME_RATE, b.timing.REC_FRAME_RATE);
+    add_int(out, "timing.FRAME_RATE_INT", std::uint64_t(std::uint32_t(a.timing.FRAME_RATE_INT)),
+            std::uint64_t(std::uint32_t(b.timing.FRAME_RATE_INT)));
     constexpr const char* body_names[] = {"body_basis[0]", "body_basis[1]", "body_basis[2]", "body_basis[3]",
                                          "body_basis[4]", "body_basis[5]", "body_basis[6]", "body_basis[7]",
                                          "body_basis[8]"};

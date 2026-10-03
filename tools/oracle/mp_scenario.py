@@ -128,13 +128,15 @@ def main():
     time.sleep(args.page_settle)
     hold("cross")
     time.sleep(args.page_settle)
-    def poke_roster():
+    def poke_roster(team_override=None):
         if not args.bot_chars:
             return
         chars = [int(x) for x in args.bot_chars.split(",")]
-        teams = [int(x) for x in args.bot_teams.split(",")] if args.bot_teams else [0] * len(chars)
+        teams = ([team_override] * len(chars) if team_override is not None
+                 else ([int(x) for x in args.bot_teams.split(",")] if args.bot_teams else [0] * len(chars)))
         assert len(chars) == len(teams) and len(chars) <= 4, "--bot-chars/_teams: up to 4 paired ids"
-        assert set(teams) == {0, 1} or args.scenario in (0, 1), "team modes need both teams populated"
+        assert team_override is not None or set(teams) == {0, 1} or args.scenario in (0, 1), \
+            "team modes need both teams populated"
         stats = pine.read_block(0x26D2F0, 29 * 14)   # default_bot_stats
         pine.write(WRITE8, 0x2DEEA8, 1)
         pine.write(WRITE8, 0x2DEEA8 + 1, len(chars))
@@ -148,7 +150,9 @@ def main():
             pine.write(WRITE8, base + 0x10, ch)
             pine.write(WRITE8, base + 0x11, 1)
         print("poked bot roster", list(zip(chars, teams)), flush=True)
-    poke_roster()   # early: options/confirm pages see the intended teams+count
+    # Keep the Arena wheel's early validation happy when the requested team mode
+    # is committed directly at Confirm; the intended teams are re-poked there.
+    poke_roster(0 if args.direct_scenario_at_confirm else None)
     # On a slow interpreter the ready prompt can eat the transition tap. Probe
     # the scenario mask around one additional tap so we do not accidentally
     # select Quick Game when the wheel already opened.
@@ -247,6 +251,9 @@ def main():
     if args.weapon_set is not None:
         pine.write(WRITE32, A.MPSETTINGS + A.MPS_WEAPON_SET, args.weapon_set)
         print("poked MP weapon set", args.weapon_set, flush=True)
+    vpad("press", "cross", 400)
+    # Confirm opens the pre-match roster page; start the match from there.
+    time.sleep(args.page_settle)
     vpad("press", "cross", 400)
     live = False
     first_live_frame = None
