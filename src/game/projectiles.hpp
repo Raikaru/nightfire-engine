@@ -25,6 +25,8 @@ struct Projectile {
     Vec3 stuck_normal{};         // surface normal a sticky projectile hangs on
     float damage_scale = 1.0f;   // Shooter::damage_scale
     float age = 0;               // ticks alive (for renderers)
+    Vec3 previous_pos{};         // visual-only pose from the preceding logic tick
+    std::uint16_t network_id = 0; // snapshot identity for render interpolation
 };
 
 // Ray (from + t * delta, t in [0, 1]) against the capsule axis a..b swept by `radius`.

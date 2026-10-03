@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -140,7 +141,8 @@ struct DroneDraw {
 };
 
 void draw_views(Window& window, LevelRenderer& renderer, const ObjectDrawList& objects, const std::vector<Camera>& cameras,
-                bool side_by_side, bool wireframe, const DroneDraw& drones = {}, WeatherRenderer* weather = nullptr) {
+                bool side_by_side, bool wireframe, const DroneDraw& drones = {}, WeatherRenderer* weather = nullptr,
+                float interpolation = 1.0f) {
     int width, height;
     window.begin_frame(width, height);
     const auto clear = renderer.clear_color();
@@ -160,7 +162,7 @@ void draw_views(Window& window, LevelRenderer& renderer, const ObjectDrawList& o
         if (weather && weather->active())
             weather->draw(cameras[i], renderer.view_projection(cameras[i], r.aspect()));
         renderer.draw_objects(cameras[i], r.aspect(), objects.collect(int(i)));
-        if (drones.renderer) drones.renderer->draw(cameras[i], r.aspect(), *drones.system);
+        if (drones.renderer) drones.renderer->draw(cameras[i], r.aspect(), *drones.system, interpolation);
     }
     glDisable(GL_SCISSOR_TEST);
     glViewport(0, 0, width, height);
@@ -274,7 +276,7 @@ int run_match(const MatchLaunch& request) {
         }
         for (long f = 0; f < frames; ++f) {
             PadInputs pads{};
-            float tick_rate = World::kTickHz;
+            float tick_rate = float(launch.logic_hz);
             if (importer) {
                 const std::uint64_t next_frame = world.frame() + 1;
                 if (!importer->input_for(next_frame, pads, tick_rate))
@@ -288,7 +290,7 @@ int run_match(const MatchLaunch& request) {
             if (shot_weather) {
                 shot_weather->update(world.player(0)->eye(), timing.FRAME_RATE_MUL, timing.REC_FRAME_RATE,
                                      [&world](int ch) { return world.objects().channel(unsigned(ch)); });
-                shot_renderer->set_time(double(world.frame()) / World::kTickHz);
+                shot_renderer->set_time(double(world.frame()) / launch.logic_hz);
             }
             if (mp_trace.is_open())
                 mp_trace.dump(world, session.arena(), session.weapons(), pads,
@@ -329,7 +331,7 @@ int run_match(const MatchLaunch& request) {
         }
         DroneDraw drone_draw;
         if (drone_renderer) drone_draw = {drone_renderer.get(), &bot_match->drones()};
-        draw_views(window, renderer, objects, cameras, options.side_by_side, launch.collision_wireframe, drone_draw, &weather);
+        draw_views(window, renderer, objects, cameras, options.side_by_side, launch.collision_wireframe, drone_draw, &weather, 1.0f);
         const bool ok = window.save_bmp(launch.shot);
         std::printf("split screen (%d players) -> %s\n", options.humans, ok ? launch.shot.c_str() : SDL_GetError());
         return ok ? 0 : 1;
@@ -352,7 +354,8 @@ int run_match(const MatchLaunch& request) {
     for (int i = 0; i < options.humans; ++i) prev[std::size_t(i)] = view_of(*world.player(i));
     double accumulator = 0;
     Uint64 last = SDL_GetTicksNS();
-    constexpr double kStep = 1.0 / World::kTickHz;
+    const FrameTiming timing{float(launch.logic_hz)};
+    const double kStep = timing.REC_FRAME_RATE;
     bool wireframe = launch.collision_wireframe;
     while (running) {
         SDL_Event e;
@@ -380,11 +383,11 @@ int run_match(const MatchLaunch& request) {
             for (int i = 0; i < options.humans; ++i) prev[std::size_t(i)] = view_of(*world.player(i));
             PadInputs in{};
             for (int i = 0; i < options.humans; ++i) in[std::size_t(i)] = pads[std::size_t(i)].sample();
-            const FrameTiming timing{};
+            if (drone_renderer && bot_match) drone_renderer->capture_previous(bot_match->drones());
             session.tick(in, timing);
             weather.update(world.player(0)->eye(), timing.FRAME_RATE_MUL, timing.REC_FRAME_RATE,
                            [&world](int ch) { return world.objects().channel(unsigned(ch)); });
-            renderer.set_time(double(world.frame()) / World::kTickHz);
+            renderer.set_time(double(world.frame()) / launch.logic_hz);
             session.messages().clear();
             session.sounds().clear();
             accumulator -= kStep;
@@ -395,7 +398,8 @@ int run_match(const MatchLaunch& request) {
         }
         std::vector<Camera> cameras;
         for (int i = 0; i < options.humans; ++i) cameras.push_back(camera_for(prev[std::size_t(i)], view_of(*world.player(i)), float(accumulator / kStep)));
-        draw_views(window, renderer, objects, cameras, options.side_by_side, wireframe, drone_draw, &weather);
+        draw_views(window, renderer, objects, cameras, options.side_by_side, wireframe, drone_draw, &weather,
+                   float(accumulator / kStep));
         window.swap();
     }
     if (bot_match) std::printf("bots:\n%s", bot_match->summary().c_str());

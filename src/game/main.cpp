@@ -59,8 +59,9 @@ constexpr float kPi = 3.14159265358979f;
 struct ReplayFrame {
     long frame;
     PadState pad;   // already in game form (post psiInput_PollDevices)
-    float rate;
     std::optional<Vec3> sync_pos;        // recorded position before this frame (--sync)
+    bool has_rate = false;
+    float rate = World::kTickHz;
     std::optional<float> stand_height;   // recorded collbody+0xCC (animated foot height), if given
 };
 
@@ -96,8 +97,7 @@ Replay read_replay(const std::string& path) {
         if (!(s >> std::hex >> word >> std::dec >> rx >> ry >> lx >> ly)) throw std::runtime_error("bad input line: " + line);
         f.pad.buttons = buttons_from_sony_pad_word(std::uint16_t(word));
         f.pad.rx = std::uint8_t(rx), f.pad.ry = std::uint8_t(ry), f.pad.lx = std::uint8_t(lx), f.pad.ly = std::uint8_t(ly);
-        f.rate = World::kTickHz;
-        s >> f.rate;
+        if (s >> f.rate) f.has_rate = true;
         float height;
         if (s >> height) f.stand_height = height;
         Vec3 sp;
@@ -247,7 +247,7 @@ public:
     }
     bool level_bank() const { return level_; }
     bool device() const { return device_; }
-    void frame(const Player& p, WeaponEvents& events) {
+    void frame(const Player& p, WeaponEvents& events, FrameTiming timing) {
         for (const SoundEvent& e : events.sounds) {
             if (e.exclude == 0 || (e.listener >= 0 && e.listener != 0)) continue;
             audio::PlayOptions o;
@@ -261,8 +261,7 @@ public:
         l.dir = {std::sin(p.yaw) * c, std::sin(p.view_pitch()), std::cos(p.yaw) * c};
         l.norm = {std::cos(p.yaw), 0.0f, -std::sin(p.yaw)};   // Mat_GetNorm: the listener's left
         audio_->set_listener(l);
-        audio_->update();   // SFXUpdate runs at 60 Hz; one tick is two frames
-        audio_->update();
+        for (int i = 0; i < int(timing.FRAME_RATE_MUL); ++i) audio_->update();
     }
     // Mission/object sounds (`SpObjects`, cutscenes): same SFX path as weapon sounds.
     void play_mission(std::uint32_t id, const Vec3& pos, bool positional) {
@@ -296,7 +295,7 @@ Camera camera_for(const View& prev, const View& cur, float alpha) {
 int run(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr,
-                     "usage: %s <gamedir> [level.bin] [--coll] [--shot out.bmp] [--frames N] [--inputs file [--sync]] [--trace out.jsonl] [--no-mission] [--channel CH=VAL] [--mp-seed recording.jsonl:frame [--mp-seed-each]]\n",
+                     "usage: %s <gamedir> [level.bin] [--logic-hz 30|60] [--coll] [--shot out.bmp] [--frames N] [--inputs file [--sync]] [--trace out.jsonl] [--no-mission] [--channel CH=VAL] [--mp-seed recording.jsonl:frame [--mp-seed-each]]\n",
                      argv[0]);
         return 2;
     }
@@ -311,7 +310,12 @@ int run(int argc, char** argv) {
             for (std::size_t i = 0; i < args.size(); ++i) {
                 const std::string& a = args[i];
                 if (launch.options.parse(args, i)) continue;
-                if (a == "--shot" && i + 1 < args.size()) launch.shot = args[++i];
+                if (a == "--logic-hz" && i + 1 < args.size()) {
+                    launch.logic_hz = std::atoi(args[++i].c_str());
+                    if (launch.logic_hz != 30 && launch.logic_hz != 60)
+                        throw std::runtime_error("--logic-hz must be 30 or 60");
+                }
+                else if (a == "--shot" && i + 1 < args.size()) launch.shot = args[++i];
                 else if (a == "--frames" && i + 1 < args.size()) launch.frames = std::atol(args[++i].c_str());
                 else if (a == "--coll") launch.collision_wireframe = true;
                 else if (a == "--bot-char" && i + 1 < args.size()) launch.bot_characters = args[++i];
@@ -336,13 +340,19 @@ int run(int argc, char** argv) {
     std::vector<std::pair<int, int>> debug_channels;  // --channel presets, applied at start
     long weapon_seed = 1;
     int player_count = 1;
+    int logic_hz = int(World::kTickHz);
     bool print_events = false, mute = false, no_mission = false;
     long frames = -1;
     bool show_collision = false, sync = false;
     drone::DroneCli drone_cli;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
-        if (a == "--shot" && i + 1 < argc) shot = argv[++i];
+        if (a == "--logic-hz" && i + 1 < argc) {
+            const int hz = std::atoi(argv[++i]);
+            if (hz != 30 && hz != 60) throw std::runtime_error("--logic-hz must be 30 or 60");
+            logic_hz = hz;
+        }
+        else if (a == "--shot" && i + 1 < argc) shot = argv[++i];
         else if (a == "--frames" && i + 1 < argc) frames = std::atol(argv[++i]);
         else if (a == "--inputs" && i + 1 < argc) inputs_path = argv[++i];
         else if (a == "--trace" && i + 1 < argc) trace_path = argv[++i];
@@ -494,7 +504,8 @@ int run(int argc, char** argv) {
         if (script) script->apply(i, world, weapons, pads);
         // Cross/use goes through Movement's Player_Activate -> SpObjects::activate_at hook now.
         if (mission_ptr) mission_ptr->pre_tick(world, std::vector<bool>(4, false));
-        world.tick(pads, FrameTiming{f ? f->rate : World::kTickHz});
+        const FrameTiming timing{f && f->has_rate ? f->rate : float(logic_hz)};
+        world.tick(pads, timing);
         drone_cli.after_tick(world);
         if (mission_ptr) {
             for (const auto& t : mission_ptr->take_texts())
@@ -514,7 +525,7 @@ int run(int argc, char** argv) {
         }
         if (print_events) WeaponScript::dump_events(i, weapons.events());
         effects.consume(weapons.events());
-        effects.tick(FrameTiming{f ? f->rate : World::kTickHz}.mul());
+        effects.tick(timing.FRAME_RATE_MUL, weapons.projectiles());
         weapons.events().clear();
         if (trace) write_trace_line(trace, f ? f->frame : long(world.frame()), world, pads[0]);
     }
@@ -532,6 +543,7 @@ int run(int argc, char** argv) {
     WeaponView weapon_view(*weapon_bank, chars);
     std::optional<drone::DroneRenderer> drone_renderer;
     if (drone_cli.system()) drone_renderer.emplace(*weapon_bank);
+    ViewModel previous_viewmodel = weapons.viewmodel(0);
     glEnable(GL_DEPTH_TEST);
     // --cam / --follow-drone: camera override (game yaw convention, see drone_cli.hpp).
     auto apply_drone_camera = [&](Camera& cam) {
@@ -550,7 +562,7 @@ int run(int argc, char** argv) {
         cam.fovy = sc->fov * 3.14159265f / 180.0f;
         return true;
     };
-    auto draw = [&](const Camera& cam) {
+    auto draw = [&](const Camera& cam, float interpolation) {
         int width, height;
         window.begin_frame(width, height);
         const float aspect = float(width) / float(std::max(height, 1));
@@ -560,7 +572,7 @@ int run(int argc, char** argv) {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         if (mission_ptr) renderer.set_hidden_placements(mission_ptr->hides());
         renderer.draw(wc, aspect, show_collision);
-        std::vector<LevelRenderer::ObjectDraw> objs = effects.take_blast_draws();
+        std::vector<LevelRenderer::ObjectDraw> objs = effects.take_blast_draws(interpolation);
         if (mission_ptr) {
             for (const auto& d : mission_ptr->draws()) {
                 const Placement& pl = level.placements()[d.placement];
@@ -572,18 +584,24 @@ int run(int argc, char** argv) {
             }
         }
         if (!objs.empty()) renderer.draw_objects(wc, aspect, objs);
-        if (drone_renderer) drone_renderer->draw(wc, aspect, *drone_cli.system());
-        effects.draw(wc, aspect, chars, weapons.projectiles());
+        if (drone_renderer) drone_renderer->draw(wc, aspect, *drone_cli.system(), interpolation);
+        effects.draw(wc, aspect, chars, weapons.projectiles(), interpolation);
         // Weapon layer (Player_SetWeaponAnimObj / Player_MuzzleFlash): drawn last, after the Z buffer
         // is cleared, camera-attached.
         glClear(GL_DEPTH_BUFFER_BIT);
-        const ViewModel vm = weapons.viewmodel(0);
+        ViewModel vm = weapons.viewmodel(0);
+        if (vm.visible && previous_viewmodel.visible && vm.weapon == previous_viewmodel.weapon) {
+            vm.offset = previous_viewmodel.offset + (vm.offset - previous_viewmodel.offset) * interpolation;
+            vm.zoom = previous_viewmodel.zoom + (vm.zoom - previous_viewmodel.zoom) * interpolation;
+            vm.muzzle_flash =
+                previous_viewmodel.muzzle_flash + (vm.muzzle_flash - previous_viewmodel.muzzle_flash) * interpolation;
+        }
         if (vm.visible && vm.skin && vm.anim) {
             const Vec3 muzzle =
                 weapon_view.draw(wc, aspect, vm, weapons.table().weapon(vm.weapon), effects.lighting_at(wc.eye, 2.0f),
                                  &world.collision());
             if (vm.muzzle_flash > 0.0f && muzzle != Vec3{0, 0, 0})
-                effects.muzzle_flash(muzzle, weapons.table().weapon(vm.weapon));
+                effects.muzzle_flash(muzzle, weapons.table().weapon(vm.weapon), 0);
         }
         glEnable(GL_DEPTH_TEST);
         glDisable(GL_BLEND);
@@ -595,7 +613,7 @@ int run(int argc, char** argv) {
         Camera cam = camera_for(v, v, 0.0f);
         apply_drone_camera(cam);
         apply_mission_camera(cam);
-        draw(cam);
+        draw(cam, 1.0f);
         const bool ok = window.save_bmp(shot);
         std::printf("pos %.2f,%.2f,%.2f yaw %.3f pitch %.3f -> %s\n", player.pos[0], player.pos[1], player.pos[2], player.yaw,
                     player.pitch, ok ? shot.c_str() : SDL_GetError());
@@ -612,7 +630,8 @@ int run(int argc, char** argv) {
     View prev = view_of(player);
     double accumulator = 0;
     Uint64 last = SDL_GetTicksNS();
-    constexpr double kStep = 1.0 / World::kTickHz;
+    const FrameTiming timing{float(logic_hz)};
+    const double kStep = timing.REC_FRAME_RATE;
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -640,8 +659,9 @@ int run(int argc, char** argv) {
             PadInputs pads{};
             pads[0] = human.sample();
             // Cross/use goes through Movement's Player_Activate -> SpObjects::activate_at hook now.
-            if (mission_ptr) mission_ptr->pre_tick(world, std::vector<bool>(4, false));
-            world.tick(pads);
+            if (drone_renderer && drone_cli.system()) drone_renderer->capture_previous(*drone_cli.system());
+            previous_viewmodel = weapons.viewmodel(0);
+            world.tick(pads, timing);
             drone_cli.after_tick(world);
             if (mission_ptr) {
                 for (const auto& t : mission_ptr->take_texts())
@@ -661,9 +681,9 @@ int run(int argc, char** argv) {
                 if (mission_ptr->pending_level() != 0)
                     std::printf("mission transition to %08x\n", mission_ptr->pending_level());
             }
-            if (game_audio) game_audio->frame(player, weapons.events());
+            if (game_audio) game_audio->frame(player, weapons.events(), timing);
             effects.consume(weapons.events());
-            effects.tick(FrameTiming{}.mul());
+            effects.tick(timing.FRAME_RATE_MUL, weapons.projectiles());
             weapons.events().clear();
             if (trace) write_trace_line(trace, long(world.frame()), world, pads[0]);
             accumulator -= kStep;
@@ -671,7 +691,7 @@ int run(int argc, char** argv) {
         Camera cam = camera_for(prev, view_of(player), float(accumulator / kStep));
         apply_drone_camera(cam);
         apply_mission_camera(cam);
-        draw(cam);
+        draw(cam, float(accumulator / kStep));
         window.swap();
     }
     if (trace) std::fclose(trace);

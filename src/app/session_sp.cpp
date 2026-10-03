@@ -93,6 +93,7 @@ struct SpSession::Impl {
     std::unique_ptr<CharacterRenderer> chars;
     std::unique_ptr<WeaponView> weapon_view;
     std::unique_ptr<drone::DroneRenderer> drone_renderer;
+    ViewModel previous_viewmodel{};
     MenuFile level_menu;
     bool has_level_menu = false;
 
@@ -315,6 +316,8 @@ struct SpSession::Impl {
         const bool use = pad.held(kPadCross) && !prev_use_;
         prev_use_ = pad.held(kPadCross);
         if (mission_sys) mission_sys->pre_tick(*world, {use, false, false, false});
+        if (drone_renderer && drones) drone_renderer->capture_previous(*drones);
+        if (weapons) previous_viewmodel = weapons->viewmodel(0);
         world->tick(pads, timing);
         if (weather)
             weather->update(world->player(0)->eye(), timing.FRAME_RATE_MUL, timing.REC_FRAME_RATE,
@@ -322,7 +325,7 @@ struct SpSession::Impl {
         feed_stats();
         poll_mission();
         effects->consume(weapons->events());
-        effects->tick(timing.FRAME_RATE_MUL);
+        effects->tick(timing.FRAME_RATE_MUL, weapons->projectiles());
         weapons->events().clear();
         maybe_give();
         // End of mission: the state machine settles on Done (success shows results, failure the
@@ -380,7 +383,7 @@ struct SpSession::Impl {
         }
     }
 
-    void draw_frame(const Camera& cam) {
+    void draw_frame(const Camera& cam, float interpolation) {
         int width = 0, height = 0;
         window.begin_frame(width, height);
         // The selected game viewport is full-window Hor+ unless 4:3 pillarboxing is enabled;
@@ -412,15 +415,16 @@ struct SpSession::Impl {
         renderer->draw(wc, aspect, false);
         if (weather && weather->active())
             weather->draw(wc, renderer->view_projection(wc, aspect));
-        drone_renderer->draw(wc, aspect, *drones);
-        renderer->draw_objects(wc, aspect, effects->take_blast_draws());
+        if (drone_renderer && drones) drone_renderer->draw(wc, aspect, *drones, interpolation);
+        renderer->draw_objects(wc, aspect, effects->take_blast_draws(interpolation));
+        effects->draw(wc, aspect, *chars, weapons->projectiles(), interpolation);
         glClear(GL_DEPTH_BUFFER_BIT);
-        const ViewModel vm = weapons->viewmodel(0);
-        if (vm.visible && vm.skin && vm.anim) {
-            const WeaponDef& def = weapons->table().weapon(vm.weapon);
-            const Vec3 muzzle =
-                weapon_view->draw(wc, aspect, vm, def, effects->lighting_at(wc.eye, 2.0f), &world->collision());
-            if (vm.muzzle_flash > 0.0f && muzzle != Vec3{0, 0, 0}) effects->muzzle_flash(muzzle, def);
+        ViewModel vm = weapons->viewmodel(0);
+        if (vm.visible && previous_viewmodel.visible && vm.weapon == previous_viewmodel.weapon) {
+            vm.offset = previous_viewmodel.offset + (vm.offset - previous_viewmodel.offset) * interpolation;
+            vm.zoom = previous_viewmodel.zoom + (vm.zoom - previous_viewmodel.zoom) * interpolation;
+            vm.muzzle_flash =
+                previous_viewmodel.muzzle_flash + (vm.muzzle_flash - previous_viewmodel.muzzle_flash) * interpolation;
         }
         glEnable(GL_DEPTH_TEST);
         glDisable(GL_BLEND);
@@ -728,7 +732,8 @@ SpResult SpSession::run_interactive() {
         if (finished) break;
         const Player& p = *s.world->player(0);
         s.draw_frame(interpolate_camera(previous_eye, previous_yaw, previous_pitch, p,
-                                        float(accumulator / kStep)));
+                                        float(accumulator / kStep)),
+                     float(accumulator / kStep));
     }
     if (s.gamepad) SDL_CloseGamepad(s.gamepad);
     return done;
@@ -791,7 +796,7 @@ SpResult SpSession::run_headless(const SpHeadless& headless) {
     std::printf("%s: %ld frames, pos %.2f,%.2f,%.2f yaw %.3f alive %d npcs %zu %s\n", s.launch.bin.c_str(), ran,
                 p.pos[0], p.pos[1], p.pos[2], p.yaw, int(p.alive()), s.spsys->spawned(), mstate);
     if (!headless.shot.empty()) {
-        s.draw_frame(camera_for_eye_yaw_pitch(p.shaken_eye(), p.yaw, p.view_pitch()));
+        s.draw_frame(camera_for_eye_yaw_pitch(p.shaken_eye(), p.yaw, p.view_pitch()), 1.0f);
         const bool ok = s.window.save_bmp(headless.shot);
         std::printf("shot -> %s\n", ok ? headless.shot.c_str() : SDL_GetError());
         if (!ok) throw std::runtime_error("cannot write shot");

@@ -572,8 +572,19 @@ void ArenaSystem::update_pickups(World& world, FrameTiming timing) {
     }
 }
 
-void ArenaSystem::tick(World& world, FrameTiming timing) {
+void ArenaSystem::before_player_update(World&, FrameTiming timing) {
     ++frame_;
+    dt_ = timing.rec();
+    rate_ = timing.FRAME_RATE;
+    // Player_HandleDeath calls MP_ReSpawn before the new spawn frame reaches Player_Update.
+    for (int i : present_slots()) {
+        SlotState& s = slots_[std::size_t(i)];
+        if (!s.body || settings_.slots[std::size_t(i)].bot || s.out || !s.dead) continue;
+        if (float(frame_ - s.died_frame) >= kHumanRespawnDelay * rate_) respawn(i);
+    }
+}
+
+void ArenaSystem::tick(World& world, FrameTiming timing) {
     dt_ = timing.rec();
     rate_ = timing.FRAME_RATE;
 
@@ -582,7 +593,7 @@ void ArenaSystem::tick(World& world, FrameTiming timing) {
         if (s.demolition_cooldown > 0) --s.demolition_cooldown;
     }
 
-    // Bodies that came back to life on their own (bots) are alive again; human participants respawn below.
+    // Bots respawn in BOT_respawn; update the match slot once their body is alive again.
     for (int i : present_slots()) {
         SlotState& s = slots_[std::size_t(i)];
         if (!s.body) continue;
@@ -594,8 +605,6 @@ void ArenaSystem::tick(World& world, FrameTiming timing) {
             s.last_attacker = kAttackerEnvironment;
             s.spawn_frame = frame_;
         }
-        // Player_HandleDeath: 5 s after the death the human respawns (MP_ReSpawn refuses while the match is not running).
-        if (s.dead && !bot && !s.out && float(frame_ - s.died_frame) >= kHumanRespawnDelay * rate_) respawn(i);
     }
 
     switch (state_code_) {

@@ -213,17 +213,20 @@ Use `python3 tools/oracle/mp_record.py OUT.jsonl --load-slot SLOT --seedable
 --frames N` for a seedable per-logic-frame capture. Seedable reads batch their
 ranges with duplicated `GS_DONE`/`GS_FRAME_START` counters and accepts the
 sample only when each counter is unchanged across the batched read; no fixed
-offset between them is assumed. Each accepted row carries `seed_version: 2`,
-four RNG words, four controller inputs (`pad_all`), MP settings/game state,
-the eight `mp_roster` records, indexed `pk[]` pickup records, every objective
-extension blob (`objx`), and `objectives[]` records resolved from
-`MP_OBJ_EXT+0x84` back-pointers (`MPOBJECT* - 0xE0` gives the root object).
-Pickup rows include position, state, category/item, amount, timestamp, lifetime
-countdown and radar-hidden state. The root `assassin`, `target` and
-`golden_target` fields are participant-slot indices (or `-1`); corresponding
-raw pointer values are retained as `assassin_ptr`, `target_ptr`, and
-`golden_target_ptr`. `golden_effect_handle` and `golden_effect_active` expose
-the GoldenEye effect actor; no remaining-effect tick value is mapped.
+offset between them is assumed. Each accepted row carries `seed_version: 3`,
+the separately sampled GameState+0x34 `timer_frame`, four RNG words, four
+controller inputs (`pad_all`), MP settings/game state, the eight `mp_roster`
+records, indexed `pk[]` pickup records, every objective extension blob
+(`objx`), and `objectives[]` records resolved from `MP_OBJ_EXT+0x84`
+back-pointers (`MPOBJECT* - 0xE0` gives the root object). Pickup rows include
+position, state, category/item, amount, timestamp, lifetime countdown,
+radar-hidden state, and four `visit_until` values from MPpickups+0x80. Valid
+human weapon-animation pointers add the pointed-to `+0xF4` enum as
+`weapon_anim_state`. The root `assassin`, `target` and `golden_target` fields
+are participant-slot indices (or `-1`); corresponding raw pointer values are
+retained as `assassin_ptr`, `target_ptr`, and `golden_target_ptr`.
+`golden_effect_handle` and `golden_effect_active` expose the GoldenEye effect
+actor; no remaining-effect tick value is mapped.
 
 For frame-keyed P2S anchors, pass `--checkpoint-dir DIR` (default interval 60
 logic frames; `--checkpoint-every N` changes it). The recorder accepts a
@@ -450,6 +453,7 @@ slot number is stored by PCSX2, and JSONL recordings/logs are kept in
 | collbody (human) | obj+0xDC | `+0x96` aim bit, `+0x98` 4-byte pointer-looking value (not a weapon ID; target type unidentified), `+0xCC` foot height |
 | `BOT_vars` | `0x26D660` | 4 x 0x780 (slot-4): `+0x000` 2 x 0x50 goals, `+0x0B0` 8 x 0x10 other-cache, `+0x140` 0x55 x 0xC weapons (clip u16 +4, has u8 +6), `+0x698` 0x21 u16 reserves, `+0x728` distraction, `+0x750` MPSettings ptr, `+0x754` Drone*, `+0x760` nav node, `+0x765` goal slot, `+0x766` state type, `+0x768` weapon, `+0x769` armour, `+0x76b` trait target |
 | Drone (bot) | via BOT_vars+0x754 | `+0xAC` health f32, `+0x150` last damage, `+0xD1C` BOT_vars back-ptr; obj+0xF4 mirrors the state id (0xDB step, 0xD7/0xD5 strafes, 0xEB goto, ...) |
+| Bot AI route/path | `Drone+0x860` / `Drone+0x954` | Seedable recorder emits the embedded 0x100-byte AIRoute and 0x200-byte AIPath per bot, plus raw pointees referenced by AIPath+0x34/+0x3c/+0x40. The pointer fields are traced in `NDrone2_InitAIPath`; invalid EE-RAM pointers are marked incomplete rather than dereferenced. |
 | `MPpickups` | `0x2A4B50` | 64 x 0xA0: obj* +0, pos vec4 +0x10; `PICKUPINFO = *(obj+0xE0)`: `+0x20` s16 state (0/1/2), `+0x22` category, `+0x24` item, `+0x26` u16 amount, `+0x2C` respawn units (10 s each), `+0x2E` dropped-item lifetime frames, `+0x30` index; `obj+0xF0` flag `0x10` is the recorder's `radar_hidden`. |
 | objective exts | `0x317210`.. | Flags/Bases/Uplinks/Demolition/Protection/GoldenEye/BluePrint/EsponageBase/Hill blobs (spec 1B); `switch_channels` `0x26FD8D` (score) / `0x8E` (time) |
 | Assassination globals | `0x30D770` / `0x30D774` | `Target` / `Assassin` player object pointers (first is ELF symbol `Assasin`; second is the adjacent word); recorder resolves pointers against the eight `MPGame` slot objects. |
@@ -520,6 +524,9 @@ Pickup bot visit locks are captured per `MPpickups[i]+0x80` bot slot, restored
 with the pickup snapshot, and emitted in MP traces. Legacy captures without
 `visit_until` cannot seed this decision state; new seedable recordings require
 all four PS2 bot-lock values per pickup.
+Seedable rows also sample the human weapon animation object's `+0xF4` state
+when its BLData pointer is valid; the importer restores this enum for the
+`Player_Update` firing-state refill gate.
 
 External nav/route and animation state, opaque `Drone+0x12C` state-machine
 arguments, runtime pointers/hooks, and character, weapon, and nav resources
@@ -610,6 +617,12 @@ to move under `--script`. The recorder retains the exact button/input word,
 human health/armour/current weapon/auto-lock, projectile state and bot health
 on each accepted frame. This is not a deterministic combat fixture: bot AI,
 firing, damage and pickups remain live.
+With `--seedable`, each row also contains `bot_ai_paths`: the 0x100-byte route
+at `Drone+0x860`, the 0x200-byte AIPath referenced at `Drone+0x954`, and
+validated 0x200-byte pointees for its pointer fields at `AIPath+0x34`,
+`+0x3c`, and `+0x40`. `complete` is per bot; an invalid or uncaptured
+non-null pointee adds `bot_ai_path_pointees` to `state_missing`. This is raw
+diagnostic state, not an engine bot-restore contract.
 
 Use `--weapon-set 4` for the PickupMatrix row containing Militek MGL (weapon
 42), or `--weapon-set 5` for the grenade row, when a capture needs those
@@ -695,13 +708,19 @@ a weapon ID.
   Spawn-frame list changes are explicitly marked unavailable; transient hit-zone
   feedback remains unmapped. `seed_ready` describes sampled schema coverage,
   not complete runtime state.
-- `GameFlow_Main` increments `GameState+0x34` on an unpaused update before
-  dispatching gameplay; `Player_Update` uses it for weapon recharge and
-  `Pickup_Update` uses it for map-pickup respawn. `BotSystem` clocks and
-  pickup-visit expiry plus `DroneSystem::now()` also use this timer. Seedable
-  recordings retain it separately as `timer_frame`; the comparator checks it
-  when both traces capture it. Dynamic drop lifetime remains counted in update
-  ticks.
+- `GameFlow_Main` increments `GameState+0x34` on an unpaused update before dispatch;
+  `Player_Update` uses it for weapon recharge and `Pickup_Update` for map-pickup
+  respawn. In seeded engine ticks, gameplay consumes the imported boundary clock
+  before `World::tick` advances it, so the output row carries the next frame's
+  clock. An Arena smoke replay matched every human weapon clip (all 85 slots)
+  over frames 11568–11574. Match-relative bot and pickup-visit timing uses
+  `MPGame+0x19c`; `DroneSystem::now()` uses the independent GameState timer.
+- A dead human's temporary `obj+0xff=0x12` is not always a permanent match
+  elimination: ordinary FFA/Team/CTF/Demo deaths respawn, while Top Agent lives
+  exhaustion and life-state 3 are terminal. Seed import preserves that distinction.
+  `ArenaSystem::before_player_update` processes a due `MP_ReSpawn` before the
+  new spawn reaches `Player_Update`; a seeded Arena death-boundary smoke now
+  matches the source life state and all human clip fields on its respawn frame.
 - Partial engine state import is available with `--mp-seed`; `--mp-seed-each`
   restores each accepted pre-tick row. It covers supported player, bot, pickup,
   objective and projectile fields without guaranteeing complete state or
@@ -712,7 +731,16 @@ a weapon ID.
   listed separately as recorder-only rather than runtime divergence. Frame alignment
   alone does not establish behavioral parity.
 - The 2026-10-03 follow-up batch could not produce a valid Ravine spawn pose: after two setup attempts it never left Scenario Options/Confirm. The zero-bot and one-bot Skyrail MGL attempts were rejected by the game at the same minimum-participant check; the bot setup page did not add a bot. Only Pad1 is configured. No Ravine pose pair or MGL projectile/explosion frames were captured.
-- Seeded comparisons for Arena, Team Arena and CTF align 207, 233 and 297 post-seed frames respectively, but all aligned frames diverge; they are diagnostics, not parity. Demolition seeding fails closed: at frames 15591 and 15600 `BotSystem` rejects slot 4, blob 3 (`BotVars`) at offset `+0x8c` (`0x3178d0`), so no Demolition engine trace or comparison exists. Baseline reports are in `~/.cache/mp-oracle-2-tmp/*-lockstep-diff-20261003.txt` and `demolition-lockstep-failure-20261003.txt`.
+- Updated `--mp-seed-each` replays of the longest ready windows align 207 Arena,
+  234 Team Arena, 298 CTF and 81 Demolition frames. All four still diverge;
+  per-call RNG totals are 413/414, 469/469, 596/598 and 161/163 source/engine
+  calls respectively. These old rows predate per-frame pickup visit locks, which
+  vary between P2S checkpoints, so they cannot establish parity. Residuals include
+  real bot goal transitions and movement. A fresh schema-v3 Arena recording now
+  captures `visit_until` locks and AIPath/AIRoute diagnostics; the route state
+  is diagnostic-only in the importer and remains a bot residual. Fresh Team
+  Arena, CTF and Demolition captures are in progress. Earlier run reports under
+  `~/.cache/mp-oracle-2-tmp/*-lockstep-diff-20261003.txt` are superseded.
 
 ### Seeded frame-aligned comparisons
 

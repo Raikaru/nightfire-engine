@@ -272,7 +272,9 @@ struct MpSeedImporter::Impl {
         auto it = rows.find(frame);
         if (it == rows.end()) throw std::runtime_error("MP seed: no recorded frame " + std::to_string(frame));
         if (!it->second.at("seed_ready").boolean()) throw std::runtime_error("MP seed: frame " + std::to_string(frame) + " is not seed_ready");
-        if (uint_number(it->second.at("seed_version")) != 2) throw std::runtime_error("MP seed: requires recorder schema v2");
+        const std::uint32_t version = uint_number(it->second.at("seed_version"));
+        if (version != 2 && version != 3)
+            throw std::runtime_error("MP seed: requires recorder schema v2 or v3");
         if (const Json* ok = it->second.find("projectiles_available"); !ok || !ok->boolean()) throw std::runtime_error("MP seed: projectile snapshot is unavailable at frame " + std::to_string(frame));
         const auto& missing = it->second.at("state_missing").array();
         for (const Json& field : missing) {
@@ -440,8 +442,13 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
         if (item.is_null()) { state.dead = false; continue; }
         const auto object = raw_for(item, "obj_raw", 0x100);
         const unsigned object_type = byte_at(object, 0xff);
-        state.out = object_type == 0x11 || object_type == 0x12;
-        state.dead = int_number(item.at("state")) == 2 || int_number(item.at("state")) == 3;
+        const int life_state = int_number(item.at("state"));
+        state.out = object_type == 0x11 ||
+                    (object_type == 0x12 &&
+                     (life_state == 3 ||
+                      (session.arena().settings().mode == mp_mode::kTopAgent &&
+                       state.deaths >= session.arena().settings().score_limit)));
+        state.dead = life_state == 2 || life_state == 3;
         if (s < 4) {
             Player* player = world.player(int(s));
             if (!player) throw std::runtime_error("MP seed: human roster does not exist in engine session");
@@ -543,7 +550,9 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
             weapon_state->last_gadget = int_number(timers.at("last_gadget"));
             weapon_state->shots_left = int_number(timers.at("trigger_remaining"));
             weapon_state->muzzle_frames = int_number(timers.at("muzzle_timer"));
-            // Recorder BLData+0x7E8 is a runtime animation-object pointer, not the engine's enum state.
+            if (const Json* anim_state = item.find("weapon_anim_state"))
+                weapon_state->anim_state = WeaponAnim(std::uint8_t(int_number(*anim_state)));
+            // The recorder captures BLData+0x7E8's pointed-to object state separately when available.
             weapon_state->lock_victim = item.at("autolock_target_slot").is_null() ? -1 : int_number(item.at("autolock_target_slot"));
             weapon_state->lock_yaw = f32_at(bl, 0x120);
             weapon_state->lock_pitch = f32_at(bl, 0x124);

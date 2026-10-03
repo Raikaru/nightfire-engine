@@ -265,6 +265,7 @@ public:
     std::optional<std::pair<std::size_t, float>> objective_ray(const Vec3& from, const Vec3& to) const;
 
     // ---- System ----
+    void before_player_update(World&, FrameTiming timing) override;
     void tick(World& world, FrameTiming timing) override;
 
     // ---- read side ----

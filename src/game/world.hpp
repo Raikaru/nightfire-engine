@@ -38,11 +38,12 @@ PlayerParams player_params_from_tuning(std::string_view tuning_vars_txt, std::st
 
 class World;
 
-// Extension point for later gameplay (weapons, pickups, AI): runs once per tick after the players
-// have moved and collided, in registration order.
+// The pre-player hook is for source phases such as MP_ReSpawn, which runs before Player_Update.
+// `tick` is the post-player phase for systems like weapons, pickups and AI.
 class System {
 public:
     virtual ~System() = default;
+    virtual void before_player_update(World&, FrameTiming) {}
     virtual void tick(World& world, FrameTiming timing) = 0;
 };
 

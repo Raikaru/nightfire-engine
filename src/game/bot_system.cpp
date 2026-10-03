@@ -118,7 +118,7 @@ struct BotSystem::Impl {
     Config cfg;
     std::unique_ptr<Env> env;
     std::vector<NavEmitter> pickup_emitters, objective_emitters;
-    std::array<bool, 8> was_dead{};
+    std::array<bool, kMpSlots> was_dead{};
 };
 
 // ------------------------------------------------------------------------------------------------------------

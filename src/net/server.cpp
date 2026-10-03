@@ -1,3 +1,4 @@
+#include <csignal>
 #include <condition_variable>
 #include <stop_token>
 #include <algorithm>
@@ -30,11 +31,14 @@
 #include "net/server_runtime.hpp"
 
 namespace {
+volatile std::sig_atomic_t g_server_shutdown = 0;
+void request_server_shutdown(int) { g_server_shutdown = 1; }
+
 void usage() {
     std::puts("usage: nfserver <gamedir> [--config file] [--map file.bin] [--mode arena] [--ruleset ps2|gc-xbox|extended]"
               " [--bots N] [--port 27500] [--name server] [--password text] [--master host:port]"
               " [--frag-limit N] [--time-limit minutes] [--net-sim-loss percent] [--net-sim-latency ms]"
-              " [--visibility-culling|--no-visibility-culling] [--logic-hz 30|60] [--ticks N]");
+              " [--rotation map.bin,mode]... [--visibility-culling|--no-visibility-culling] [--logic-hz 30|60] [--ticks N]");
 }
 using Clock = std::chrono::steady_clock;
 constexpr std::size_t kPendingInputCapacity = 64;
@@ -405,6 +409,7 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
     options.log = true;
     int port = 27500, net_loss = 0, net_latency = 0, max_ticks = -1;
     int logic_hz = runtime_config ? runtime_config->logic_hz : int(nf::World::kTickHz);
+    std::vector<std::pair<std::string, std::uint32_t>> rotation_specs;
     bool visibility_culling = true;
     if (runtime_config) {
         options = runtime_config->match;
@@ -476,7 +481,19 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                         throw std::runtime_error("invalid --master port");
                     master_port = std::uint16_t(v);
                 }
-                if (master_host.empty()) throw std::runtime_error("--master requires a host");
+            } else if (arg == "--rotation") {
+                const std::string entry = value();
+                const std::size_t separator = entry.find(',');
+                if (separator == std::string::npos || separator == 0 || separator + 1 == entry.size() ||
+                    entry.find(',', separator + 1) != std::string::npos)
+                    throw std::runtime_error("--rotation expects map.bin,mode");
+                const std::string rotation_map = entry.substr(0, separator);
+                const std::string rotation_mode = entry.substr(separator + 1);
+                std::uint32_t mode = 0;
+                for (const auto& [name, value] : nf::MatchOptions::mode_names())
+                    if (rotation_mode == name) mode = value;
+                if (mode == 0) throw std::runtime_error("unknown --rotation mode " + rotation_mode);
+                rotation_specs.emplace_back(rotation_map, mode);
             } else if (arg == "--visibility-culling") visibility_culling = true;
             else if (arg == "--no-visibility-culling") visibility_culling = false;
             else if (arg == "--logic-hz") {
@@ -504,6 +521,48 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
     const int reserved_humans =
         options.rules == nf::MpRuleSet::Extended ? options.humans : int(nf::kMpMaxLocalHumans);
     options.bots = std::clamp(options.bots, 0, std::max(0, match_capacity - reserved_humans));
+    if (!runtime_config && !rotation_specs.empty()) {
+        if (max_ticks >= 0) {
+            std::fprintf(stderr, "nfserver: --ticks cannot be combined with --rotation\n");
+            return 2;
+        }
+        nf::net::ServerConfig config;
+        config.data_dir = game_dir;
+        config.map = map_name;
+        config.match = options;
+        config.port = std::uint16_t(port);
+        config.logic_hz = logic_hz;
+        config.name = server_name;
+        config.password = password;
+        config.master_host = master_host;
+        config.master_port = master_port;
+        config.visibility_culling = visibility_culling;
+        config.net_sim = {unsigned(net_loss), unsigned(net_latency), 0x4e465345};
+        for (const auto& [rotation_map, mode] : rotation_specs) {
+            nf::MatchOptions match = options;
+            match.mode = mode;
+            config.rotation.push_back({rotation_map, match});
+        }
+        nf::net::ServerRuntime runtime(std::move(config));
+        std::string error;
+        if (!runtime.start(&error)) {
+            std::fprintf(stderr, "nfserver: %s\n", error.c_str());
+            return 1;
+        }
+        std::signal(SIGINT, request_server_shutdown);
+        std::signal(SIGTERM, request_server_shutdown);
+        std::printf("nfserver: rotation enabled entries=%zu\n", rotation_specs.size());
+        while (!g_server_shutdown) {
+            error = runtime.error();
+            if (!error.empty()) {
+                std::fprintf(stderr, "nfserver: %s\n", error.c_str());
+                return 1;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        runtime.stop();
+        return 0;
+    }
 
     try {
         auto ctx = nf::app::load_context(game_dir.string());
@@ -593,6 +652,8 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
         }
         std::optional<Clock::time_point> result_deadline;
         int test_give_on_kill_slot = -1, test_give_on_kill_weapon = 0;
+        const nf::FrameTiming frame_timing{float(logic_hz)};
+        const auto tick_duration = std::chrono::nanoseconds(1000000000 / logic_hz);
         while (!stop.stop_requested() && (max_ticks < 0 || tick < std::uint32_t(max_ticks))) {
             std::deque<std::string> commands;
             {
@@ -924,7 +985,7 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
             }
             nf::PadInputs pads{};
             for (std::size_t i = 0; i < current_inputs.size(); ++i) pads[i] = current_inputs[i];
-            if (!session.arena().over()) session.tick(pads, nf::FrameTiming(float(logic_hz)));
+            if (!session.arena().over()) session.tick(pads, frame_timing);
             if (test_give_on_kill_slot >= 0) {
                 for (const nf::ScoreRow& row : session.arena().scoreboard()) {
                     if (row.slot != test_give_on_kill_slot || row.kills == 0) continue;
@@ -1061,7 +1122,7 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                     }
                 }
             }
-            next_tick += std::chrono::nanoseconds(1000000000 / logic_hz);
+            next_tick += tick_duration;
         }
         return 0;
     } catch (const std::exception& e) {

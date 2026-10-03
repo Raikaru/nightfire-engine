@@ -233,7 +233,7 @@ def diff_fields(record):
         if slot < 4:
             common |= {"arm", "dead", "vel", "fall_vel", "substate", "pitch", "foot", "zoom", "aim",
                        "lock_victim", "lock_yaw", "lock_pitch", "ammo_pool", "weapon_slots",
-                       "weapon_timers"}
+                       "weapon_timers", "weapon_anim_state"}
         else:
             common |= {"active_goal", "goal_type", "goal_kind", "goal_target"}
         player = {key: value for key, value in player.items() if key in common}
@@ -527,7 +527,8 @@ def diff(oracle_path, engine_path, tolerance=0.001, verbose=False):
                 continue
             close = path.find("]")
             field = path[close + 2:]
-            if field in ("active_goal", "goal_type", "goal_kind", "goal_target") and path not in expected:
+            if (field in ("active_goal", "goal_type", "goal_kind", "goal_target", "weapon_anim_state")
+                    and path not in expected):
                 recorder_only.add(path)
         if "timer_frame" in actual and "timer_frame" not in expected:
             recorder_only.add("timer_frame")
