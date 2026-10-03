@@ -32,18 +32,37 @@ def f32_word(value):
     return struct.unpack("<I", struct.pack("<f", value))[0]
 
 def pcsx2_pid():
+    socket_path = os.path.join(
+        os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
+        "pcsx2.sock",
+    )
+    socket_inode = None
+    with open("/proc/net/unix", encoding="ascii") as stream:
+        for line in stream:
+            fields = line.split()
+            if len(fields) >= 8 and fields[-1] == socket_path:
+                socket_inode = fields[6]
+                break
+    if socket_inode is None:
+        raise RuntimeError(f"PCSX2 PINE socket not found: {socket_path}")
+
+    socket_ref = f"socket:[{socket_inode}]"
     matches = []
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
             continue
         try:
-            with open(f"/proc/{entry}/comm", encoding="ascii") as stream:
-                if stream.read().strip() == "pcsx2.AppImage":
-                    matches.append(int(entry))
+            for fd in os.listdir(f"/proc/{entry}/fd"):
+                try:
+                    if os.readlink(f"/proc/{entry}/fd/{fd}") == socket_ref:
+                        matches.append(int(entry))
+                        break
+                except OSError:
+                    continue
         except OSError:
             continue
     if len(matches) != 1:
-        raise RuntimeError(f"expected one PCSX2 process, found {matches}")
+        raise RuntimeError(f"expected one PCSX2 PINE socket owner, found {matches}")
     return matches[0]
 
 

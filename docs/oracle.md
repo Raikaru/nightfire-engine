@@ -714,6 +714,10 @@ a weapon ID.
 | Skyrail CTF, legacy slot-250 checkpoint tail | Source P2S saved at frame 14738, temporarily loaded through slot 64 | 61 rows, frame 14746..14806; 60 `seed_ready` | `~/.cache/mp-oracle-2-tmp/mp-skyrail-ctf-legacy-14738-20261003.jsonl`; recorder startup missed frames 14738..14745. Ready runs 14746..14756 (11) and 14758..14806 (49); frame 14757 lacks weapon-animation state. Seeded replay 14758..14778: 20/20 frames diverge, RNG differs in 10/20 frames (38 oracle / 42 engine calls); report `~/.cache/mp-oracle-2-tmp/ctf-legacy-tail-lockstep-20261003.txt`. |
 | Skyrail Demolition, 3 bots | slot 55, teams 0/0/1; 180 s time limit | 2,566 accepted rows, frame 12087–15695 (3,600-frame span) | `~/.cache/mp-oracle-2-tmp/mp-skyrail-demolition-rng-checkpointed-20261003.jsonl`; 7,322 RNG events, zero new losses; one bot had 789 death-animation frames; P2S checkpoints (11). |
 | Skyrail Demolition, fresh schema-v3 seedable | slot 63, Skyrail; teams 0/0/1; 180 s time limit | 1,947 accepted rows, frame 13027..15030 | `~/.cache/mp-oracle-2-tmp/mp-skyrail-demolition-seedable-20261003-live.jsonl`; 1,924 `seed_ready`, longest contiguous run 172 frames, 4,011 RNG events, no losses. Partial seeded replay: 171/171 frames diverge in `~/.cache/mp-oracle-2-tmp/demolition-seedable-lockstep-20261003.txt`; first mismatch `pl[4].goal_target`; RNG differs in 114/171 frames (343 oracle / 343 engine calls), not parity. |
+| Skyrail Arena, fresh seedable v4, 3 bots | slot 71, all bots on team 0; 180 s time limit | 8,179 rows, frame 13185..22185; 7,069 `seed_ready` | `~/.cache/MpOracle-2-tmp/fresh-v4-wheel/arena.jsonl`; 913 ready windows, longest 110 frames; 822 missed samples, 16 resyncs. |
+| Skyrail Team Arena, fresh seedable v4, 3 bots | slot 75, teams 0/0/1; 180 s time limit | 1,672 rows, frame 12857..14857; 1,371 `seed_ready` | `~/.cache/MpOracle-2-tmp/fresh-v4-wheel/team.jsonl`; 306 ready windows, longest 45 frames; 329 missed samples, 3 resyncs. |
+| Skyrail CTF, fresh seedable v4, 3 bots | slot 76, teams 0/0/1; 180 s time limit | 1,537 rows, frame 13634..15634; 1,232 `seed_ready` | `~/.cache/MpOracle-2-tmp/fresh-v4-wheel/ctf.jsonl`; 245 ready windows, longest 48 frames; 464 missed samples, no resyncs; four live objective roots. |
+| Skyrail Demolition, fresh seedable v4, 3 bots | slot 74, teams 0/0/1; 180 s time limit | 1,926 rows, frame 12969..14969; 1,627 `seed_ready` | `~/.cache/MpOracle-2-tmp/fresh-v4-wheel/demo.jsonl`; 277 ready windows, longest 33 frames; 75 missed samples, no resyncs; one live demolition root. |
 
 ### Residuals / limits
 
@@ -723,13 +727,7 @@ a weapon ID.
   Spawn-frame list changes are explicitly marked unavailable; transient hit-zone
   feedback remains unmapped. `seed_ready` describes sampled schema coverage,
   not complete runtime state.
-- `GameFlow_Main` increments `GameState+0x34` on an unpaused update before dispatch;
-  `Player_Update` uses it for weapon recharge and `Pickup_Update` for map-pickup
-  respawn. In seeded engine ticks, gameplay consumes the imported boundary clock
-  before `World::tick` advances it, so the output row carries the next frame's
-  clock. An Arena smoke replay matched every human weapon clip (all 85 slots)
-  over frames 11568–11574. Match-relative bot and pickup-visit timing uses
-  `MPGame+0x19c`; `DroneSystem::now()` uses the independent GameState timer.
+- `GameFlow_Main` increments `GameState+0x34` on an unpaused update before frame dispatch (`~/Projects/nightfire-ps2/asm/action/nonmatchings/cod/0BF290/GameFlow_Main__Fv.s`, lines 26–29); `Player_Update` uses it for weapon recharge and `Pickup_Update` for map-pickup respawn. `World::tick` now increments the corresponding engine boundary counter at tick entry before dispatch. A four-tick Demo seeded comparison matched all three human clip slots; the full four-mode batch still diverges. An earlier Arena smoke replay matched all 85 human weapon clips over frames 11568–11574. Match-relative bot and pickup-visit timing uses `MPGame+0x19c`; `DroneSystem::now()` uses the independent GameState timer.
 - A dead human's temporary `obj+0xff=0x12` is not always a permanent match
   elimination: ordinary FFA/Team/CTF/Demo deaths respawn, while Top Agent lives
   exhaustion and life-state 3 are terminal. Seed import preserves that distinction.
@@ -767,25 +765,16 @@ a weapon ID.
   are also available in the table above; both diverge throughout their partial
   windows. These diagnostics are not free-running parity. Earlier reports under
   `~/.cache/mp-oracle-2-tmp/*-lockstep-diff-20261003.txt` are superseded.
-- The final all-window batch used `run_seed_windows.py` with the corrected RNG
-  restore rule: load `rng_words` from the next absolute-frame row, because PINE
-  samples them before that row's logic-tick draws (confirmed against source
-  `RandInt` events). Arena: 381 windows / 7,846 aligned ticks; Team Arena: 53 /
-  1,870; CTF: 77 / 1,804; Demolition: 47 / 1,871; command failures: zero.
-  First state divergences are Arena frame 23749 `pl[4].pos[0]`, Team Arena frame
-  13003 `pl[0].weapon_slots[79].clip`, CTF frame 13037 `pl[4].active_goal`, and
-  Demolition frame 13028 `pl[4].active_goal`. RNG sequence differs on 5,620 /
-  7,846, 1,119 / 1,870, 1,078 / 1,804, and 1,084 / 1,871 frames; oracle/engine
-  call totals are 21,366 / 20,488, 3,694 / 3,744, 4,304 / 4,728, and 3,719 /
-  3,796 respectively. First RNG mismatches: Arena frame 23749 call #2, source
-  `RandInt` at `0x16f6c4` gives 1 vs engine `drone_weap.cpp:244` gives 7; Team
-  Arena frame 13005 call #1 has no source call vs engine `weapons.cpp:1175`
-  `post_tick_rng()` gives 4; CTF frame 13037 call #0 gives `0x14b6` at source
-  `0x17bca4` vs engine `world.cpp:113` `0x0698`; Demolition frame 13028 call #1
-  gives 2 at source `0x1a67ec` vs engine `bot_goals.cpp:92` `0xc2`. Full reports
-  and per-window engine traces are under
-  `~/.cache/MpParityWorld-tmp/fresh-all-post-rng/`. These remain partial-state-
-  seeded diagnostics with substantial divergence, not parity.
+- The earlier all-window batch used `run_seed_windows.py` with the incorrect RNG
+  restore rule: load `rng_words` from the next absolute-frame row. The recorded
+  row's words already produce the following row's first `RandInt`; for example,
+  Team Arena frame 13519 words produce the frame 13520 result 5,361 at `0x17bca4`,
+  Source row words are used by the importer and match this first transition. A
+  20-tick Team Arena replay matched per-call RNG through frame 13525, then
+  diverged at frame 13526: source row 13525 repeats row 13524's RNG words and
+  row 13526 contains calls stamped 13525 as well as 13526. The current seed-row
+  rule is therefore not validated across recorder frame/sample-boundary cases;
+  prior all-window RNG statistics remain obsolete pending a corrected alignment.
 
 ### Seeded frame-aligned comparisons
 
@@ -801,3 +790,9 @@ For v4 route snapshots, replay also restores the captured in-progress `Drone`
 movement continuation (destination, arrival radius, route distance/status,
 movement mode/speeds, and animation step) so the next tick resumes the pending
 move rather than rebuilding it from the bot goal.
+
+Restoring an in-progress bot state clears the runtime fresh-drone flag so the
+next tick does not inject a Global `ENTER` and re-run `BotInit` over the
+captured state and goals. Schema v2/v3 rows omit the route-node list, so their
+active movement route must be rebuilt from the goal; use v4 snapshots when
+testing movement continuation.
