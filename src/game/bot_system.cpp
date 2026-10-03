@@ -602,12 +602,26 @@ BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
     Drone& d = *bot->drone;
     d.pos = {raw_f32(obj_raw, 0x30), raw_f32(obj_raw, 0x34), raw_f32(obj_raw, 0x38)};
     d.yaw = raw_f32(obj_raw, 0x54);
+    const float sin_yaw = std::sin(d.yaw), cos_yaw = std::cos(d.yaw);
+    const auto capsule_offset = [&](std::size_t offset) {
+        const Vec3 delta{raw_f32(drone_raw, offset) - d.pos[0],
+                         raw_f32(drone_raw, offset + 4) - d.pos[1],
+                         raw_f32(drone_raw, offset + 8) - d.pos[2]};
+        return Vec3{delta[0] * cos_yaw - delta[2] * sin_yaw, delta[1],
+                    delta[0] * sin_yaw + delta[2] * cos_yaw};
+    };
+    d.mv.seeded_capsule_valid = true;
+    d.mv.seeded_capsule_a_offset = capsule_offset(0x3f0);
+    d.mv.seeded_capsule_b_offset = capsule_offset(0x400);
+    d.mv.seeded_capsule_radius = raw_f32(drone_raw, 0x45c);
     d.obj_type = raw_u8(obj_raw, 0xff);
     d.smi.cur = raw_i32(drone_raw, 0x10c);
     d.smi.prev = raw_i32(drone_raw, 0x110);
     d.smi.next = raw_i32(drone_raw, 0x114);
     d.smi.saved = raw_i32(drone_raw, 0x118);
     d.smi.entry_time = raw_u32(drone_raw, 0x11c);
+    // The snapshot is an already initialized drone; do not inject Global ENTER on its first tick.
+    d.fresh = false;
     d.smi.pending = raw_u8(drone_raw, 0x120) != 0;
     d.smi.result = raw_i32(drone_raw, 0x124);
     d.health = raw_f32(drone_raw, 0xac);
@@ -631,6 +645,20 @@ BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
     d.side = raw_u8(drone_raw, 0x44);
     d.char_class = raw_u16(drone_raw, 0xd8);
     d.sub_class = raw_u16(drone_raw, 0xda);
+    // DroneAnim_SetDAnimInternal state is part of the next tick's movement decision.
+    d.anim.prev_state = raw_i16(drone_raw, 0x55c);
+    d.anim.cur_type = raw_u8(drone_raw, 0x568);
+    d.anim.cur_state = raw_u16(drone_raw, 0x56a);
+    d.anim.cur_anim = raw_u16(drone_raw, 0x56c);
+    d.anim.cur_flags = raw_u32(drone_raw, 0x570);
+    d.anim.clip_running = raw_u8(drone_raw, 0x579) != 0;
+    d.anim.applied = raw_u8(drone_raw, 0x57b) != 0;
+    d.anim.script = raw_u32(drone_raw, 0x57c);
+    d.anim.step = raw_f32(drone_raw, 0x58c);
+    d.anim.next_anim = raw_u16(drone_raw, 0x594);
+    d.anim.end_state = raw_i16(drone_raw, 0x596);
+    d.anim.end_msg = raw_i16(drone_raw, 0x598);
+    d.anim.loop = (d.anim.cur_flags & 1u) != 0;
     d.initial_state = raw_i16(drone_raw, 0x5a2);
     d.pre_state = raw_i16(drone_raw, 0x5a0);
     d.alt_state = raw_i16(drone_raw, 0x5a4);
@@ -663,7 +691,6 @@ BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
         d.mv.dest_dist = raw_f32(drone_raw, 0x660);
         d.mv.arrive_radius = raw_f32(drone_raw, 0x664);
         d.mv.dest_angle = raw_f32(drone_raw, 0x694);
-        d.anim.step = raw_f32(drone_raw, 0x58c);
     }
     d.flags = raw_u32(drone_raw, 0x4f8);
     d.alert_flags = raw_u32(drone_raw, 0x4fc);

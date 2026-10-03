@@ -410,6 +410,9 @@ public:
         TargetRef goal_target;
         float applied_height = 1.0327658653f;   // stand_height already folded into pos.y (feet stay planted)
         Vec3 reach_check_pos{};       // DroneReachCheckPos: last Can* probe destination (feet space), for the KOTH hill veto
+        bool seeded_capsule_valid = false;
+        Vec3 seeded_capsule_a_offset{}, seeded_capsule_b_offset{}; // oracle-restored body-local collision endpoints
+        float seeded_capsule_radius = 0.4f;
     } mv;
     DroneLook look;
     std::unique_ptr<CharacterInstance> character;   // owned by the drone; created by DroneSystem::spawn

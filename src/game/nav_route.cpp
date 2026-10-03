@@ -88,7 +88,8 @@ bool NavAgent::restore_movement_route(std::span<const std::byte> route_raw,
     route.goal = route_cel_pos(route_raw, 0x40);
     route.waypoint = route_cel_pos(route_raw, 0x60);
     route.index = std::bit_cast<std::int16_t>(route_u16(route_raw, 0x80));
-    if (route.index < -1 || route.index >= int(node_count))
+    const bool goal_or_once = route.mode() == RouteMode::Goal || route.mode() == RouteMode::Once;
+    if (route.index < -1 || route.index > int(node_count) || (route.index == int(node_count) && !goal_or_once))
         return false;
     route.distance = route_f32(route_raw, 0x88);
     route.radius = route_f32(route_raw, 0x8c);
@@ -108,7 +109,7 @@ bool NavAgent::restore_movement_route(std::span<const std::byte> route_raw,
     route.nodes.resize(node_count);
     for (std::size_t i = 0; i < node_count; ++i)
         route.nodes[i] = route_u16(route_nodes_raw, i * sizeof(std::uint16_t));
-    if (route.valid() && (path < 0 || route.index < 0))
+    if (route.valid() && path < 0)
         return false;
 
     path_ = path;

@@ -106,8 +106,8 @@ Player& World::spawn_player(int index, const SpawnPoint& at) {
 
 void World::tick(const PadInputs& pads, FrameTiming timing) {
     ++frame_;
-    // The update consumes the prior timer boundary, while its output snapshot
-    // is labeled by the incremented world frame.
+    ++timer_frame_;
+    // GameFlow_Main advances the source timer before dispatching frame updates.
     game_rng().set_trace_frame(frame_);
     // Env_Update draws Rand_Rand(20000) once for a live world before Player_Update.
     (void)game_rng().rand_int(20000);
@@ -122,7 +122,6 @@ void World::tick(const PadInputs& pads, FrameTiming timing) {
     for (auto& p : players_)
         if (p) p->update_camera(timing);
     for (auto& s : systems_) s->tick(*this, timing);
-    ++timer_frame_;
 }
 
 void World::replay_player(int index, const ActionInput& input, FrameTiming timing) {

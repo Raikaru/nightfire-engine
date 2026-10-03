@@ -404,15 +404,11 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
     world.frame_ = frame;
     const Json* timer_frame_record = source.find("timer_frame");
     world.timer_frame_ = timer_frame_record ? uint_number(*timer_frame_record) : frame;
-    // The source stamps its pre-tick RNG sample with GS_FRAME_START; the
-    // current tick's RNG state is therefore the next absolute-frame record.
-    const auto rng_it = impl_->rows.find(frame + 1);
-    if (rng_it == impl_->rows.end())
-        throw std::runtime_error("MP seed: no recorded RNG frame " + std::to_string(frame + 1));
-    const Json& rng = rng_it->second;
-    const Json* rng_words = rng.find("rng_words");
+    // rng_words is the state after the recorded row's logic-tick draws, and
+    // therefore the state that produces the next row's call results.
+    const Json* rng_words = source.find("rng_words");
     if (!rng_words || rng_words->array().size() < 2)
-        throw std::runtime_error("MP seed: frame " + std::to_string(frame + 1) + " has no RNG state");
+        throw std::runtime_error("MP seed: frame " + std::to_string(frame) + " has no RNG state");
     session.weapons().seed(uint_number(index(*rng_words, 0)), uint_number(index(*rng_words, 1)));
 
     ArenaSeedSnapshot snapshot;

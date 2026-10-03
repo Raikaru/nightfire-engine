@@ -532,7 +532,7 @@ void move_step(Drone& d) {
 }
 
 void collision_step(Drone& d) {
-    // NDrone2_Collision 0x14cc?: capsule of radius 0.4 (0.55 for Mayhew's class 0xc).
+    // NDrone2_Collision builds a bone-derived capsule; seeded replays restore that segment from Drone+0x3f0/+0x400.
     const CollisionWorld& world = d.sys->collision();
     const FrameTiming timing = d.sys->timing();
     d.radius = d.char_class == 0x0c ? 0.55f : 0.4f;
@@ -556,14 +556,23 @@ void collision_step(Drone& d) {
 
     const float h = d.stand_height;
     CylinderQuery q;
-    q.a = {d.pos[0], d.pos[1] - h + 1.4f, d.pos[2]};
-    q.b = {d.pos[0], d.pos[1] - h + d.radius, d.pos[2]};
-    q.radius = d.radius;
+    if (d.mv.seeded_capsule_valid) {
+        q.a = d.pos + to_world(d.mv.seeded_capsule_a_offset, d.yaw);
+        q.b = d.pos + to_world(d.mv.seeded_capsule_b_offset, d.yaw);
+        q.radius = d.mv.seeded_capsule_radius;
+    } else {
+        q.a = {d.pos[0], d.pos[1] - h + 1.4f, d.pos[2]};
+        q.b = {d.pos[0], d.pos[1] - h + d.radius, d.pos[2]};
+        q.radius = d.radius;
+    }
     const CylinderResult r = world.cylinder(q);
-    if (!r.hits.empty()) d.pos += r.push_out;
+    d.mv.seeded_capsule_valid = false;
+    // Drone_CollisionHandler probes feet against the hit-test result before applying its
+    // accumulated push vector to obj+0x30.
     const FeetResult feet = world.feet_on_point(d.pos, r.b, {0, 1, 0}, h, r.contact);
     d.on_ground = feet.on_ground;
     d.ground_normal_y = feet.ground_normal_y;
+    if (!r.hits.empty()) d.pos += r.push_out;
     if (d.on_ground && d.fall_velocity[1] < 0) d.fall_velocity = {};
 
     // AINetwork_GetBoundsPushVectorForSphere(r = 0.4): stay inside the nav boundaries.
