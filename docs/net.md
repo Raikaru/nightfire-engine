@@ -14,7 +14,7 @@ Build it with `cmake --build build-netcode --target nfserver`. A local server ca
 build-netcode/nfserver ~/Projects/nightfire-data/ps2/ --map 07000024.bin --mode arena --bots 2 --port 27500
 ```
 
-Supported server options include `--config`, `--map`, `--mode`, `--ruleset ps2|gc-xbox|extended`, `--bots`, `--port`, `--name`, `--password`, `--master`, `--frag-limit`, `--time-limit`, `--net-sim-loss`, `--net-sim-latency`, `--visibility-culling` / `--no-visibility-culling`, `--logic-hz 30|60`, and `--ticks` (bounded headless run for local tests). `--time-limit` is in minutes; zero disables the timer, matching the original MP rule that timed expiry runs only for a positive duration. Server-side visibility culling defaults on; an optional `--config server.cfg` file uses `key=value` lines for these settings, and command-line options override config values.
+Supported server options include `--config`, `--map`, `--mode`, `--ruleset ps2|gc-xbox|extended`, `--bots`, `--port`, `--name`, `--password`, `--master`, `--frag-limit`, `--time-limit`, `--net-sim-loss`, `--net-sim-latency`, repeated `--rotation map.bin,mode`, `--visibility-culling` / `--no-visibility-culling`, `--logic-hz 30|60`, and `--ticks` (bounded headless run for local tests; it cannot be combined with rotation). `--time-limit` is in minutes; zero disables the timer, matching the original MP rule that timed expiry runs only for a positive duration. Server-side visibility culling defaults on; an optional `--config server.cfg` file uses `key=value` lines for these settings, and command-line options override config values.
 Direct clients must use the same `--logic-hz` value as their server (the network protocol does not advertise the simulation rate); both default to 60 Hz, or set both to 30 Hz for PS2 comparisons. Example:
 ```ini
 map=07000024.bin
@@ -24,7 +24,12 @@ bots=2
 port=27500
 visibility-culling=true
 logic-hz=60
+rotation=07000025.bin,team-arena
+rotation=07000024.bin,arena
 ```
+
+For `nfserver`, the configured map/mode is the first match; after each completed match, repeated `rotation` entries cycle in order. The CLI form is `--rotation map.bin,mode` and may be repeated. Each transition resets peer state and requires clients to handshake again (a map change also changes the game-data hash).
+
 The server uses the data directory's `ACTION.ELF` and `FILES.BIN`; the handshake hash includes `ACTION.ELF` and the selected map bytes.
 
 Run a scripted headless client with the same data and map:
@@ -88,6 +93,11 @@ The network `--inputs` file accepts `start x y z yaw [pitch [ground-normal-y]]` 
 Protocol-7 capacity verification used `TMPDIR="$HOME/.cache/MpSlots-tmp" ninja -C build-MpSlots nfserver nightfire nfnet-test`; the scoped targets built without warnings and `./build-MpSlots/nfnet-test` passed. A live `nfserver ... --ruleset extended --bots 12 --port 27642` accepted the frontend's direct-IP join with two local players; the client reported both owner snapshots (slots 0 and 1) and a 12-bot match. The scripted UI path was `--page 0x40000002 --press wait60,down,cross,wait20,down,cross,wait20,down,cross,wait10,net-circle,net-text:127.0.0.1:27642,net-cross,net-up,net-cross --frames 30 --name MpSlotsBrowser --mute`. The protocol test also round-trips two-player redundant input samples and a 16-slot/12-bot server advertisement.
 
 The final maximum-capacity smoke joined with `--local-players 4` to an Extended 12-bot server; each received snapshot consistently contained human slots 0–3 and bot slots 4–15.
+
+A clean concurrent Extended 16-human smoke launched eight clients with `--local-players 2` against an Extended server with 16 bot reservations; all eight were assigned adjacent slot pairs covering 0–15 and each completed 600 input frames with 300 complete 16-player snapshots. The clients shared 293 snapshot ticks, with identical scoreboard rows at every shared tick, and all exited 0; the bounded server exited 0 after assigning all pairs. This caught and fixed the snapshot codec's legacy owner-movement slot-0–3 bound: per-client movement state is now encoded and decoded for any slot within the snapshot's `slot_count`.
+A post-interpolation Xvfb client joined as two local players and saved a 640×480 split-screen gameplay/HUD frame, which was visually inspected.
+An additional Extended run used `--time-limit 2 --ticks 9000` with eight headless clients supplying two local players each. All eight clients and the server exited 0; every client finished 5,400 input frames with complete snapshots containing all 16 human slots, and the clients' final ticks were 8498–8514. The 640×480 final debrief capture `build-MpSlots/mpslots-16-debrief-final.bmp` was visually inspected and showed all 16 rows.
+
 
 A scoped `nfgame --mp --frag-limit 12 --frames 30` run reported the configured 12-frag match limit; `nfserver --frag-limit 12 --time-limit 1 --ticks 1 --port 27644` also started successfully, and server rule advertisements mark non-default limits as modified.
 

@@ -500,6 +500,7 @@ void WeaponSystem::step_projectiles(World& world, FrameTiming timing) {
     const std::vector<Victim> victims = collect_victims(world);
     for (std::size_t i = 0; i < projectiles_.size(); ++i) {   // no spawning in here: references stay valid
         Projectile& b = projectiles_[i];
+        b.previous_pos = b.pos;
         if (!step_projectile(b, world, timing, victims)) b.delete_me = true;
     }
     std::erase_if(projectiles_, [](const Projectile& p) { return p.delete_me; });

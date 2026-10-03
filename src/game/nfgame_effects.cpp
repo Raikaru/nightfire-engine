@@ -158,20 +158,35 @@ std::pair<std::size_t, std::size_t> WeaponEffects::resolve_model(std::uint32_t h
     return {SIZE_MAX, SIZE_MAX};
 }
 
-void WeaponEffects::tick(float mul) {
+void WeaponEffects::tick(float mul, const std::vector<Projectile>& projectiles) {
+    muzzle_flash_added_.fill(false);
     // DynamicLights::update is one Light_Update tick; run it mul times for mul 60 Hz frames.
     for (int i = 0; i < std::max(1, int(mul + 0.5f)); ++i) lights_.update(switches_);
-    for (Decal& d : decals_) d.age += mul;
+    for (Decal& d : decals_) {
+        d.previous_age = d.age;
+        d.age += mul;
+    }
     std::erase_if(decals_, [](const Decal& d) { return d.age >= d.ttl; });
     for (Puff& p : puffs_) {
+        p.previous_pos = p.pos;
+        p.previous_age = p.age;
+        p.previous_size = p.size;
         p.age += mul;
         p.pos = p.pos + p.vel * mul;
         p.size = std::max(0.01f, p.size + p.grow * mul);
     }
     std::erase_if(puffs_, [](const Puff& p) { return p.age >= p.ttl; });
-    for (Blast& b : blasts_) b.age += mul;
+    for (Blast& b : blasts_) {
+        b.previous_age = b.age;
+        b.age += mul;
+    }
     std::erase_if(blasts_, [](const Blast& b) { return b.age >= b.ttl; });
     tick_playbacks(mul);
+    for (const Projectile& b : projectiles) {
+        const WeaponDef& def = table_.weapon(b.weapon);
+        if ((def.flags2 & wf2::kLight) == 0) continue;
+        glow(b.pos, {float(def.flash_r) / 255.0f, float(def.flash_g) / 255.0f, float(def.flash_b) / 255.0f}, 4.0f, 2);
+    }
 }
 // One playback tick (`Explode_Update`): run the script, drain its light/sound queues, then the
 // SP-only debris gate. Debris RNG draws shared game_rng in `Debris_CreateEx` order; MP draws nothing.
@@ -207,6 +222,7 @@ void WeaponEffects::tick_playback_debris(Playback& pb) {
         if (std::uint32_t(pb.age) % (r + 10) == 0) spawn_blast_debris(pb);
     }
     for (BlastDebris& d : pb.debris) {
+        d.previous_pos = d.pos;
         d.age += 2.0f;
         d.pos = d.pos + d.vel * 2.0f;
         d.pos[1] -= 9.8f / 3600.0f * 4.0f;
@@ -242,7 +258,7 @@ void WeaponEffects::spawn_blast_debris(Playback& pb) {
         pb.debris.push_back(d);
     }
 }
-std::vector<LevelRenderer::ObjectDraw> WeaponEffects::take_blast_draws() {
+std::vector<LevelRenderer::ObjectDraw> WeaponEffects::take_blast_draws(float interpolation) {
     std::vector<LevelRenderer::ObjectDraw> out;
     for (const auto& pb : playbacks_) {
         const float c = std::cos(pb->yaw), s = std::sin(pb->yaw);
@@ -254,8 +270,10 @@ std::vector<LevelRenderer::ObjectDraw> WeaponEffects::take_blast_draws() {
             out.push_back({chunk, model,
                            {c * k, 0, -s * k, 0, 0, k, 0, 0, s * k, 0, c * k, 0, p[0], p[1], p[2], 1}});
         }
-        for (const BlastDebris& d : pb->debris) out.push_back({d.chunk, d.model, {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0,
-                                                                                  d.pos[0], d.pos[1], d.pos[2], 1}});
+        for (const BlastDebris& d : pb->debris) {
+            const Vec3 p = d.previous_pos + (d.pos - d.previous_pos) * interpolation;
+            out.push_back({d.chunk, d.model, {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, p[0], p[1], p[2], 1}});
+        }
     }
     return out;
 }
@@ -269,7 +287,10 @@ void WeaponEffects::glow(const Vec3& pos, const Vec3& color01, float radius, int
     auto byte = [](float c) { return std::uint8_t(std::lround(std::clamp(c, 0.0f, 1.0f) * 255.0f)); };
     lights_.create(pos, radius, byte(color01[0]), byte(color01[1]), byte(color01[2]), 1.0f, life);
 }
-void WeaponEffects::muzzle_flash(const Vec3& pos, const WeaponDef& def) {
+void WeaponEffects::muzzle_flash(const Vec3& pos, const WeaponDef& def, int player_slot) {
+    if (player_slot < 0 || player_slot >= int(muzzle_flash_added_.size())) return;
+    if (muzzle_flash_added_[std::size_t(player_slot)]) return;
+    muzzle_flash_added_[std::size_t(player_slot)] = true;
     lights_.muzzle(pos, 5.0f, def.flash_r, def.flash_g, def.flash_b);
 }
 CharacterLighting WeaponEffects::lighting_at(const Vec3& pos, float radius) const {
@@ -279,7 +300,9 @@ CharacterLighting WeaponEffects::lighting_at(const Vec3& pos, float radius) cons
 }
 
 void WeaponEffects::draw(const Camera& cam, float aspect, CharacterRenderer& chars,
-                         const std::vector<Projectile>& projectiles) {
+                         const std::vector<Projectile>& projectiles, float interpolation) {
+    interpolation = std::clamp(interpolation, 0.0f, 1.0f);
+    auto lerp_pos = [interpolation](const Vec3& a, const Vec3& b) { return a + (b - a) * interpolation; };
     const Vec3 f = cam.forward(), r = cam.right(), u = cross(r, f);
     const Mat4 vp = mul(perspective(cam.fovy, aspect, 0.05f, 2000.0f), cam.view());
 
@@ -297,14 +320,15 @@ void WeaponEffects::draw(const Camera& cam, float aspect, CharacterRenderer& cha
             if (!sk) continue;
             it = model_palettes_.emplace(skin->hash, bind_palette(*skin, *sk)).first;
         }
+        const Vec3 pos = lerp_pos(b.previous_pos, b.pos);
         const Vec3 z = {b.dir[0], b.dir[1], b.dir[2]};
         Vec3 x = cross(Vec3{0, 1, 0}, z);
         if (length(x) < 1e-4f) x = {1, 0, 0};
         x = x * (1.0f / length(x));
         const Vec3 y = cross(z, x);
         const Mat4 model = {x[0], x[1], x[2], 0, y[0], y[1], y[2], 0, z[0], z[1], z[2], 0,
-                            b.pos[0], b.pos[1], b.pos[2], 1};
-        chars.draw(cam, aspect, *skin, it->second, model, 0, {}, lighting_at(b.pos, 2.0f));
+                            pos[0], pos[1], pos[2], 1};
+        chars.draw(cam, aspect, *skin, it->second, model, 0, {}, lighting_at(pos, 2.0f));
     }
     // Pass 2: tracers in open air (LESS occludes them behind walls correctly).
     glDepthFunc(GL_LESS);
@@ -313,20 +337,18 @@ void WeaponEffects::draw(const Camera& cam, float aspect, CharacterRenderer& cha
     for (const Projectile& b : projectiles) {
         const WeaponDef& def = table_.weapon(b.weapon);
         if ((def.flags2 & (wf2::kTracerAll | wf2::kTracer)) == 0) continue;
-        quads_.draw(vp, b.pos, r, u, 0.07f, 0.07f, {1.0f, 0.9f, 0.6f, 0.8f}, quads_.soft_dot());
+        quads_.draw(vp, lerp_pos(b.previous_pos, b.pos), r, u, 0.07f, 0.07f, {1.0f, 0.9f, 0.6f, 0.8f},
+                    quads_.soft_dot());
     }
-    for (const Projectile& b : projectiles) {   // F2 & 0x2000 projectiles carry a dynamic light
-        const WeaponDef& def = table_.weapon(b.weapon);
-        if ((def.flags2 & wf2::kLight) == 0) continue;
-        glow(b.pos, {float(def.flash_r) / 255.0f, float(def.flash_g) / 255.0f, float(def.flash_b) / 255.0f}, 4.0f, 2);
-    }
+    // Projectile lights are updated once by tick(), not once per render frame.
     // Pass 3: surface effects. Impact points sit exactly on the wall that stopped them and the projection
     // (near 0.05, far 2000) cannot resolve centimetre offsets there, so glows (blast, sparks) skip the depth
     // test entirely while decals and smoke stay LEQUAL-tested against their own surface.
     quads_.set_additive(true);
     glDisable(GL_DEPTH_TEST);
     for (const Blast& b : blasts_) {
-        const float k = b.age / b.ttl;
+        const float age = b.previous_age + (b.age - b.previous_age) * interpolation;
+        const float k = age / b.ttl;
         const float size = b.size0 + (b.size1 - b.size0) * k;
         auto c = b.color;
         c[3] *= 1.0f - k;
@@ -334,11 +356,13 @@ void WeaponEffects::draw(const Camera& cam, float aspect, CharacterRenderer& cha
     }
     for (const Puff& p : puffs_) {
         if (!p.additive) continue;   // sparks join the blast above (no depth test)
-        const float fade = 1.0f - p.age / p.ttl;
+        const float age = p.previous_age + (p.age - p.previous_age) * interpolation;
+        const float fade = 1.0f - age / p.ttl;
+        const float size = p.previous_size + (p.size - p.previous_size) * interpolation;
         auto c = p.color;
         c[3] *= fade;
         const unsigned tex = upload(p.gfx);
-        quads_.draw(vp, p.pos, r, u, p.size, p.size, c, tex ? tex : quads_.soft_dot());
+        quads_.draw(vp, lerp_pos(p.previous_pos, p.pos), r, u, size, size, c, tex ? tex : quads_.soft_dot());
     }
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
@@ -347,17 +371,20 @@ void WeaponEffects::draw(const Camera& cam, float aspect, CharacterRenderer& cha
         Vec3 t = cross(d.normal, std::fabs(d.normal[1]) > 0.9f ? r : Vec3{0, 1, 0});
         t = t * (1.0f / std::max(length(t), 1e-4f));
         const Vec3 b = cross(d.normal, t);
-        const float fade = 1.0f - d.age / d.ttl;
+        const float age = d.previous_age + (d.age - d.previous_age) * interpolation;
+        const float fade = 1.0f - age / d.ttl;
         if (const unsigned tex = upload(d.gfx)) quads_.draw(vp, d.pos, t, b, d.size, d.size, {1, 1, 1, 0.9f * fade}, tex);
         else quads_.draw(vp, d.pos, t, b, d.size, d.size, {0.04f, 0.04f, 0.04f, 0.7f * fade}, quads_.soft_dot());
     }
     for (const Puff& p : puffs_) {
         if (p.additive) continue;
-        const float fade = 1.0f - p.age / p.ttl;
+        const float age = p.previous_age + (p.age - p.previous_age) * interpolation;
+        const float fade = 1.0f - age / p.ttl;
+        const float size = p.previous_size + (p.size - p.previous_size) * interpolation;
         auto c = p.color;
         c[3] *= fade;
         const unsigned tex = upload(p.gfx);
-        quads_.draw(vp, p.pos, r, u, p.size, p.size, c, tex ? tex : quads_.soft_dot());
+        quads_.draw(vp, lerp_pos(p.previous_pos, p.pos), r, u, size, size, c, tex ? tex : quads_.soft_dot());
     }
     glDepthMask(GL_TRUE);
     quads_.set_additive(false);

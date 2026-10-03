@@ -121,7 +121,8 @@ nightfire <gamedir> [--mission level.bin] [--mp ...] [--logic-hz 30|60] [--drive
 | gamepad (SDL) | left stick walk/strafe, right stick turn/look (the DS2 default puts strafe and turn on different sticks; nfgame swaps X so it behaves like a modern shooter), A = jump, B or left trigger = crouch, right trigger = Cross, X/Y = Square/Circle, bumpers L1/R1, D-pad, Start, Back = Select |
 
 The simulation advances at 60 Hz by default; `--logic-hz 30` selects a fixed 30-Hz step for comparison.
-Interactive rendering is independent of the fixed logic step and camera views interpolate between ticks.
+Interactive rendering is independent of the fixed logic step: cameras, player/bot poses, projectiles,
+viewmodels and visual effects interpolate between ticks.
 `--shot` runs scripted frames (`--frames` or `--inputs`), renders once and writes a BMP (no window shown).
 With `--trace` and (`--inputs` or `--frames`) no window is created at all. `--inputs` text format
 (`tools/oracle/compare.py make-inputs` writes it):
@@ -173,11 +174,11 @@ ammo, armour (to 50), health and bonus items, bobbing/spinning as the original, 
 (`10 * x * FRAME_RATE_INT + 1` frames). Objective objects (flags, hill, uplinks, targets, blueprints,
 GoldenEye items) are `MpObjective`s drawn from their placements and simulated per mode in `arena_modes.cpp`.
 
-`nfgame --mp [--mode NAME] [--players 1..4] [--ruleset ps2|gc-xbox|extended] [--bots 0..12] [--frag-limit N] [--time-limit MIN]
+`nfgame --mp [--mode NAME] [--players 1..4] [--ruleset ps2|gc-xbox|extended] [--bots 0..12] [--logic-hz 30|60] [--frag-limit N] [--time-limit MIN]
 [--weapons 0..10] [--spawn near|far|random] [--handicap N] [--split-vertical] [--bot-char a,b,c] [--cam ... | --follow-bot N]` runs a
 match on an arena map with 1..4 local players in split screen (Camera_CreateCameras layouts: top/bottom for 2,
 2+1 and 2x2; `--split-vertical` puts 2 players side by side) on additional gamepads, plus MP-drone bots via
-`gc-xbox` permits six bots and `extended` permits twelve, for a maximum of 16 combatants. Higher bot counts use
+`gc-xbox` permits six bots and `extended` permits twelve bots, for a maximum of 16 combatants. Higher bot counts use
 the same BotBrain, with 60-Hz logic by default (`--logic-hz 30` for comparison); their additional perception/visit
 state is a rewrite extension, not original game behavior.
 `--frames N` + `--inputs*` + `--shot` work as in single-player for scripted verification. The interactive `nightfire --mp`

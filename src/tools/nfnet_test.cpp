@@ -182,19 +182,27 @@ int main() {
         player.slot = slot;
         player.bot = true;
         player.name = "Bot";
+        if (slot == 14) {
+            player.present = true;
+            player.bot = false;
+            player.owner_movement = OwnerMovementState{};
+        }
         extended_slots.players.push_back(std::move(player));
     }
     const auto extended_pages = split_snapshot(extended_slots);
     bool extended_pages_decoded = extended_pages.size() == 8;
+    bool extended_owner_movement_decoded = false;
     std::size_t extended_player_count = 0;
     for (const Snapshot& page : extended_pages) {
         const auto bytes = encode_snapshot(page);
         Snapshot decoded_page;
         extended_pages_decoded &= decode_snapshot(bytes, decoded_page);
         extended_player_count += decoded_page.players.size();
+        if (decoded_page.page_index == 7 && !decoded_page.players.empty())
+            extended_owner_movement_decoded = decoded_page.players[0].owner_movement.has_value();
     }
-    ok &= check(extended_pages_decoded && extended_player_count == 16,
-                "sixteen-slot arena snapshot pages fit datagram limit");
+    ok &= check(extended_pages_decoded && extended_player_count == 16 && extended_owner_movement_decoded,
+                "sixteen-slot owner movement snapshot page round-trip");
     auto duplicate_slot = snapshot_bytes;
     duplicate_slot[40 + 74 + p0.name.size()] = 0;
     ok &= check(!decode_snapshot(duplicate_slot, decoded_snapshot), "duplicate slot rejection");

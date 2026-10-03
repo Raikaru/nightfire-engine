@@ -64,6 +64,8 @@ def main():
     ap.add_argument("--map", type=int, default=0, help="wheel index from Skyrail")
     ap.add_argument("--direct-map-at-confirm", action="store_true",
                     help="write the chosen MP map ID at Scenario Options/Confirm instead of relying on the map wheel")
+    ap.add_argument("--direct-scenario-at-confirm", action="store_true",
+                    help="select Arena in the wheel, then write the requested scenario mask at Confirm")
     ap.add_argument("--bots", type=int, default=3)
     ap.add_argument("--slot", type=int, default=12, help="PINE slot for the match-start state")
     ap.add_argument("--bot-chars", default="", help="e.g. 6,5,8: char ids poked into mpbots at confirm (skip wheel)")
@@ -126,58 +128,6 @@ def main():
     time.sleep(args.page_settle)
     hold("cross")
     time.sleep(args.page_settle)
-    # On a slow interpreter the ready prompt can eat the transition tap. Probe
-    # the scenario mask around one additional tap so we do not accidentally
-    # select Quick Game when the wheel already opened.
-    pine.write(WRITE32, A.MPSETTINGS + A.MPS_SCENARIO_MASK, 0xAAAAAAAA)
-    hold("cross")
-    time.sleep(args.page_settle)
-    if pine.read32(A.MPSETTINGS + A.MPS_SCENARIO_MASK) != 0xAAAAAAAA:
-        vpad("press", "triangle", 400)
-        time.sleep(args.page_settle)
-        pine.write(WRITE32, A.MPSETTINGS + A.MPS_SCENARIO_MASK, 0xAAAAAAAA)
-
-    snap("03-scenario")
-    # The wheel opens with Arena highlighted. Quick Game has already been
-    # passed on the preceding ready/options page, so do not step down again.
-    want_mask = A.MP_SCENARIOS[args.scenario][0]
-    for attempt in range(14):
-        pine.write(WRITE8, A.MENU_UNLOCK_EVERYTHING, 1)
-        pine.write(WRITE32, A.MPSETTINGS + A.MPS_SCENARIO_MASK, 0xAAAAAAAA)
-        vpad("press", "cross", 400)
-        time.sleep(args.page_settle)
-        m = pine.read32(A.MPSETTINGS + A.MPS_SCENARIO_MASK)
-        if m == want_mask:
-            break
-        print(f"  scenario select gave {m:#x}, cycling", flush=True)
-        vpad("press", "triangle", 400)
-        time.sleep(args.page_settle)
-        if m == 0xAAAAAAAA:
-            time.sleep(args.page_settle)   # select never fired: page not ready, retry same row
-        else:
-            vpad("press", "down", 400)
-            time.sleep(args.settle)
-    else:
-        raise SystemExit("scenario wheel never selected mask %#x" % want_mask)
-    snap("04-scenario-sel")
-    want_map = A.MP_MAPS[args.map][0]
-    # The map wheel commits its highlighted row on cross. Use a valid ID as
-    # the pre-click value so a missed wheel cannot pass an invalid map to load.
-    for attempt in range(len(A.MP_MAPS)):
-        pine.write(WRITE32, A.MPSETTINGS + A.MPS_MAP, A.MP_MAPS[0][0])
-        vpad("press", "cross", 400)
-        time.sleep(args.page_settle)
-        mp = pine.read32(A.MPSETTINGS + A.MPS_MAP)
-        if mp == want_map:
-            break
-        print(f"  map select gave {mp:#x}, cycling", flush=True)
-        vpad("press", "triangle", 400)
-        time.sleep(args.page_settle)
-        vpad("press", "down", 400)
-        time.sleep(args.settle)
-    else:
-        raise SystemExit("map wheel never selected %#x" % want_map)
-    snap("05-map-sel")
     def poke_roster():
         if not args.bot_chars:
             return
@@ -199,6 +149,59 @@ def main():
             pine.write(WRITE8, base + 0x11, 1)
         print("poked bot roster", list(zip(chars, teams)), flush=True)
     poke_roster()   # early: options/confirm pages see the intended teams+count
+    # On a slow interpreter the ready prompt can eat the transition tap. Probe
+    # the scenario mask around one additional tap so we do not accidentally
+    # select Quick Game when the wheel already opened.
+    pine.write(WRITE32, A.MPSETTINGS + A.MPS_SCENARIO_MASK, 0xAAAAAAAA)
+    hold("cross")
+    time.sleep(args.page_settle)
+    if pine.read32(A.MPSETTINGS + A.MPS_SCENARIO_MASK) != 0xAAAAAAAA:
+        vpad("press", "triangle", 400)
+        time.sleep(args.page_settle)
+        pine.write(WRITE32, A.MPSETTINGS + A.MPS_SCENARIO_MASK, 0xAAAAAAAA)
+
+    snap("03-scenario")
+    # The wheel opens with Arena highlighted. Quick Game has already been
+    # passed on the preceding ready/options page, so do not step down again.
+    target_mask = A.MP_SCENARIOS[args.scenario][0]
+    wheel_mask = A.MP_SCENARIOS[1][0] if args.direct_scenario_at_confirm else target_mask
+    for attempt in range(14):
+        pine.write(WRITE8, A.MENU_UNLOCK_EVERYTHING, 1)
+        pine.write(WRITE32, A.MPSETTINGS + A.MPS_SCENARIO_MASK, 0xAAAAAAAA)
+        vpad("press", "cross", 400)
+        time.sleep(args.page_settle)
+        m = pine.read32(A.MPSETTINGS + A.MPS_SCENARIO_MASK)
+        if m == wheel_mask:
+            break
+        print(f"  scenario select gave {m:#x}, cycling", flush=True)
+        vpad("press", "triangle", 400)
+        time.sleep(args.page_settle)
+        if m == 0xAAAAAAAA:
+            time.sleep(args.page_settle)   # select never fired: page not ready, retry same row
+        else:
+            vpad("press", "down", 400)
+            time.sleep(args.settle)
+    else:
+        raise SystemExit("scenario wheel never selected mask %#x" % wheel_mask)
+    snap("04-scenario-sel")
+    want_map = A.MP_MAPS[args.map][0]
+    # The map wheel commits its highlighted row on cross. Use a valid ID as
+    # the pre-click value so a missed wheel cannot pass an invalid map to load.
+    for attempt in range(len(A.MP_MAPS)):
+        pine.write(WRITE32, A.MPSETTINGS + A.MPS_MAP, A.MP_MAPS[0][0])
+        vpad("press", "cross", 400)
+        time.sleep(args.page_settle)
+        mp = pine.read32(A.MPSETTINGS + A.MPS_MAP)
+        if mp == want_map:
+            break
+        print(f"  map select gave {mp:#x}, cycling", flush=True)
+        vpad("press", "triangle", 400)
+        time.sleep(args.page_settle)
+        vpad("press", "down", 400)
+        time.sleep(args.settle)
+    else:
+        raise SystemExit("map wheel never selected %#x" % want_map)
+    snap("05-map-sel")
     vpad("press", "cross", 400)
     time.sleep(args.page_settle)
     snap("07-character")
@@ -237,6 +240,9 @@ def main():
     if args.direct_map_at_confirm:
         pine.write(WRITE32, A.MPSETTINGS + A.MPS_MAP, A.MP_MAPS[args.map][0])
         print("poked MP map at confirm", A.MP_MAPS[args.map], flush=True)
+    if args.direct_scenario_at_confirm:
+        pine.write(WRITE32, A.MPSETTINGS + A.MPS_SCENARIO_MASK, target_mask)
+        print(f"poked MP scenario at confirm {target_mask:#x}", flush=True)
     poke_roster()   # idempotent re-poke guards menu clobbering
     if args.weapon_set is not None:
         pine.write(WRITE32, A.MPSETTINGS + A.MPS_WEAPON_SET, args.weapon_set)

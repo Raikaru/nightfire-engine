@@ -168,10 +168,11 @@ void MpTraceSink::dump(const World& world, const ArenaSystem& arena, const Weapo
             }
             std::fprintf(out_, "],\"weapon_timers\":{\"fire_cooldown\":%.4f,\"last_gun\":%d,"
                                "\"last_gadget\":%d,\"trigger_remaining\":%d,\"muzzle_timer\":%d,"
-                               "\"weapon_anim\":%u}}",
+                               "\"weapon_anim\":%u},\"weapon_anim_state\":%u}",
                          state ? state->cooldown : 0.0f, state ? state->last_gun : 0,
                          state ? state->last_gadget : 0, state ? state->shots_left : 0,
-                         state ? state->muzzle_frames : 0, state ? unsigned(state->anim_state) : 0u);
+                         state ? state->muzzle_frames : 0, state ? unsigned(state->anim_state) : 0u,
+                         state ? unsigned(state->anim_state) : 0u);
         }
     }
     std::fprintf(out_, "],\"respawns\":[");

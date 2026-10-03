@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <optional>
@@ -98,7 +99,7 @@ MpDirect MpSession::from_launch(const MpLaunch& launch) {
 
 struct MpSession::Impl {
     Impl(AppContext& c, Window& w, ui::Renderer& u, ui::TextRenderer& t, const MpDirect& d, AppConfig& cfg)
-        : ctx(c), window(w), ui(u), text(t), direct(d), config(cfg), user_config(cfg) {}
+        : ctx(c), window(w), ui(u), text(t), direct(d), config(cfg), timing(float(cfg.logic_hz)), user_config(cfg) {}
 
     AppContext& ctx;
     Window& window;
@@ -106,6 +107,7 @@ struct MpSession::Impl {
     ui::TextRenderer& text;
     MpDirect direct;
     AppConfig config;
+    nf::FrameTiming timing;
     AppConfig& user_config;   // player 1's controller style / Y-inversion (the active profile's) persist here
     MenuFile level_menu;      // the level bin's menu script (the pause page)
     bool has_level_menu = false;
@@ -140,6 +142,9 @@ struct MpSession::Impl {
     NetworkSession* network = nullptr;
     std::uint32_t network_projectiles_tick = 0;
     std::vector<Projectile> network_projectiles;
+    std::vector<Projectile> previous_network_projectiles;
+    std::array<ViewModel, nf::net::kMaxLocalPlayers> previous_viewmodels{};
+    std::array<bool, nf::net::kMaxLocalPlayers> has_previous_viewmodel{};
 
     std::unique_ptr<SoundArchive> archive;
     std::unique_ptr<audio::AudioSystem> audio;
@@ -447,13 +452,21 @@ struct MpSession::Impl {
         }
         if (network->projectiles_tick() > network_projectiles_tick) {
             network_projectiles_tick = network->projectiles_tick();
+            previous_network_projectiles.swap(network_projectiles);
             network_projectiles.clear();
             network_projectiles.reserve(network->projectiles().size());
             for (const nf::net::ProjectileSnapshot& state : network->projectiles()) {
                 Projectile projectile;
+                projectile.network_id = state.id;
                 projectile.weapon = state.weapon;
                 projectile.owner = state.owner;
                 projectile.pos = {state.position[0], state.position[1], state.position[2]};
+                projectile.previous_pos = projectile.pos;
+                const auto previous = std::lower_bound(
+                    previous_network_projectiles.begin(), previous_network_projectiles.end(), state.id,
+                    [](const Projectile& p, std::uint16_t id) { return p.network_id < id; });
+                if (previous != previous_network_projectiles.end() && previous->network_id == state.id)
+                    projectile.previous_pos = previous->pos;
                 projectile.dir = {state.direction[0], state.direction[1], state.direction[2]};
                 projectile.state = Projectile::State(state.state);
                 projectile.resting = state.resting;
@@ -491,7 +504,7 @@ struct MpSession::Impl {
             audio->play_sfx(std::uint32_t(sound.id), options);
         }
     }
-    void draw_views(int viewer_only = -1, int viewer_count = 0) {
+    void draw_views(int viewer_only = -1, int viewer_count = 0, float interpolation = 1.0f) {
         drain_messages();
         update_network_replication();
         const int humans = session->humans();
@@ -514,7 +527,14 @@ struct MpSession::Impl {
             if (!view_player) continue;
             const Player& p = *view_player;
             Camera cam = camera_for_eye_yaw_pitch(p.eye(), p.yaw, p.view_pitch());
-            cam.fovy = kViewFovY / std::max(1.0f, session->weapons().zoom(i));
+            float zoom = session->weapons().zoom(i);
+            if (network && i >= int(network->slot()) &&
+                i < int(network->slot() + network->local_players())) {
+                const std::size_t local = std::size_t(i - int(network->slot()));
+                if (local < previous_viewmodels.size() && has_previous_viewmodel[local])
+                    zoom = previous_viewmodels[local].zoom + (zoom - previous_viewmodels[local].zoom) * interpolation;
+            }
+            cam.fovy = kViewFovY / std::max(1.0f, zoom);
             glViewport(r.x, gl_y, r.w, r.h);
             glScissor(r.x, gl_y, r.w, r.h);
             const auto clear = renderer->clear_color();
@@ -523,7 +543,8 @@ struct MpSession::Impl {
             renderer->draw(cam, r.aspect(), false);
             if (weather && weather->active()) weather->draw(cam, renderer->view_projection(cam, r.aspect()));
             // Bots, remote players, then effects and the viewer's own gun.
-            if (drone_renderer && bot_match) drone_renderer->draw(cam, r.aspect(), bot_match->drones());
+            if (drone_renderer && bot_match)
+                drone_renderer->draw(cam, r.aspect(), bot_match->drones(), interpolation);
             for (int j = 0; j < int(session->arena().settings().slot_count); ++j) {
                 if (j == i || !network_body_visible[std::size_t(j)] || !bodies[std::size_t(j)]) continue;
                 const Player* remote = world->player(j);
@@ -532,16 +553,28 @@ struct MpSession::Impl {
                 const auto& anim = bodies[std::size_t(j)]->character();
                 chars->draw(cam, r.aspect(), anim.skin(), anim.palette(), player_model_matrix(q), 0, anim.facial(), {});
             }
-            effects->draw(cam, r.aspect(), *chars, network ? network_projectiles : session->weapons().projectiles());
-            renderer->draw_objects(cam, r.aspect(), effects->take_blast_draws());
+            effects->draw(cam, r.aspect(), *chars,
+                          network ? network_projectiles : session->weapons().projectiles(), interpolation);
+            renderer->draw_objects(cam, r.aspect(), effects->take_blast_draws(interpolation));
             glClear(GL_DEPTH_BUFFER_BIT);
-            const ViewModel vm = session->weapons().viewmodel(i);
+            ViewModel vm = session->weapons().viewmodel(i);
+            const std::size_t local = network && i >= int(network->slot())
+                                          ? std::size_t(i - int(network->slot()))
+                                          : std::size_t(i);
+            if (local < previous_viewmodels.size() && has_previous_viewmodel[local] &&
+                previous_viewmodels[local].weapon == vm.weapon) {
+                const ViewModel& previous = previous_viewmodels[local];
+                vm.offset = previous.offset + (vm.offset - previous.offset) * interpolation;
+                vm.zoom = previous.zoom + (vm.zoom - previous.zoom) * interpolation;
+                vm.muzzle_flash = previous.muzzle_flash +
+                                  (vm.muzzle_flash - previous.muzzle_flash) * interpolation;
+            }
             if (vm.visible && vm.skin && vm.anim) {
                 const WeaponDef& def = session->weapons().table().weapon(vm.weapon);
                 const Vec3 muzzle =
                     weapon_view->draw(cam, r.aspect(), vm, def, effects->lighting_at(cam.eye, 2.0f),
                                       &world->collision());
-                if (vm.muzzle_flash > 0.0f && muzzle != Vec3{0, 0, 0}) effects->muzzle_flash(muzzle, def);
+                if (vm.muzzle_flash > 0.0f && muzzle != Vec3{0, 0, 0}) effects->muzzle_flash(muzzle, def, i);
             }
             glEnable(GL_DEPTH_TEST);
             glDisable(GL_BLEND);
@@ -580,12 +613,11 @@ struct MpSession::Impl {
     // crouch, per-tick body-space velocity), plus anim-script sound events served positional.
     // Footstep SFX need the surface->sound table (Audio owns it); only Sound events play for now.
     void tick_bodies() {
-        const FrameTiming timing{float(config.logic_hz)};
         if (weather && world->player(0)) {
             weather->update(world->player(0)->eye(), timing.mul(), timing.rec(),
                             [this](int ch) { return world->objects().channel(unsigned(ch)); });
         }
-        renderer->set_time(double(world->frame()) / double(config.logic_hz));
+        renderer->set_time(double(world->frame()) / double(timing.FRAME_RATE));
         for (int j = 0; j < int(session->arena().settings().slot_count); ++j) {
             if (!bodies[std::size_t(j)]) continue;
             PlayerAnimator& body = *bodies[std::size_t(j)];
@@ -820,12 +852,13 @@ MpResult MpSession::run_interactive() {
                 }
                 break;
             }
+            if (s.drone_renderer && s.bot_match) s.drone_renderer->capture_previous(s.bot_match->drones());
             s.session->tick(pads, timing);
             s.tick_overlays(pads);
             s.tick_bodies();
             if (has_audio) s.audio_frame();
             s.effects->consume(s.session->weapons().events());
-            s.effects->tick(timing.mul());
+            s.effects->tick(timing.mul(), s.session->weapons().projectiles());
             s.session->weapons().events().clear();
             accumulator -= kStep;
             ++ticks;
@@ -844,7 +877,7 @@ MpResult MpSession::run_interactive() {
             }
         }
         if (finished) break;
-        s.draw_views();
+        s.draw_views(-1, 0, float(std::clamp(accumulator / kStep, 0.0, 1.0)));
         if (s.direct.frames >= 0 && ticks >= s.direct.frames) {
             if (!s.direct.shot.empty() && !s.window.save_bmp(s.direct.shot))
                 throw std::runtime_error("could not save match screenshot");
@@ -952,8 +985,7 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
         return local < s.pads.size() ? s.pads[local].sample() : PadState{};
     };
     std::uint8_t viewer = 0;
-    const nf::FrameTiming timing{float(s.config.logic_hz)};
-    const double kStep = timing.rec();
+    const double kStep = s.timing.rec();
     bool running = true, captured = false, match_over = false;
     long input_frames = 0;
     double accumulator = 0;
@@ -966,6 +998,9 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
     std::array<std::deque<UnackedInput>, nf::net::kMaxLocalPlayers> unacked_inputs;
     std::array<nf::Vec3, nf::kMpSlots> previous_remote_render{};
     std::array<bool, nf::kMpSlots> has_previous_remote_render{};
+    std::array<nf::Vec3, nf::kMpSlots> previous_local_position{};
+    std::array<float, nf::kMpSlots> previous_local_yaw{}, previous_local_pitch{};
+    std::array<bool, nf::kMpSlots> has_previous_local_pose{};
     std::vector<float> correction_magnitudes;
     std::vector<float> remote_position_jitter_cm;
     std::array<bool, nf::net::kMaxLocalPlayers> have_prediction_baseline{};
@@ -1094,13 +1129,14 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
     auto draw_interpolated = [&]() {
         std::array<nf::Player*, nf::World::kMaxPlayers> players{};
         std::array<nf::Vec3, nf::World::kMaxPlayers> saved_positions{};
-        std::array<float, nf::World::kMaxPlayers> saved_yaw{};
+        std::array<float, nf::World::kMaxPlayers> saved_yaw{}, saved_pitch{};
         const Uint64 render_now = SDL_GetTicksNS();
         const double rate = double(s.config.logic_hz);
         const double extrapolated =
             std::min(rate * 0.15, double(render_now - latest_snapshot_time) * rate * 1.0e-9);
         const double render_tick = double(latest_snapshot_tick) + extrapolated - rate / 10.0;
-        rendered_view_tick = render_tick;
+        const float interpolation =
+            float(std::clamp(render_tick - std::floor(render_tick), 0.0, 1.0));
         for (std::uint8_t slot = 0; slot < nf::World::kMaxPlayers; ++slot) {
             if (slot >= network.slot() && slot < std::uint8_t(network.slot() + network.local_players())) continue;
             nf::net::PlayerSnapshot state;
@@ -1124,8 +1160,28 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
             previous_remote_render[slot] = state_position;
             has_previous_remote_render[slot] = true;
             saved_yaw[slot] = player->yaw;
+            saved_pitch[slot] = player->pitch;
             player->pos = state_position;
             player->yaw = state.yaw;
+            player->pitch = state.pitch;
+        }
+        for (std::uint8_t slot = std::uint8_t(network.slot());
+             slot < std::uint8_t(network.slot() + network.local_players()); ++slot) {
+            nf::Player* player = s.world->player(int(slot));
+            if (!player || !has_previous_local_pose[slot]) continue;
+            if (!players[slot]) {
+                players[slot] = player;
+                saved_positions[slot] = player->pos;
+                saved_yaw[slot] = player->yaw;
+                saved_pitch[slot] = player->pitch;
+            }
+            player->pos = previous_local_position[slot] +
+                          (player->pos - previous_local_position[slot]) * interpolation;
+            const float yaw_delta = std::atan2(std::sin(player->yaw - previous_local_yaw[slot]),
+                                               std::cos(player->yaw - previous_local_yaw[slot]));
+            player->yaw = previous_local_yaw[slot] + yaw_delta * interpolation;
+            player->pitch = previous_local_pitch[slot] +
+                            (player->pitch - previous_local_pitch[slot]) * interpolation;
         }
         std::array<nf::drone::Drone*, nf::kMpSlots> bot_drones{};
         std::array<nf::Vec3, nf::kMpSlots> bot_positions{};
@@ -1165,11 +1221,12 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
         previous_render_tick = render_tick;
         have_previous_render_tick = true;
         s.draw_views(network.connected() ? int(network.slot()) : int(viewer),
-                     network.connected() ? int(network.local_players()) : 0);
+                     network.connected() ? int(network.local_players()) : 0, interpolation);
         for (std::size_t i = 0; i < players.size(); ++i) {
             if (!players[i]) continue;
             players[i]->pos = saved_positions[i];
             players[i]->yaw = saved_yaw[i];
+            players[i]->pitch = saved_pitch[i];
         }
         for (std::size_t i = 0; i < bot_drones.size(); ++i) {
             if (!bot_drones[i]) continue;
@@ -1281,7 +1338,22 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
             const std::uint32_t input_tick = ++local_input_tick;
             const std::uint32_t view_tick = std::uint32_t(std::max(0.0, std::floor(rendered_view_tick)));
             network.send_inputs(std::span<const PadState>(local_pads.data(), network.local_players()), view_tick);
-            s.session->tick(pads, timing);
+            for (std::size_t local = 0; local < network.local_players(); ++local) {
+                const std::size_t slot = std::size_t(viewer) + local;
+                const nf::Player* player = s.world->player(int(slot));
+                if (!player) continue;
+                previous_local_position[slot] = player->pos;
+                previous_local_yaw[slot] = player->yaw;
+                previous_local_pitch[slot] = player->pitch;
+                has_previous_local_pose[slot] = true;
+            }
+            for (std::size_t local = 0; local < network.local_players(); ++local) {
+                const std::size_t slot = std::size_t(viewer) + local;
+                s.previous_viewmodels[local] = s.session->weapons().viewmodel(int(slot));
+                s.has_previous_viewmodel[local] = true;
+            }
+            if (s.drone_renderer && s.bot_match) s.drone_renderer->capture_previous(s.bot_match->drones());
+            s.session->tick(pads, s.timing);
             s.tick_overlays(pads);
             for (std::size_t local = 0; local < network.local_players(); ++local) {
                 auto& pending = unacked_inputs[local];
@@ -1291,7 +1363,7 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
             s.tick_bodies();
             if (has_audio) s.audio_frame();
             s.effects->consume(s.session->weapons().events());
-            s.effects->tick(timing.mul());
+            s.effects->tick(s.timing.mul(), s.session->weapons().projectiles());
             s.session->weapons().events().clear();
             accumulator -= kStep;
             ++input_frames;
@@ -1400,7 +1472,7 @@ MpResult MpSession::run_headless() {
         s.tick_overlays(pads);
         s.tick_bodies();
         s.effects->consume(s.session->weapons().events());
-        s.effects->tick(timing.mul());
+        s.effects->tick(timing.mul(), s.session->weapons().projectiles());
         s.session->weapons().events().clear();
         // Like the interactive loop: stop ticking once the match is over (post-Over
         // ticks would keep the bots fighting after the debrief snapshot).

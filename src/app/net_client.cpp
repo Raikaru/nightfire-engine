@@ -158,7 +158,7 @@ void NetworkSession::poll() {
         else if (incoming.packet.header.message == nf::net::Message::Welcome &&
                  incoming.packet.payload.size() == 6) {
             if (s.slot != 0xff) continue;
-            if (incoming.packet.payload[0] + incoming.packet.payload[1] > 4 ||
+            if (std::size_t(incoming.packet.payload[0]) + incoming.packet.payload[1] > nf::World::kMaxPlayers ||
                 incoming.packet.payload[1] != s.options.local_players)
                 throw std::runtime_error("server returned invalid local player slots");
             s.slot = incoming.packet.payload[0];

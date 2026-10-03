@@ -16,6 +16,7 @@ struct MatchLaunch {
     MatchOptions options;
     std::string shot;                             // --shot out.bmp: render the split screen once after the scripted frames
     long frames = -1;                             // --frames N: scripted length without input files
+    int logic_hz = int(World::kTickHz);           // --logic-hz 30|60; recorded MP seeds retain their per-frame rate
     std::array<std::string, 4> inputs;            // --inputs, --inputs2 .. --inputs4: scripted pads per player
     std::string mp_trace;                     // --mp-trace out.jsonl: per-frame oracle-comparable state dump
     std::string mp_seed;                         // --mp-seed recording.jsonl:frame

@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <cstdint>
+#include <array>
 #include <map>
 #include <memory>
 #include <unordered_map>
@@ -34,12 +34,12 @@ public:
     void set_map_lights(const std::vector<MapLight>& lights) { lights_.add_map_lights(lights); }
 
     void consume(const WeaponEvents& events);   // CPU only: safe to call in headless scripted loops
-    void tick(float mul);                        // age transients by `mul` 60 Hz frames
+    void tick(float mul, const std::vector<Projectile>& projectiles);  // advance visual state once per logic tick
     // Depth-tested draw before the weapon-layer depth clear: projectile models, decals, puffs, blasts.
     void draw(const Camera& cam, float aspect, CharacterRenderer& chars,
-              const std::vector<Projectile>& projectiles);
+              const std::vector<Projectile>& projectiles, float interpolation = 1.0f);
     // Muzzle flash light (Player_MuzzleFlash via DynamicLights::muzzle): flash colour bytes, 1 tick.
-    void muzzle_flash(const Vec3& pos, const WeaponDef& def);
+    void muzzle_flash(const Vec3& pos, const WeaponDef& def, int player_slot);
     // Map lights plus live dynamics around `pos` (Lights_CalcClosestLights over the union).
     CharacterLighting lighting_at(const Vec3& pos, float radius) const;
 
@@ -47,6 +47,7 @@ public:
         Vec3 pos{}, normal{};
         float size = 0.22f, age = 0, ttl = 1200;
         std::uint32_t gfx = 0;   // sprite hash; uploaded lazily at draw (consume runs headless, no GL)
+        float previous_age = 0;
     };
     struct Puff {
         Vec3 pos{}, vel{};
@@ -54,11 +55,14 @@ public:
         std::array<float, 4> color{0.6f, 0.6f, 0.6f, 0.5f};
         std::uint32_t gfx = 0;   // sprite hash, like Decal
         bool additive = false;
+        Vec3 previous_pos{};
+        float previous_age = 0, previous_size = 0.2f;
     };
     struct Blast {
         Vec3 pos{};
         float size0 = 1, size1 = 2, age = 0, ttl = 18;
         std::array<float, 4> color{1.0f, 0.55f, 0.2f, 0.9f};
+        float previous_age = 0;
     };
     // Script-driven explosion (`Explode_Create` + `Script_Play` on 0x06000052/0x060007C4): one
     // playback per blast. Entities/flipbook/smoke come from the script's EntityStart windows
@@ -69,12 +73,13 @@ public:
         Vec3 pos{}, vel{};
         std::size_t chunk = 0, model = 0;  // resolved debris model
         float age = 0, life = 60;
+        Vec3 previous_pos{};
     };
     void set_level(Level* level);  // model lookup by hash for script entities + debris
     void set_explosion_script(std::uint32_t hash, Bytes data);
     void set_multiplayer(bool mp) { is_mp_ = mp; }  // gates SP-only debris RNG
     // Entity + debris instances for the session's draw_objects call (LevelRenderer::ObjectDraw).
-    std::vector<LevelRenderer::ObjectDraw> take_blast_draws();
+    std::vector<LevelRenderer::ObjectDraw> take_blast_draws(float interpolation = 1.0f);
     std::vector<SoundEvent> take_blast_sounds();  // script SoundStarts for the session audio drain
     Vec3 jitter(float scale);              // shared game_rng scatter (MP-lockstep order)
     unsigned upload(std::uint32_t hash);   // sprite hash -> GL texture (0 when the library has none)
@@ -87,6 +92,7 @@ public:
     SwitchChannels switches_;   // all off: channel-0 lights (all weapon lights) always enabled
     std::vector<Decal> decals_;
     std::vector<Puff> puffs_;
+    std::array<bool, World::kMaxPlayers> muzzle_flash_added_{};
     std::vector<Blast> blasts_;
     std::unordered_map<std::uint32_t, unsigned> textures_;
     std::unordered_map<std::uint32_t, Palette> model_palettes_;

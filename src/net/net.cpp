@@ -415,7 +415,7 @@ std::vector<std::uint8_t> encode_snapshot(const Snapshot& snapshot) {
     std::size_t owner_movement_count = 0;
     for (const PlayerSnapshot& p : snapshot.players) {
         if (!p.owner_movement) continue;
-        if (p.slot >= 4 || !p.present || p.bot) return {};
+        if (p.slot >= snapshot.slot_count || !p.present || p.bot) return {};
         ++owner_movement_count;
     }
     std::vector<std::uint8_t> out;
@@ -557,7 +557,7 @@ bool decode_snapshot(std::span<const std::uint8_t> payload, Snapshot& snapshot) 
         p.name.assign(reinterpret_cast<const char*>(payload.data() + at + kPlayerFixedSize), name_size);
         at += kPlayerFixedSize + name_size;
         if (has_movement) {
-            if (p.slot >= 4 || !p.present || p.bot ||
+            if (p.slot >= decoded.slot_count || !p.present || p.bot ||
                 payload.size() - at < kOwnerMovementBytes)
                 return false;
             OwnerMovementState movement;
