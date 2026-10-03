@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 #include <SDL3/SDL.h>
+#include "app/menu_background.hpp"
 #include "assets/menu_validate.hpp"
 #include "assets/mp_data.hpp"
 #include "assets/sp_menu.hpp"
@@ -48,6 +49,10 @@ public:
         frontend_ = std::make_unique<Frontend>(args.assets, menu_, mp_data_.get(), sp_data_.get(), tweak_data_.get());
         frontend_->set_credits(
             load_credits(Elf32(read_file(std::filesystem::path(args.gamedir) / "ACTION.ELF")), args.assets.strings));
+        if (pause_bin.empty()) {
+            background_ = std::make_unique<app::MenuBackground>(args.gamedir);
+            background_->advance();
+        }
         frontend_->open(pause_bin.empty() ? FrontendMode::MainMenu : FrontendMode::Pause, page);
     }
 
@@ -56,6 +61,7 @@ public:
     }
 
     void update(const PadHistory& pad) override {
+        if (background_) background_->advance();
         frontend_->update(pad);
         if (trace_ && frontend_->page_id() != last_page_) {
             last_page_ = frontend_->page_id();
@@ -78,7 +84,10 @@ public:
                          movie_frame_.rgba.data());
             return;
         }
-        r.fill({0, 0, ui::kScreenW, ui::kScreenH}, {0x10, 0x14, 0x1c, 0x80});
+        if (background_)
+            background_->draw(r);
+        else
+            r.fill({0, 0, ui::kScreenW, ui::kScreenH}, {0x10, 0x14, 0x1c, 0x80});
         frontend_->draw(r, text);
     }
 
@@ -206,6 +215,7 @@ private:
     std::unique_ptr<SpMenuData> sp_data_;
     std::unique_ptr<TweakData> tweak_data_;
     std::unique_ptr<Frontend> frontend_;
+    std::unique_ptr<app::MenuBackground> background_;
     // take_movie_request playback state (video over the menu, PCM via SDL).
     media::MoviePlayer movie_;
     media::MovieFrame movie_frame_, movie_pending_;

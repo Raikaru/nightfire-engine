@@ -47,8 +47,8 @@ struct ArenaSettings {
     };
 
     std::uint32_t mode = mp_mode::kArena;       // +0x1A4 scenario mask (Quick Game is resolved to Arena by the setup)
-    std::int32_t score_limit = 10;              // +0x19C frags / points / lives, -1 unlimited
-    float time_limit = 600.0f;                  // seconds (+0x1A0 after P_MPCONFIRM), < 0 unlimited
+    std::int32_t score_limit = 10;             // +0x19C frags / points / lives, -1 unlimited
+    float time_limit = 600.0f;                  // seconds (+0x1A0 after P_MPCONFIRM), <= 0 disables the match timer
     bool friendly_fire = false;                 // +0x198
     int weapon_set = 0;                         // +0x1B4 PickupMatrix row 0..10
     SpawnSelection spawn_selection = SpawnSelection::Random;   // +0x1C0
@@ -117,6 +117,54 @@ struct MatchResult {
     bool score_limit = false, time_up = false;
     std::string banner;                         // "Game Over : X Won", "A Draw", "Time Up!", ...
 };
+// Seed state imported from a captured multiplayer frame. Objective and pickup vectors use the stable order built by
+// ArenaSystem::start(); this API restores live state only and deliberately does not parse the recorder's JSON.
+struct ArenaSeedSnapshot {
+    struct Participant {
+        int kills = 0, deaths = 0, streak = 0;
+        float points = 0;
+        int last_attacker = kAttackerEnvironment, last_killer = -1;
+        std::uint16_t status = 0;
+        bool dead = false, out = false;
+        float respawn_remaining = -1;
+    };
+    struct Objective {
+        int state = 0, carrier = -1, team = kTeamNone;
+        float hit_points = 0;
+        bool visible = true;
+        Vec3 pos{};
+        float yaw = 0;
+        int timer = 0, last_damager = -1, capturer = -1;
+        bool round_over = false;
+        std::size_t place = SIZE_MAX;
+    };
+    struct Pickup {
+        nf::Pickup::State state = nf::Pickup::State::Active;
+        float respawn_remaining = 0;
+        std::uint64_t stamp = 0;
+        Vec3 pos{};
+        int item = 0, amount = 0;
+        std::uint32_t lifetime_total_frames = 0;
+        bool dynamic = false;
+        bool radar_hidden = false;
+        bool has_pos = false;
+        bool has_stamp = false;
+        bool has_lifetime = false;
+    };
+    MatchPhase phase = MatchPhase::Running;
+    int state_code = 0;
+    float elapsed = 0, total_elapsed = 0, time_limit = -1;
+    std::uint64_t frame = 0;
+    float rate = 30;
+    std::array<float, 2> team_score{};
+    int best_score = 0;
+    int assassin = -1, target = -1, golden_target = -1;
+    float golden_effect = -1;
+    std::array<Participant, kMpSlots> participants{};
+    std::vector<Objective> objectives;
+    std::vector<Pickup> pickups;
+};
+
 
 // What the HUD (nf_ui HudState::mp) needs for one viewer. Field names follow `HudMp`.
 struct ArenaHud {
@@ -185,6 +233,9 @@ public:
     int team_of(int slot) const { return settings_.slots.at(std::size_t(slot)).team; }
     // MP_Start's scenario objects (chosen sites, GoldenEye items, assassin / target). Call once after every body is registered.
     void start();
+    // Imports mutable match state after start(); throws std::invalid_argument if the stable objective/pickup ordering
+    // does not match this level's constructed arrays.
+    void restore_snapshot(const ArenaSeedSnapshot& snapshot);
 
     // ---- weapon / bot side (MatchRules) ----
     // MP_RegisterBulletHit + the friendly-fire filter. Records `attacker` as the victim's last attacker; false = the
@@ -196,6 +247,7 @@ public:
     bool assassin_lethal(int attacker_slot, int victim_slot, int part) const override;
     // MP_PlayerKilled. attacker < 0 falls back to the recorded last attacker.
     void player_killed(int victim_slot, int attacker_slot = kAttackerNone, int weapon_id = -1) override;
+    bool drop_weapon(const Vec3& pos, int weapon_id, int rounds, bool radar_hidden = false) override;
     void environment_kill(int victim_slot) override;
     // Damage to a Demolition / Protection target (SP_GetHitDamage): `damage` from `attacker_slot`.
     void damage_objective(std::size_t index, float damage, int attacker_slot);
@@ -215,6 +267,25 @@ public:
     bool running() const { return phase_ == MatchPhase::Running; }
     bool over() const { return phase_ == MatchPhase::Over; }
     float elapsed() const { return elapsed_; }
+    float total_elapsed() const { return total_elapsed_; }
+    int state_code() const { return state_code_; }
+    float time_left() const {
+        if (settings_.time_limit <= 0.0f) return -1.0f;
+        const float left = settings_.time_limit - elapsed_;
+        return left > 0.0f ? left : 0.0f;
+    }
+    int objective_timer(std::size_t index) const { return runtime_.at(index).timer; }
+    int objective_last_damager(std::size_t index) const { return runtime_.at(index).last_damager; }
+    int objective_capturer(std::size_t index) const { return runtime_.at(index).capturer; }
+    bool objective_round_over(std::size_t index) const { return runtime_.at(index).round_over; }
+    float golden_effect_ticks() const { return golden_effect_; }
+    int golden_target() const { return golden_target_; }
+    float pickup_respawn_left(const Pickup& pickup) const {
+        if (pickup.state != Pickup::State::Waiting || rate_ <= 0.0f) return 0.0f;
+        const float left =
+            10.0f * float(pickup.respawn_units) - float(frame_ - pickup.stamp) / rate_;
+        return left > 0.0f ? left : 0.0f;
+    }
     std::array<float, 2> team_score() const { return team_score_; }
     std::vector<ScoreRow> scoreboard() const;
     // The original snapshots nothing: MP_SortOutWhoWon only writes the overlay banner and P_MPDEBRIEFING reads the
@@ -225,6 +296,7 @@ public:
     PickupField& pickups() { return *pickups_; }
     const PickupField& pickups() const { return *pickups_; }
     const std::vector<MpObjective>& objectives() const { return objectives_; }
+    std::vector<MpObjective>& mutable_objectives() { return objectives_; }
     std::optional<int> assassin() const { return assassin_ >= 0 ? std::optional<int>(assassin_) : std::nullopt; }
     std::optional<int> target() const { return target_ >= 0 ? std::optional<int>(target_) : std::nullopt; }
     bool participant_out(int slot) const { return slots_.at(std::size_t(slot)).out; }
@@ -253,6 +325,7 @@ public:
     static ArenaSettings settings_from_launch(const MpLaunch& launch);
 
 private:
+    friend class MpSeedImporter;
     // Per participant: the MPGame slot record.
     struct SlotState {
         ArenaBody* body = nullptr;

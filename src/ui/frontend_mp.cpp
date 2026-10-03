@@ -379,7 +379,7 @@ bool Frontend::Impl::c_rb_mp_cname(ui::Control& c, const ui::Msg& m) {
 bool Frontend::Impl::p_mp_scenario(ui::Control&, const ui::Msg& m) {
     if (m.type == kPageShown) {
         iris_start(m.a == kPageMain ? 0 : 4, 0x10000106);
-        select_in_wheel(0x1000009C, scenario_items(), mp->settings().mode);
+        select_in_wheel(0x1000009C, scenario_items(), mp->scenario_selection());
     } else if (m.type == kIdle) {
         iris_play(true, 0x10000106);
     } else if (m.type == kPageBackScript) {
@@ -494,7 +494,9 @@ bool Frontend::Impl::c_sb_mp_options(ui::Control& c, const ui::Msg& m) {
 void Frontend::Impl::fill_handicap(std::uint32_t slot, std::int32_t current) {
     mgr->send_ex(kSetupWheel, slot, kClear);
     for (const MpChoice& ch : mp_data->handicap)
-        mgr->send_ex(kSetupWheel, slot, kAddItem, ch.label ? label(ch.label) : mp_handicap_text(ch.value), std::uint32_t(ch.value));
+        mgr->send_ex(kSetupWheel, slot, kAddItem,
+                     ch.label ? label(ch.label) : (ch.value == 0 ? std::string("0") : mp_handicap_text(ch.value)),
+                     std::uint32_t(ch.value));
     send_ex(kSetupWheel, slot, kSelectValue, std::uint32_t(current));
 }
 
@@ -777,7 +779,7 @@ bool Frontend::Impl::p_mp_confirm(ui::Control&, const ui::Msg& m) {
     if (m.type == kAccept) {
         FrontendResult r;
         MpLaunch launch = mp->start();
-        r.action = FrontendResult::Action::StartMultiplayer;
+        r.action = listen_host ? FrontendResult::Action::StartListenServer : FrontendResult::Action::StartMultiplayer;
         r.level_bin = launch.level_bin;
         r.level_id = launch.settings.level_id;
         r.launch = std::move(launch);

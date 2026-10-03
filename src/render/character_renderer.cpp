@@ -22,6 +22,7 @@ layout(location = 4) in vec4 a_bone;
 uniform mat4 u_mvp;
 uniform mat4 u_world;       // object -> world (the original folds this into the root bone matrix)
 uniform mat4 u_bones[96];
+uniform float u_bone_visible[96];
 uniform int u_lights;
 uniform vec3 u_light_pos[2];        // world space (TLight)
 uniform vec3 u_light_col[2];        // TColor0/1 rgb, 0..255 (colour * intensity)
@@ -33,16 +34,27 @@ uniform float u_env;                // model box flag: ST from the camera axes, 
 out vec2 v_uv;
 out vec3 v_color;                   // GS RGBAQ / 128: 1.0 = texture unchanged, 255 -> ~2.0
 void main() {
-    mat4 m0 = u_bones[int(a_bone.x + 0.5)], m1 = u_bones[int(a_bone.y + 0.5)];
+    int bone0 = int(a_bone.x + 0.5), bone1 = int(a_bone.y + 0.5);
+    mat4 m0 = u_bones[bone0], m1 = u_bones[bone1];
+    float w0 = a_weight * u_bone_visible[bone0], w1 = (1.0 - a_weight) * u_bone_visible[bone1];
+    float weight = w0 + w1;
+    if (weight <= 0.00001) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        v_uv = a_uv;
+        v_color = vec3(0.0);
+        return;
+    }
+    w0 /= weight;
+    w1 /= weight;
     vec4 p = vec4(a_pos, 1.0);
-    vec3 skinned = a_weight * (m0 * p).xyz + (1.0 - a_weight) * (m1 * p).xyz;
+    vec3 skinned = w0 * (m0 * p).xyz + w1 * (m1 * p).xyz;
     gl_Position = u_mvp * vec4(skinned, 1.0);
 
     // _$ROTATE_LIGHT (VU1): colour = tint * vertex colour (255) + sum_i TColor_i * max(a_i * (N . d_i), 0) with
     // d_i = TLight_i - P, a_i = max(1 / |d_i|^2 - 1 / r_i^2, 0), N = the FTOI0 normal / 128 (bone 0 rotation),
     // clamped to 255 before the GS modulates the texture with it (0x80 = 1.0).
     vec3 world = (u_world * vec4(skinned, 1.0)).xyz;
-    vec3 n = mat3(u_world) * (mat3(m0) * a_normal) * (127.0 / 128.0);
+    vec3 n = mat3(u_world) * (w0 * (mat3(m0) * a_normal) + w1 * (mat3(m1) * a_normal)) * (127.0 / 128.0);
     // Environment-mapped models (box 0 flags bit 0): the VU program builds ST from the camera axes
     // (FillMatrixChainRot/Skin upload them with a 0.5 bias) instead of the vertex UVs.
     v_uv = mix(a_uv, vec2(dot(n, u_cam_right), dot(n, u_cam_up)) + 0.5, u_env);
@@ -117,7 +129,7 @@ CharacterRenderer::CharacterRenderer(CharacterBank& bank) : bank_(bank) {
     program_ = compile_program(kVertexShader, kFragmentShader);
     u_mvp_ = glGetUniformLocation(program_, "u_mvp");
     u_bones_ = glGetUniformLocation(program_, "u_bones");
-    u_lights_ = glGetUniformLocation(program_, "u_lights");
+    u_bone_visible_ = glGetUniformLocation(program_, "u_bone_visible");
     u_world_ = glGetUniformLocation(program_, "u_world");
     u_tint_ = glGetUniformLocation(program_, "u_tint");
     u_alpha_ = glGetUniformLocation(program_, "u_alpha");
@@ -131,7 +143,12 @@ CharacterRenderer::CharacterRenderer(CharacterBank& bank) : bank_(bank) {
         u_light_inv_r2_[i] = glGetUniformLocation(program_, ("u_light_inv_r2" + n).c_str());
     }
     glUseProgram(program_);
-    glUniform1i(glGetUniformLocation(program_, "u_tex"), 0);
+    const std::array<GLfloat, kMaxBones> all_bones_visible = [] {
+        std::array<GLfloat, kMaxBones> visible{};
+        visible.fill(1.0f);
+        return visible;
+    }();
+    glUniform1fv(u_bone_visible_, GLsizei(all_bones_visible.size()), all_bones_visible.data());
     std::uint32_t white = 0xFFFFFFFF;
     glGenTextures(1, &white_);
     glBindTexture(GL_TEXTURE_2D, white_);
@@ -252,7 +269,7 @@ void CharacterRenderer::draw_mesh(const GpuMesh& mesh, bool fade) {
 void CharacterRenderer::draw(const Camera& cam, float aspect, const SkinDef& skin, const Palette& palette,
                              const Mat4& model, unsigned sleeve, const std::vector<float>& facial,
                              const CharacterLighting& lighting, std::uint32_t hidden_part, std::uint32_t attached_hash,
-                             const Mat4& attached_matrix) {
+                             const Mat4& attached_matrix, bool weapon_arm_only) {
     if (palette.skin.size() > std::size_t(kMaxBones)) throw std::runtime_error("skeleton exceeds the shader palette");
     const Mat4 view = cam.view();
     const Mat4 mv = mul(view, model);
@@ -282,12 +299,64 @@ void CharacterRenderer::draw(const Camera& cam, float aspect, const SkinDef& ski
 
     glUniformMatrix4fv(u_bones_, GLsizei(palette.skin.size()), GL_FALSE, palette.skin[0].data());
     const MorphSelection morph = select_morph_weights(facial);
+    if (weapon_arm_only) {
+        std::array<GLfloat, kMaxBones> visible{};
+        visible.fill(1.0f);
+        int hand_branch = -1;
+        for (const MeshRef& part : skin.parts) {
+            int bone = part.bone;
+            if (part.hash == 0xFFFFFFFFu || bone < 0 || std::size_t(bone) >= skin.parent.size()) continue;
+            while (std::size_t(bone) < skin.parent.size()) {
+                const int parent = skin.bone_parent(std::size_t(bone));
+                if (parent == 0x7F) {
+                    bone = -1;
+                    break;
+                }
+                if (parent == 0) break;
+                bone = parent;
+            }
+            if (bone >= 0) {
+                hand_branch = bone;
+                break;
+            }
+        }
+        // Unarmed rigs have no rigid weapon part to identify the hand branch; their right-hand arm is the last
+        // direct child of the skeleton root (the paired branch is the earlier child).
+        if (hand_branch < 0) {
+            for (std::size_t i = 0; i < skin.parent.size() && i < visible.size(); ++i)
+                if (skin.bone_parent(i) == 0) hand_branch = int(i);
+        }
+        if (hand_branch >= 0) {
+            for (std::size_t i = 0; i < skin.parent.size() && i < visible.size(); ++i) {
+                int branch = int(i);
+                while (std::size_t(branch) < skin.parent.size()) {
+                    const int parent = skin.bone_parent(std::size_t(branch));
+                    if (parent == 0x7F) {
+                        branch = -1;
+                        break;
+                    }
+                    if (parent == 0) break;
+                    branch = parent;
+                }
+                if (branch >= 0 && branch != hand_branch) visible[i] = 0.0f;
+            }
+            glUniform1fv(u_bone_visible_, GLsizei(visible.size()), visible.data());
+        }
+    }
     for (const auto& ref : skin.skinned)
         if (auto m = bank_.find_model(bank_.resolve_skinned(ref, sleeve))) {
             GpuMesh& mesh = skinned_mesh(*m);
             apply_morph(mesh, morph);
             draw_mesh(mesh, fade);
         }
+    if (weapon_arm_only) {
+        const std::array<GLfloat, kMaxBones> all_visible = [] {
+            std::array<GLfloat, kMaxBones> visible{};
+            visible.fill(1.0f);
+            return visible;
+        }();
+        glUniform1fv(u_bone_visible_, GLsizei(all_visible.size()), all_visible.data());
+    }
 
     // Rigid parts are modelled in their bone's space and ride its world matrix.
     glUniformMatrix4fv(u_bones_, GLsizei(palette.world.size()), GL_FALSE, palette.world[0].data());

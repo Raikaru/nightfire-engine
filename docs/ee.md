@@ -332,6 +332,34 @@ every draw with its arg so the port side can align sequences. Covers returns
 0x59/0x5a/0x5b/0x5c/0x5f/0x60/0x69/0x7f/0x8c/0x2d/0x0 with zero traps; the
 mask-equal path runs grenade+choose, mask-unequal skips to CallAnim(10).
 
+`nfmips <elf> diff-bot` emits EE truth tables for MP bot movement/state,
+pain handling (including object type, pending-delete, and cell-state gates),
+and goal selection. `diff-botmp --state <match.p2s>` adds seeded weapon
+predicate/data rows (`W`/`WF`/`WK`), real `BOTSTATE_pickGoal` /
+`BOTSTATE_processGoals` rows (`G`), pickup visit lockout writes (`PV`),
+held-weapon choices (`X`), and synthetic `NDrone2_FindOpponent`
+perception/history cases (`F`).
+The engine MP trace includes `pl[].type`, mirroring `obj+0xff`: active
+bot/human values 2/3 and eliminated bot/human values 0x11/0x12. The live
+slot-10 RAM sample confirms 2/3; `Control_Plr2Ind` and `MP_ReSpawn`
+disassembly distinguishes the bot and human families.
+The goal calls are the real EE functions with `NDrone2_DistanceToEmitter`
+stubbed to return 1.0, isolating selection from nav-distance calculation.
+The harness calls `Drone_DCVfromOBJ` for each seeded body before invoking the
+goal functions, so all four DCVars pointers match the game's construction
+(object, drone extension, object auxiliary pointer, and drone+264 clock data).
+In the slot-10 test state, bots 4–6 complete both selection and processing
+with zero traps. `NDrone2_DistanceToEmitter` remains stubbed to 1.0, so these
+rows exercise goal selection with a deterministic emitter-distance result,
+not navigation-distance fidelity or an engine-port comparison.
+`diff-botdrop --state <match.p2s> [--slot 4..7]` invokes the original
+`DroneWeap_DropWeapon` for seeded bot objects and prints each captured
+`Pickup_CreateSimple` item, amount, and world translation. It uses the live
+frame's already-cached animation palette and the existing RAM-backed scratchpad
+copy shim (`psiCopyToSP`/`psiCopyFromSP`); it does not rebuild the VU0 palette.
+A live Skyrail state produced weapon-6 drops for bots 4–6 without traps.
+
+
 ## Cross-platform disambiguation
 
 When a differential shows systematic (non-noise) differences on a VU0/MMI-heavy

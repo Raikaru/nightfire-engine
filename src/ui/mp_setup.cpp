@@ -197,6 +197,7 @@ bool MpSetup::select_scenario(std::size_t index, std::uint32_t random) {
         refusal_.message = item.disabled_label;
         return false;
     }
+    scenario_selection_ = item.value;
     if (index != 0) {
         settings_.mode = item.value;  // then P_MPMAP
         return true;
@@ -757,7 +758,7 @@ int MpMatch::check_end_condition(float dt, bool paused) {
                     }
             }
         }
-        if (s.duration != -1 && !time_reached) time_reached = time_limit <= elapsed;
+        if (time_limit > 0.0f && !time_reached) time_reached = time_limit <= elapsed;
         if (!s.team_game()) fold_players();
         if (s.mode == mp_mode::kTopAgent) {
             // Top Agent skips the score limit test; only the timer can override the state set above.

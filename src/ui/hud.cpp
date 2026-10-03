@@ -76,6 +76,8 @@ struct Hud::Impl {
     ui::TextRenderer measure;
     std::array<Pane, kHudPaneCount> panes;
     Spr crosshair;
+    Spr mp_clock;
+    bool mp_clock_ready = false;
     std::deque<Msg> msgs;
     std::uint64_t next_msg_id = 1;
     std::uint32_t frame = 0;
@@ -103,6 +105,23 @@ struct Hud::Impl {
         frame_rate_int = int(cfg.frame_rate);
         crosshair = make_sprite(d.crosshair);
         init();
+        if (cfg.multiplayer) {
+            const Pane& score = pane(HudPane::MpScore);
+            if (score.present && !score.sprites.empty() && score.sprites[0].s.is_text()) {
+                mp_clock = score.sprites[0];
+                mp_clock.text.clear();
+                mp_clock.s.format.clear();
+                mp_clock.s.format.push_back(static_cast<char>(0xFF));
+                mp_clock.s.format.push_back(static_cast<char>(0x01));
+                mp_clock.s.format.push_back(static_cast<char>(0xFE));
+                mp_clock.s.format.push_back(static_cast<char>(0x03));
+                mp_clock.s.color = 0x7F7F7FFF;
+                mp_clock.s.shadow = 0x000000FF;
+                mp_clock.s.flags |= kSprOutline;
+                mp_clock.s.layer = kHidden;
+                mp_clock_ready = true;
+            }
+        }
     }
 
     // ---- helpers -----------------------------------------------------------------------------
@@ -573,6 +592,17 @@ struct Hud::Impl {
                 for (std::size_t k = 0; k < p.sprites.size(); ++k) p.sprites[k].s.layer = p.def->sprites[k].layer;
             }
             update_pane(p, st);
+        }
+        if (mp_clock_ready) {
+            const Pane& score = pane(HudPane::MpScore);
+            if (!score.enabled || score.sprites.empty() || st.mp.match_clock.empty()) {
+                hide(mp_clock);
+            } else {
+                if (mp_clock.text != st.mp.match_clock) mp_clock.text = st.mp.match_clock;
+                mp_clock.s.x = std::int16_t(viewer.x0 + viewer.w * 0.5f);
+                mp_clock.s.y = std::int16_t(score.sprites[0].s.y + 32);
+                mp_clock.s.layer = 0x1E;
+            }
         }
     }
 
@@ -1451,6 +1481,7 @@ struct Hud::Impl {
             for (const Spr& s : p.extra)
                 if (s.s.layer != kHidden) items.push_back({&s, 0, 0});
         }
+        if (mp_clock_ready && mp_clock.s.layer != kHidden) items.push_back({&mp_clock, 0, 0});
         if (crosshair.s.layer != kHidden) items.push_back({&crosshair, viewer.x0, viewer.y0});
         std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.spr->s.layer < b.spr->s.layer; });
         for (const Item& i : items) draw_sprite(r, t, *i.spr, i.ox, i.oy);

@@ -30,9 +30,9 @@ constexpr std::uint32_t kStatsList = 0x10000022;
 // P_NFBONUS labels.
 constexpr std::uint32_t kBonusText = 0x100001D0;
 // P_MPDEBRIEFING rows (4 columns) and banner.
-constexpr std::uint32_t kDName = 0x10000156, kDPortrait = 0x10000157, kDShort = 0x10000158,
-                        kDNum0 = 0x10000159, kDNum1 = 0x10000240, kDNum2 = 0x1000015A, kDScore = 0x1000015C,
-                        kDBanner = 0x1000023D;
+constexpr std::uint32_t kDPanel = 0x1000015D, kDName = 0x10000156, kDPortrait = 0x10000157,
+                        kDShort = 0x10000158, kDNum0 = 0x10000159, kDNum1 = 0x10000240,
+                        kDNum2 = 0x1000015A, kDScore = 0x1000015C, kDBanner = 0x1000023D;
 constexpr int kMovieHoldFrames = 150;  // ~5 s of black before a movie page pops back
 
 }  // namespace
@@ -211,11 +211,12 @@ bool Frontend::Impl::p_nf_bonus(ui::Control&, const ui::Msg& m) {
 // original's 0x2b pass. Cross continues (QuitToMenu), triangle replays (MpRematch).
 bool Frontend::Impl::p_mp_debriefing(ui::Control&, const ui::Msg& m) {
     if (m.type == kPageShown) {
+        constexpr const char* rank_labels[] = {"1st", "2nd", "3rd", "4th"};
         const std::size_t n = std::min<std::size_t>(debrief.rows.size(), 4);
         for (std::uint32_t i = 0; i < 4; ++i) {
             if (i < n) {
                 const DebriefRow& r = debrief.rows[i];
-                send_ex(kDName, i, kSetText, r.name);
+                send_ex(kDName, i, kSetText, rank_labels[i]);
                 if (mp_data && r.character >= 0 &&
                     std::size_t(r.character) < mp_data->characters.size()) {
                     // The debrief portraits are the small sprites (mp_characters_small).
@@ -232,7 +233,8 @@ bool Frontend::Impl::p_mp_debriefing(ui::Control&, const ui::Msg& m) {
                 send_ex(kDNum2, i, kSetText, std::to_string(r.deaths));
                 send_ex(kDScore, i, kSetText, std::to_string(r.score));
             } else {
-                // Hide the row's labels (the original's 0x2b hide pass; kSetFlags bit 0 hides).
+                // Hide the unused row panels and their contents (the original's 0x2b pass).
+                send_ex(kDPanel, i, kSetFlags, 1);
                 for (std::uint32_t c : {kDName, kDPortrait, kDShort, kDNum0, kDNum1, kDNum2, kDScore})
                     send_ex(c, i, kSetFlags, 1);
             }

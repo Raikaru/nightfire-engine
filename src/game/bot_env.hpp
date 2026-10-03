@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cstdint>
+#include <source_location>
 #include <vector>
 
 #include "core/math.hpp"
@@ -37,6 +38,7 @@ struct Participant {
     bool valid = false;            // a registered participant
     bool alive = false;            // alive test of BotGlobal (health > 0, not eliminated)
     bool is_bot = false;
+    std::uint8_t object_type = 0;   // obj+0xff (Control_Plr2Ind / MP_ReSpawn; RAM confirms live 2/3): bot 2/out 0x11, human 3/out 0x12
     Vec3 pos{};                    // obj+0x30
     float yaw = 0;                 // obj+0x54
     int team = 2;                  // MPSettings[slot]+0x20 (0 Phoenix, 1 MI6, 2 none)
@@ -130,7 +132,8 @@ public:
     // MP_BluePrintReachedBase: a bot carrying the blueprint stands in its team's espionage base.
     virtual void objective_reached(int bot_slot, int objective_id) { (void)bot_slot; (void)objective_id; }
     // Rand_Rand(n) in [0, n).
-    virtual std::uint32_t rand(std::uint32_t n) = 0;
+    virtual std::uint32_t rand(std::uint32_t n,
+                               const std::source_location& loc = std::source_location::current()) = 0;
 };
 
 }  // namespace nf::bots

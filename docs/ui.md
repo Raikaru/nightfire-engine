@@ -169,7 +169,8 @@ What is reproduced (function → behaviour):
   16 px wide for clips over 0x57), lock-on marker for weapons 0x50 / 0x51.
 - `HUD_UpdateCrossHair`: kind from `HUDCrossCoords`, red (green in night vision), placed by the aim offset in the viewer,
   hidden by the blood / security-camera panes; aiming with a scoped weapon switches the Sight / OICW / Laser / Camera pane on
-  (`HUD_Enable` every frame, the others off).
+  (`HUD_Enable` every frame, the others off). Observed MP seedable rows carry crosshair kind 2 (`BLData+0x133`),
+  used here for the unscoped baseline; other weapon/aim mappings remain inferred.
 - Message panes (`HUD_UpdateStatusPane`, `HUD_MPUpdateStatusPane`, `Text_AddMsg`, `Text_UpdateMsg`, `Font_WordWrapString`):
   messages are word wrapped into lines (`TextMsgFormats` width), each line shown for its share of the duration (at least 60
   frames), five-state machine per pane (idle, bar opens, prepare, show with a 15-frame fade, bar closes at `speed` px per frame);
@@ -247,6 +248,7 @@ Codenames: P_CNSELECT 0x4000001b (new / saved profiles) -> P_CNNAME 0x40000020 (
                MP options 0x4000002e / AV options 0x40000031 (music/effects sliders, subtitles, split-screen,
                speaker, widescreen, screen adjust, defaults, credits, trailer) / screen adjust 0x40000047
 Multiplayer:  P_MPJOIN 0x40000019 -> P_MPSCENARIO 0x4000001a -> P_MPMAP 0x40000013 -> P_MPSETUP 0x40000051 -> P_MPOPTIONS 0x40000012
+              The scenario wheel initially highlights Quick Game; the accepted scenario selection is restored when revisiting it.
               Quick Game (scenario row 0) skips to P_MPCONFIRM; P_MPOPTIONS -> P_MPBOTS 0x40000027 -> P_MPBOTCHOOSE 0x4000003f ->
               P_MPBOTSETUP 0x4000002c;  Game Rules 0x40000014 / Player Mods 0x40000017 / Enviro-Mods 0x40000028;
               Continue -> (refusal box 0x4000002f) or P_MPCONFIRM 0x40000049 -> FrontendResult::StartMultiplayer
@@ -338,6 +340,16 @@ reaches the scenario wheel. Verified end to end: boot `P_START -> P_MAIN` (press
 confirms); AV sliders move live into `GameOptions`; pause `Start -> Resume`; `P_ENDMISSION` retry/quit;
 `P_MPDEBRIEFING` cross Continue / triangle Replay; movie pages hold then pop back. Every page above was also
 screenshotted (`--shot`) and inspected.
+`P_MPDEBRIEFING` displays participants in final score order: each portrait has its placement (`1st` through `4th`) above it and the character short-name below it, followed by points, victories, deaths, and total score. Unused columns, including their panel backgrounds, are hidden.
+On the MP setup handicap wheel, zero is shown as `0` (not `+0`), matching the PCSX2 capture.
+
+The integrated front end and `nfui` render the looping `MOVIES/30_FPS/07350048.PSS` under menu controls. `nfui` was
+smoke-captured at `P_MAIN` after 120 idle frames; its screenshot shows the original orange animated backdrop behind the
+menu. `nightfire` also advances/draws this background during menu operation and scripted `--press` replay.
+`nightfire <gamedir> --page <ID> --press <script> --shot out.bmp` captures the same frontend through the integrated
+game executable while bypassing boot/movie navigation. Use `--page` only to inspect state-independent pages; dynamic
+multiplayer pages should be reached from their parent page so `MpSetup` is populated. Smoke-captured
+`P_MPSCENARIO` with `--page 0x4000001a --press wait20`.
 
 Known gaps: the `P_CNCONTROLS` per-style button diagram keeps the script's `"1"` placeholders (filling it needs
 `Menu_DisplayControllerStyle`'s label map behind an unrecovered jumptable); the `P_ENDMISSION` portrait sprite

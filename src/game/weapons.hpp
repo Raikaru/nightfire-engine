@@ -1,8 +1,10 @@
 #pragma once
 
 #include <array>
+#include <functional>
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include "core/rng.hpp"
 #include <vector>
 
@@ -106,7 +108,7 @@ struct PlayerWeapons {
     float anim_frame_prev = 0;
     std::size_t anim_cmd_next = 0;     // next script sound command to trigger
     std::uint32_t anim_script = 0;
-    unsigned sleeve = 0;               // BLData+2405
+    unsigned sleeve = 4;               // BLData+2405: default MP character 0 (Bond) uses Bond_hands_malewhite
     std::uint32_t datum0_entity = 0;   // Player_WeaponFiring datum-0 override: entity model hash, 0 = hidden
     std::uint32_t datum0_part = 0;     // skin part hidden while the override runs (def.datum0_gfx, e.g. suppressor)
 };
@@ -146,6 +148,8 @@ public:
     void set_match_rules(MatchRules* rules) { rules_ = rules; }
     // The world the shooters live in; tick() attaches it too, call this earlier when fire()/spawn_player() run before the first tick.
     void attach(World& world) { world_ = &world; }
+    // Multiplayer view RNG runs after bot systems, matching Player_LaserPointer's source frame order.
+    void post_tick_rng();
 
     // --- combatants -----------------------------------------------------------------------------
     // Bots and drones: returns the shooter id (>= 4) to pass to fire() and see in HitInfo::attacker.
@@ -156,11 +160,24 @@ public:
     // projectile from `origin` along `direction`. `owner_aiming` matters for F1 & 0x400000 weapons.
     struct Shooter {
         int id = -1;
+
         Vec3 origin{}, direction{0, 0, 1};
         bool owner_aiming = false;
         int shots_in_burst = 0;
         float damage_scale = 1.0f;   // multiplies the direct and blast damage of this shot (Drone_ModBulletDamage)
     };
+    struct LagCompVolume {
+        int id = -1;
+        bool alive = false;
+        Vec3 a{}, b{}, blast_ref{};
+        float radius = 0.0f;
+    };
+    struct LagCompVolumes {
+        std::array<LagCompVolume, 8> values{};
+        std::size_t count = 0;
+    };
+    using LagCompProvider = std::function<LagCompVolumes(int shooter)>;
+    void set_lag_comp_provider(LagCompProvider provider) { lag_comp_provider_ = std::move(provider); }
     void fire(const Shooter& shooter, int weapon_id);
     // Explode_Create at `position` with the weapon's radius and damage.
     void explode(const Vec3& position, int weapon_id, int attacker);
@@ -206,6 +223,7 @@ public:
     void tick(World& world, FrameTiming timing) override;
     WeaponEvents& events() { return events_; }               // cleared by the consumer
     const std::vector<Projectile>& projectiles() const { return projectiles_; }
+    void restore_projectiles_for_replay(std::vector<Projectile>&& state) { projectiles_ = std::move(state); }
 
     // Ammo pool / clip rules (docs/spec-weapons.md 3.2), public for the HUD and bots.
     int ammo_index(int weapon_id) const;                   // Player_AmmoIndex
@@ -213,7 +231,7 @@ public:
 
     // Deterministic random source shared by spread, ricochets, sound picks: the process-global
     // game Rand stream (core/rng.hpp; Rand_Rand/Rand_FRand/Rand_FRand_MVar2 exact).
-    float frand();                                          // [0, 1), Rand_FRand(1)
+    float frand(const std::source_location& loc = std::source_location::current()); // [0, 1), Rand_FRand(1)
     GameRng& rng() { return game_rng(); }
     void seed(std::uint32_t x, std::uint32_t y) { game_rng().seed(x, y); }   // differential poking
     void seed_match(std::uint32_t s) {   // --seed / options.seed: fold one word into both lanes
@@ -293,6 +311,8 @@ private:
     CharacterBank* bank_ = nullptr;
     const drone::DroneSystem* drones_ = nullptr;   // threat gate for idle fidgets (Bots-2 any_visible_threat)
     MatchRules* rules_ = nullptr;
+    LagCompProvider lag_comp_provider_;
+    LagCompVolumes active_lag_comp_{};
     std::array<std::unique_ptr<PlayerWeapons>, World::kMaxPlayers> players_;
     std::array<SpawnLoadout, World::kMaxPlayers> loadouts_{};
     std::vector<DamageTarget*> targets_;

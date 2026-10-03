@@ -17,6 +17,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <source_location>
 #include <string_view>
 #include <vector>
 
@@ -169,8 +170,10 @@ public:
     std::uint32_t sight_cursor() const { return sight_cursor_; }
     void set_sight_cursor(std::uint32_t c) { sight_cursor_ = c; }
     FrameTiming timing() const { return timing_; }
-    std::uint32_t rand_int(std::uint32_t n);          // Rand_Rand(n) in [0, n)
-    float frand(float range);                           // Rand_FRand
+    std::uint32_t rand_int(std::uint32_t n,
+                           const std::source_location& loc = std::source_location::current());  // Rand_Rand(n) in [0, n)
+    float frand(float range,
+                const std::source_location& loc = std::source_location::current());             // Rand_FRand
 
     // World-level noise (Sound_Alertness): weapons/footsteps call this; drones within 50 m that hear (behaviour
     // 0x1f) get a kMsgSoundAlert with loudness-scaled alertness. `loudness` is the original 0..100 value.

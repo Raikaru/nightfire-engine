@@ -20,7 +20,7 @@ struct MatchOptions {
     int humans = 1;                             // --players 1..4
     int bots = 0;                               // --bots 0..4
     std::int32_t score_limit = 10;              // --frag-limit N (-1 unlimited)
-    float time_limit = 600.0f;                  // --time-limit MINUTES (< 0 unlimited)
+    float time_limit = 600.0f;                  // --time-limit MINUTES (<= 0 disables the match timer)
     bool friendly_fire = false;                 // --friendly-fire
     int weapon_set = 0;                         // --weapons 0..10
     SpawnSelection spawn = SpawnSelection::Random;   // --spawn near|far|random
@@ -30,6 +30,9 @@ struct MatchOptions {
     bool rng_override = false;                  // --mp-rng X Y: seed the Rand stream from oracle frame-0 words
     std::uint32_t rng_x = 0, rng_y = 0;         // (lockstep/diff runs; skips the --seed fold)
     bool log = false;                           // --mp-log: print the match events to stdout
+    bool roster_override = false;               // --mp-seed: exact MPSettings participant slots
+    std::array<ArenaSettings::Slot, kMpSlots> roster{};
+    bool grapple = false, radar_names = true;  // MPSettings+0x1D0 / +0x1C4
 
     bool parse(const std::vector<std::string>& args, std::size_t& i);
     static std::vector<std::pair<const char*, std::uint32_t>> mode_names();
@@ -70,7 +73,7 @@ public:
     const MatchOptions& options() const { return options_; }
     int humans() const { return options_.humans; }
 
-    // One logic frame: World::tick (players, weapons, arena), then the events of the frame are routed to `log`.
+    // One logic frame: World::tick, then MP weapon-view RNG after all bot systems, then event routing.
     void tick(const PadInputs& pads, FrameTiming timing = FrameTiming{World::kTickHz});
 
     // HUD data of viewer `slot` from its player's eye.

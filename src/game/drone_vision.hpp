@@ -51,9 +51,9 @@ void process_drone_sight(DroneSystem& sys);   // DroneVision_ProcessDroneSight: 
 void find_alerted_drones(DroneSystem& sys);   // DroneVision_FindAlertedDrones (called by process_drone_sight)
 
 // ---- positions ---------------------------------------------------------------------------------------------------
-// World position of a bone of a drone's skeleton (falls back to a body-relative estimate when it has no character).
+// World position of a drone bone (bot head uses NDrone2_GetHeadPos's body-relative MP path).
 Vec3 drone_bone_pos(const Drone& d, int bone);
-Vec3 head_pos(const Drone& d);                // NDrone2_GetHeadPos: bone 5
+Vec3 head_pos(const Drone& d);                // NDrone2_GetHeadPos
 // Position of a bone of an opponent (players: estimated from stand height / crouch).
 Vec3 target_bone_pos(const DroneSystem& sys, const TargetRef& t, int bone);
 Vec3 target_pos(const DroneSystem& sys, const TargetRef& t);

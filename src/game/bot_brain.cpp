@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/rng.hpp"
+
 #include "game/drone_weap.hpp"
 namespace nf::bots {
 
@@ -157,14 +159,14 @@ void BotBrain::sound_effect(int which) {
 
 // BOT_handlePain @0x125ed8 (MP branch of NDrone2_HitDamage). Returns the health actually removed.
 // Entry guards are the standard alive test (spec Part 2A §7: 0x600 clear, 0x100 set, health > 0,
-// obj+0xfe&1 clear, obj type != 0x11), verified against the 0x125ed8 disasm.
+// obj+0xfe&1 clear); MP_playerIsDead treats object types 0x11/0x12 as eliminated bot/human.
 float BotBrain::handle_pain(float dmg, int damage_type, int loc) {
     if (!self || !self->alive() || dmg <= 0 || !env->match_playing()) return 0;
     if ((self->flags & drone::flag::kActive) == 0) return 0;   // Drone+0x4f8 & 0x100
     if (self->pending_delete) return 0;                        // obj+0xfe & 1 (BOT_respawn sets it; live bots run clear: slot-02 obj+0xfe = 0x0c)
-    // obj type 0x11 = eliminated (Top Agent; live ELF bots are type 2 — slot-02 savestate obj+0xff).
-    // Our drones keep 0x11 as the bot-body marker, so test elimination through the arena record instead.
-    if (!env->participant(v.slot).alive) return 0;
+    // obj types 0x11/0x12 denote eliminated bot/human participants; Drone keeps its separate body marker.
+    const Participant victim = env->participant(v.slot);
+    if (victim.object_type == 0x11 || victim.object_type == 0x12 || !victim.alive) return 0;
     if (loc != -1) dmg *= kPlrDModMulti;
     if (env->location_damage()) {
         if (loc == 5) {
@@ -302,19 +304,9 @@ void BotBrain::set_other_player_info() {
     const float clock = env->clock_seconds();
     const bool guardian = v.personality() == Personality::Guardian;
 
-    // The original walks a round-robin index and resets it to 0 whenever the slot it lands on is empty, which
-    // would leave bots in a one-human game unable to ever test LOS against each other; we advance the index over
-    // participants that can be tested instead.
     int rr = v.rr_index;
-    auto testable = [&](int j) {
-        if (j == v.slot) return false;
-        const Participant p = env->participant(j);
-        if (!p.valid || !p.alive) return false;
-        const bool same = p.team == my_team;
-        return !same || guardian;
-    };
-    for (int n = 0; n < 8 && !testable(rr % 8); ++n) rr = (rr + 1) % 8;
-    rr %= 8;
+    if (rr >= 8) rr = v.rr_index = 0;
+    bool rr_tested = false;
 
     for (int j = 0; j < 8; ++j) {
         OtherInfo& o = v.other[std::size_t(j)];
@@ -338,16 +330,23 @@ void BotBrain::set_other_player_info() {
             if (was && !now_concealed && clock < o.stamp + 2.0f * self->rate()) now_concealed = true;
             o.flags = now_concealed ? (o.flags | otherflag::kConcealed) : (o.flags & ~otherflag::kConcealed);
         }
-        // Facing of the other player relative to the bearing to me, and the squared distance.
+        // Bot-to-bot sight reuses the candidate bot's cached view of us when it is already visible.
+        float mirrored_dist = 0.0f;
+        bool mirrored_visible = false;
+        const bool mirror_visible =
+            j >= 4 && env->bot_mirror(j, v.slot, &mirrored_dist, &mirrored_visible) && mirrored_visible;
         const Vec3 delta = p.pos - me.pos;
         o.facing = wrap_pi(p.yaw - (std::atan2(delta[0], delta[2]) + 3.14159265f)) * kAngleToDeg;
-        o.sq_dist = dot(delta, delta);
-        if (j == rr) {
+        o.sq_dist = mirror_visible ? mirrored_dist : dot(delta, delta);
+        if (mirror_visible) {
+            o.flags |= otherflag::kVisible;
+        } else if (j == rr) {
             const bool visible = body->can_see_participant(j);
             o.flags = visible ? (o.flags | otherflag::kVisible) : (o.flags & ~otherflag::kVisible);
+            rr_tested = true;
         }
     }
-    v.rr_index = (rr + 1) % 8;
+    v.rr_index = rr_tested ? (rr + 1) % 8 : 0;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -355,6 +354,14 @@ void BotBrain::set_other_player_info() {
 
 void BotBrain::set_opponent(int slot) {
     opponent_slot_ = slot;
+    // NDrone2_SetOpponentAimPos is called only for player/drone objects (types 3/2).
+    if (slot >= 0) {
+        const Participant target = env->participant(slot);
+        if (target.object_type == 2 || target.object_type == 3) {
+            const std::uint32_t range = (v.stats.ability_flags & 0x01) ? 4u : 4u * self->accuracy_class;
+            nf::game_rng().rand_int(range);
+        }
+    }
     body->set_opponent(slot);
     if (slot < 0) {
         self->aim_offset = {};
@@ -430,13 +437,15 @@ bool BotBrain::find_opponent() {
             v.trait_opponent = -1;
         }
     }
-    // Drop the current opponent when it died or was out of sight longer than aggression * 20 s.
-    // The timeout truncates: limit_ticks = FRAME_RATE * int(aggression * 20) (0x142744 disasm: mul.s 20.0,
-    // fptoui, then times FRAME_RATE) — a float product would overshoot by up to a second at point-blank.
+    // Drop the current opponent when it died or was out of sight beyond the EE timeout.
+    // EE computes CVT.W.S((aggression * 20.0f) * FRAME_RATE), truncating each single-precision multiply first.
     if (has_opponent()) {
         const bool gone = !alive_participant(opponent_slot_);
-        const float limit = float(self->seconds(1.0f)) * float(int(aggression_mul() * 20.0f));
-        if (gone || float(self->lost_frames) > limit) set_opponent(-1);
+        // EE instruction order is (aggression * 20) * FRAME_RATE, then CVT.W.S; the 0.7 case
+        // truncates to 839 ticks at 60 Hz rather than rounding to 840.
+        const float seconds = ee_trunc_mul(aggression_mul(), 20.0f);
+        const float limit = ee_trunc_mul(float(self->seconds(1.0f)), seconds);
+        if (gone || float(self->lost_frames) > float(int(limit))) set_opponent(-1);
     }
 
     std::array<float, 8> score;

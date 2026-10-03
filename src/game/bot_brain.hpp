@@ -251,7 +251,7 @@ public:
     bool alive_participant(int slot) const;
 
     std::uint32_t handled_msgs = 0;
-    int opponent_slot_ = -1;                            // Drone+0x174 target slot (participant slot)
+    int opponent_slot_ = -1;                            // participant slot resolved from Drone+0x170 obj_tag*
     int team_ = 2;
     int door_return_state_ = st::kIdle;                 // Drone+0x5a6
     int react_to_opponent_sighted(int state);           // NDrone2_ReactToOpponentSighted (MP bots: the requested state)

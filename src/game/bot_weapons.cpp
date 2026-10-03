@@ -102,6 +102,17 @@ void BotArmoury::init(int start_weapon, bool defender, int character) {
     change_weapon(current_);
 }
 
+void BotArmoury::restore_snapshot(const std::array<std::uint16_t, weap::kSlots>& rounds,
+                                  const std::array<std::uint8_t, weap::kSlots>& has_weapon,
+                                  const std::array<std::uint16_t, weap::kAmmoTypes>& ammo, int current,
+                                  int clip_mirror, int reserve_mirror) {
+    for (std::size_t i = 0; i < rec_.size(); ++i) rec_[i] = {rounds[i], has_weapon[i] != 0};
+    ammo_ = ammo;
+    current_ = current;
+    clip_mirror_ = clip_mirror;
+    reserve_mirror_ = reserve_mirror;
+}
+
 bool BotArmoury::has_weapon(int id) const {
     return id >= 0 && id < weap::kSlots && rec_[std::size_t(id)].has;
 }

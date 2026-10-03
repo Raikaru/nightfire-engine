@@ -133,7 +133,8 @@ Offsets in bytes; “use” cites the function that proves it.
 | +68 | u16 | frames after the fire animation starts before the bullet spawns (0 = immediately) | `Player_WeaponFiring`, `Player_SetWeaponAnimObj` state 9/12 |
 | +72 | u32 | anim hash (aux) | |
 | +76 | u32 | anim hash (aux) | |
-| +80..+83 | u8[4] | crosshair/HUD colour bytes **[INFERENCE]** | |
+| +80 | u8 | animation bone id for `AnimDatumGetWeaponInfo` / `AnimGetBoneWorldTrans` during `DroneWeap_DropWeapon` (`0xFF` falls back to bone 0) | `DroneWeap_DropWeapon` |
+| +81..+83 | u8[3] | crosshair/HUD colour bytes **[INFERENCE]** | |
 | +84,+85,+86 | u8 | muzzle-flash light colour **B,G,R** (`Light_Create(pos,R=+86,G=+85,B=+84,…)`) | `Player_MuzzleFlash`, `Bullet_update` (F2&0x2000) |
 | +88 | f32 | 7.0 (default) / 6.0 / 5.0 / 8.0 — unread in examined functions | **unknown** |
 | +92 | u32 | projectile model gfx hash (0xFFFFFFFF/0 = none) | `Bullet_update` default branch |
@@ -228,6 +229,7 @@ Names below are resolved from `USATxt.dat` (see §3.4).
 * `Player_EquipWeapon(w, n)` – ignored unless the weapon's model gfx (`def[+220]`) is loaded (`hashtable_getitem`). SP: `w = Upgrade_Weapon(w)`; (weapon 51 also clears `BLData+646`). If already owned: `pool[ammo] += n` when pool<max and n!=0 (clamped to `ammo_data.max`). If new: `owned=1`, `clip = clipSize`, remainder `n - clipSize` (if >0) goes to the pool, then pool is clamped to max. If `PlayerSetting[344*pad+10]` (auto-switch) and `Player_IsBetterWeapon(w)`, `selected = w`. Weapon 82 additionally zeroes `BLData+1438` and redirects selected 83→82.
 * `Player_EquipAmmo(a, n)` – ammo-only pickup for id `a` (31 → `Upgrade_Weapon(30)+1`; 37 → `Upgrade_Weapon(36)+1`): if pool<max and n!=0: for clip-type guns (F1&0x10) with empty clip the clip is filled first (`min(n, clipSize)`) then the rest goes to the pool; result clamped to `ammo_data.max`.
 * `Player_HandleHasNoAmmo` – called when a shot cannot be paid: current id <52 (except 1 and <50): F1&0x10 weapons try the variant `id + def[+5]`, else `Player_GetBestWeapon`; id 82: if `BLData+1424 <= 0` → `+1426=0`, `EquipWeapon(83,999)`, select 83; else select 82; ids ≥74 & <82 → switch as for guns.
+* `Player_Update` clip recharge – except while the weapon animation object is in state 9 (Firing), clips below `def[+146]` gain `FRAME_RATE_MUL`: ids 74, 78 on `GameState+0x34 % 4 == 0`; ids 76, 79 on `% 2 == 0`; id 69 on `% 6 == 0`; id 51 on `% 4 == 0`. The increment is not clamped after addition.
 * `Player_GetBestWeapon` – walks `BestWeapon` (18 × u16 @ **0x2BEDE0**) `[66,50,26,24,28,22,21,8,16,14,13,12,18,6,4,2,10,1]` in order and selects the first owned entry whose (id + `+444` upgrade offset; 26 stays 26) `Player_WeaponHasAmmo`.
 * `Player_IsBetterWeapon(cur, cand)` – index of the base ids in `BestWeapon`; better if `idx(cand) < idx(cur)` and both are listed; weapons 74–94 (gadgets) are never replaced automatically.
 
@@ -773,7 +775,9 @@ Driven every frame by `Player_SetWeaponAnimObj` (called from `Player_WeaponRecoi
 | 15 | AIM_IN | on stop: `flags|=1` (aiming), state 0, idle phase 1 |
 | 16 | AIM_OUT | on stop: state 0, idle phase 1 |
 
-Gun position each frame: `weapon obj pos += recoil vec (a2) ` plus offsets `def[+224..232]` (SP hip) blended toward `def[+236..244]` by `BLData+2316*2.2222223` while aiming; MP uses index `12*1` (second vector); final `y += 0.2`, `z -= 0.5`.
+Gun position each frame: `weapon obj pos += recoil vec (a2)` plus offsets `def[+224..232]` (SP hip) blended toward `def[+236..244]` by `BLData+2316*2.2222223` while aiming; MP uses index `12*1` (second vector). `Player_PositionGun` transforms the local object offset, then adds `(0,-0.2,+0.5)` in object space to compute the rendered world position (`obj+0xC0`).
+The camera-relative gun placement keeps the weapon-table z sign: Skyrail MP slot 10 (frame 34999) gives `(P+0xC0) - viewer+0x120 translation = (+0.1996,+0.0854,-0.8807)` world units, which projects to approximately `(+0.0278,+0.0854,-0.9026)` on the player's right/up/forward axes. Do not negate this negative forward offset when placing the first-person rig.
+The first-person renderer uses the player's right/up/forward axes for both the gun offset and weapon-rig basis. When the rig has paired arm branches, it keeps the branch owning the rigid weapon parts and suppresses the other branch; rigs without rigid parts keep the right-hand branch.
 
 ### 6.2 `Player_Weapon` (per frame, 0x1A24C8)
 1. `obj+250 |= 0x20`.
@@ -897,6 +901,8 @@ poses. `LightStart` (00 ff 01 18) creates a red `(255,2,3)` light, radius `3 × 
 MP draws nothing (spec-gated). Debris kind defaults 0 (none), matching every observed weapon/mine
 caller (vehicles use 6); metal/stone tables from the ELF rodata (`0x02000414..1B`, `0x02000664..66`).
 All effect scatter (`jitter`) draws `game_rng`.
+`CutsceneBin` stores non-owning `Bytes` spans into its source; `WeaponEffects` keeps each script entry's bytes alongside the parsed bin
+for the full playback lifetime, rather than retaining views into a temporary archive read.
 * `Explode_CollisionHandler` (0x17CDE0): first tick only (`+58==0`): set 1 and call `Explode_Propagate(pos, cel, source, radius, damage)`.
 * `Explode_Propagate` (0x17C518): `Collide_SphereIntersect(pos, radius, cel, …, flags 192, 4)`; for every non-deleted object `dmg_i = damage * (1 − max(dist(obj+128, pos),0)/radius)`, ignored if `< 0.00019999999` (obj+128 is the eye for players: measured bit-equal to +0x70 in a slot-2 Skyrail savestate). By `obj+255` type:
   0 → Copter body: add `dmg_i` to `Copter+100` and `+108`; 2 → `Drone_ExplosiveHit(obj, {dmg_i, radius, source})`; 3 → `Player_Hurt(obj, dmg_i, pos)` (→ `Player_HandlePain` type 0; in MP with damage ≤0 also registers the hit); 5 → other projectiles of weapon ids 43, 52–55, 58 are detonated (`Bullet_handle_object_destruction`); 0x20 → `Break_ApplyDamage` (`breakable.hp −= dmg`, `Break_Kill` when <0); 0x21 → `Destroy_Smash` when `dmg_i ≥ 1.0` and not flagged; 0x28 → `+248 += dmg_i`; 0x35 → `MP_ApplyDamage`; 0x36 → `GT_ApplyDamage` (`hp −= dmg`) + `GT_Disable`; 0x37 `Sensor_ApplyDamage`; 0x38 `Monitor_ApplyDamage`; 0x3D (74) `Sub_ApplyDammage`; 0x4B → hit list entry with `+8 = dmg_i`.

@@ -99,6 +99,12 @@ void DroneBotBody::impact_reaction(int) {
     // 0xef..0xf1 are never entered by bots); the damage, stun timer and distraction are handled by BotBrain.
 }
 
+void DroneBotBody::drop_weapon() {
+    if (!d_ || d_->weapon_dropped) return;
+    d_->weapon_dropped = true;
+    if (drop_weapon_) drop_weapon_(*d_);
+}
+
 void DroneBotBody::location_death_anim(int end_state) {
     // DroneAnim_LocationDeathAnim: head shots and body shots have their own clips.
     const int dasc = d_->head_shot ? drone::kDeathHead : drone::kDeath;

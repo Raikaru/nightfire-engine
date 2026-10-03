@@ -71,7 +71,7 @@ public:
         float age = 0, life = 60;
     };
     void set_level(Level* level);  // model lookup by hash for script entities + debris
-    void set_explosion_script(std::uint32_t hash, CutsceneBin bin);
+    void set_explosion_script(std::uint32_t hash, Bytes data);
     void set_multiplayer(bool mp) { is_mp_ = mp; }  // gates SP-only debris RNG
     // Entity + debris instances for the session's draw_objects call (LevelRenderer::ObjectDraw).
     std::vector<LevelRenderer::ObjectDraw> take_blast_draws();
@@ -95,7 +95,11 @@ public:
     // Live script playbacks keyed by blast (capped; oldest dropped).
     struct Playback;
     std::vector<std::unique_ptr<Playback>> playbacks_;
-    std::map<std::uint32_t, CutsceneBin> fx_bins_;
+    struct StoredExplosionScript {
+        std::vector<std::uint8_t> bytes;
+        CutsceneBin bin;
+    };
+    std::map<std::uint32_t, StoredExplosionScript> fx_bins_;
     std::map<std::uint32_t, std::pair<std::size_t, std::size_t>> model_cache_;
     bool is_mp_ = false;
     void start_playback(const ExplosionEvent& x);

@@ -18,6 +18,8 @@ struct MatchLaunch {
     long frames = -1;                             // --frames N: scripted length without input files
     std::array<std::string, 4> inputs;            // --inputs, --inputs2 .. --inputs4: scripted pads per player
     std::string mp_trace;                     // --mp-trace out.jsonl: per-frame oracle-comparable state dump
+    std::string mp_seed;                         // --mp-seed recording.jsonl:frame
+    bool mp_seed_each = false;                   // --mp-seed-each: reseed one step at a time
     bool collision_wireframe = false;
     // MP bots (--bots N is in `options`): --bot-char a,b,c, --bot-log, --bot-log-states.
     std::string bot_characters;

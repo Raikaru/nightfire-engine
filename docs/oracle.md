@@ -12,12 +12,18 @@ read its memory over PINE and drive it with a virtual pad.
   `QT_QPA_PLATFORM=xcb pcsx2.AppImage -fastboot -- "007 - Nightfire (USA).iso"`
 - PINE socket: `$XDG_RUNTIME_DIR/pcsx2.sock`. It serves **one client at a time**; close other
   connections before running a tool.
+- MemoryCard Slot 2 is enabled as `Mcd002.ps2` and currently contains the
+  supplied BIGG card (`~/Projects/nightfire-data/saves/all.ps2`, MD5
+  `65e37c4ffcf2ca067223308a4ef1992c`). Slot 1 remains separate.
 
 ## Tools
 
 - `pine.py`: PINE client (batched reads, writes, savestate slots, game id, status).
 - `vpad.py`: uinput Xbox 360 pad served on `$XDG_RUNTIME_DIR/nf-vpad.sock`
   (`press cross 300`, `axis LY -1`, `release`, ...). Menus need ~1.5 s between presses.
+  Start with `--dual` to create Pad2 as a second SDL device; bind it to PCSX2 Pad2
+  (`SDL-1`) and prefix its socket commands with `p2` (for example `p2 press cross 400`).
+  `mp_scenario.py --second-human` joins that Pad2 at the P_MPJOIN screen; the default remains Pad1-only.
 - `trace.py out.jsonl [--frames N] [--load-slot 2] [--script scenario.txt]`: logs player state and the pad
   input the game saw once per logic frame, optionally loading a savestate and driving vpad from a frame-timed
   script (`tools/oracle/scenarios/`).
@@ -62,6 +68,10 @@ Fresh memory card: Title -> Start boots straight into Paris Prelude. Pause -> Qu
 -> Multiplayer -> join (Cross x2) -> Arena -> map -> character -> handicap -> add 1 bot
 (AI Bots -> Setup Bot 1 -> Snow Guard -> Playing: Yes) -> Continue -> Start Game.
 PINE savestate slot 1 = main menu, slot 2 = Skyrail arena spawn.
+
+`tools/oracle/mp_scenario.py` automates this path; on a slow EE interpreter,
+use `--press-ms 2000 --nav-ms 800`, and allow `--live-timeout` (default 120 s)
+for the level load to produce a player object.
 
 ### Unlocking all missions (PINE, at the main menu)
 
@@ -191,49 +201,435 @@ Tools: `tools/oracle/mp_addrs.py` (address map, single source of truth),
 `mp_record.py` (per-logic-frame match recorder -> JSONL),
 `mp_compare.py` (`summary`/`determinism`/`diff`),
 `mp_scenario.py` (scripted menu setup: slot 1 main menu -> configured match).
-Engine side: `src/game/mp_trace.{hpp,cpp}` (per-frame JSONL emitter in the
-recorder's vocabulary; `nfgame --mp --mp-trace out.jsonl`), diffed with
-`mp_compare.py diff` (synced: same seed/inputs; lockstep: divergence frame +
-first field). PINE savestate slots 10+ belong to the MP oracle (1-9 are
-Movement-2's); named match-start states are also copied under
-`~/.cache/mp-oracle-tmp/sstates/`.
+`mp_record.py` includes human-only `damage_flash` (BLData+0x8BC),
+`fade_total`/`fade_timer` (+0x918/+0x91C), `fade_colour` (+0x963),
+`pain_dir` (+0x967), and `pain_alpha` (+0x968). The fade timer and total
+encode the flash-bang hold/fade; the color byte is not an intensity value.
+These offsets are derived from ACTION.ELF pseudocode/disassembly and are not
+yet live-probed; bot hit-zone and flash fields are not mapped.
+
+Use `python3 tools/oracle/mp_record.py OUT.jsonl --load-slot SLOT --seedable
+--frames N` for a seedable per-logic-frame capture. Seedable reads batch their
+ranges with duplicated `GS_DONE`/`GS_FRAME_START` counters and accepts the
+sample only when each counter is unchanged across the batched read; no fixed
+offset between them is assumed. Each accepted row carries `seed_version: 2`,
+four RNG words, four controller inputs (`pad_all`), MP settings/game state,
+the eight `mp_roster` records, indexed `pk[]` pickup records, every objective
+extension blob (`objx`), and `objectives[]` records resolved from
+`MP_OBJ_EXT+0x84` back-pointers (`MPOBJECT* - 0xE0` gives the root object).
+Pickup rows include position, state, category/item, amount, timestamp, lifetime
+countdown and radar-hidden state. The root `assassin`, `target` and
+`golden_target` fields are participant-slot indices (or `-1`); corresponding
+raw pointer values are retained as `assassin_ptr`, `target_ptr`, and
+`golden_target_ptr`. `golden_effect_handle` and `golden_effect_active` expose
+the GoldenEye effect actor; no remaining-effect tick value is mapped.
+
+For frame-keyed P2S anchors, pass `--checkpoint-dir DIR` (default interval 60
+logic frames; `--checkpoint-every N` changes it). The recorder accepts a
+snapshot only when the duplicated `GS_DONE` and `GS_FRAME_START` values match
+at both ends of the batched read; no fixed relationship between these counters
+is assumed. For each checkpoint it waits for both values to remain unchanged
+within one PINE transaction, saves the temporary `--checkpoint-slot` (default
+250), then copies PCSX2's game-ID/slot `.p2s` into `DIR/frame-<sample>.p2s`
+with a JSON sidecar containing requested/sample frames and counter values
+before and after the PINE save. Reserve that PINE slot: each checkpoint
+overwrites it. The counters locate the save relative to recorded rows; they do
+not claim that the asynchronous file was copied while the game was paused.
+Example:
+
+```sh
+python3 tools/oracle/mp_record.py match.jsonl --load-slot 12 --frames 1800 \
+  --seedable --rng-calls --checkpoint-dir ~/.cache/mp-oracle-tmp/checkpoints
+```
+
+`--rng-calls` temporarily hooks `Rand_Random`, `Rand_Rand`, `Rand_FRand`, and
+`Rand_FRand_MVar2`. Each row's `rng_calls[]` records the sampled frame, function,
+caller return address and result bits; `rng_trace` reports ring overflow and
+lost-event counts for the 1024-entry EE RAM ring. This was smoke-verified on a
+live match with the EE interpreter enabled (`EnableEE=false`). The previous
+EE-recompiler attempt faulted in `recRecompile`, so do not use that mode for
+this hook instrumentation.
+
+The sampled source paths are distinct: `Env_Update` calls `Rand_Rand(20000)`
+once per live-world frame before player updates; `Player_Update` decrements
+`BLData+0x93C` as a 16-bit value, then calls `Rand_Random` when the signed
+result is nonpositive and stores `0xFF + (result & 0x3FF)`; the observed MP
+`Player_LaserPointer` branch calls `Rand_Rand(9)` for a sighted weapon after
+bot updates. The engine imports the timer and mirrors these call kinds/ranges.
+Its 418-frame seed-each replay confirms the Env_Update and timer results and
+defers MP sight RNG until after bot systems; full sequence parity remains
+pending bot-caller reconciliation.
+The raw roster spans `MPSettings+0x00..0x17F`; typed records include name
+bytes, team, character, HUD and handicap. Participant slots include raw `obj`
+bytes; human slots include raw `BLData` and collision-body bytes, while bot
+slots include raw `Drone` and `BOT_vars` bytes. Each objective record includes
+the full 0x138-byte object, kind/team/timer/carrier slot/state/substate/flags, both
+position candidates (`obj+0x30` and `obj+0x40`), yaw, draw-view mask,
+last-damager and capturer fields; kinds 3/8 retain a candidate signed value at
+`+0xF4` without asserting it is target HP. Both position vectors are retained
+because their meanings vary by object kind. Object reads are counter-bracketed
+with the frame snapshot.
+`--weapon-anim-raw` optionally follows each human's `BLData+0x7E8` pointer and
+adds the 0x100-byte `weapon_anim_raw` object to `pl[]` only when its
+frame-counter-bracketed read stays on the sampled logic frame. This is an
+opt-in research field and is not required for `seed_ready`.
+Bot snapshots also emit `bot_goal_targets[]` per bot and goal slot. Goal target
+addresses on a `MPpickups` record boundary (`0x2A4B50`, 64 entries, stride
+`0xA0`) carry the stable `pickup_index`; `pk[]` supplies the typed pickup
+state. The complete 0xA0-byte `target_record_raw` is included when sampled.
+Participant and objective pointers carry their corresponding slot/index (their
+raw objects are in the same row). For a changed pickup pointer, the recorder
+re-reads the target and frame counters; that raw record is included only if the
+read remains on the sampled frame. The pointer/index comes from the coherent
+BOT_vars sample even when the supplemental raw read is unavailable.
+
+`seed_ready` requires a coherent per-frame sample, roster, participant and
+pickup records, objective blobs and object records, and stable projectile data;
+it certifies sampling coverage only, not that every record is supported by the
+engine importer or that the full PS2 state is mapped.
+
+Projectile objects are enumerated from the head at `DynamicObjList+0x14`
+(global `0x2705A0`): each type-5 node's full 0x100-byte object and 0x108-byte
+`obj+0xE0` are captured with typed pose, owner/target, weapon-definition index,
+direction, travel, speed, timer, bounce, and in-air fields. Newly prepended
+nodes are discovered after the coherent snapshot. The recorder reads their
+object/payload records and rechecks the list head and frame counters; if the
+sample remains on the same frame, the new projectile is included in that row.
+A changing head, unstable counter, or invalid object marks `projectiles` in
+`state_missing` and `projectiles_available=false`; the next coherent sample
+can then carry the complete object.
+The linked-list walk rejects out-of-range or misaligned node pointers before a
+PINE read. When a torn link invalidates a scan, that row is unavailable and the
+recorder clears its node cache and retries from the current list head; a valid
+later scan can resume full projectile coverage.
+
+`autolock_target_ptr` is sampled from human BLData `+0x114` (the object pointer
+compared by `Player_AutoAim` / `Check_AutoAim`; a live idle read was null).
+Transient hit-zone feedback remains unavailable. Regular recordings sample
+objective blobs every `--full-every N` frames; `--seedable` requests them and
+live objective object snapshots every accepted logic frame.
+
+`seed_ready` also requires complete pickup identity/state/item/amount/lifetime
+fields, unique pickup indices in the importer’s range, timestamps within the
+selected frame, and resolvable owner-slot/weapon references for every live
+projectile. This prevents incomplete records from being advertised as importable
+seeds.
+
+PINE does not halt the game while reading. `--frames N` is the logic-frame span,
+not a guaranteed row count; the recorder writes only coherent sampled frames and
+reports gaps as `missed`. For example, the verified Skyrail Arena seedable
+segment contains 293 rows across a 604-frame span (311 missed); never treat
+ordinal row numbers as logic-frame alignment when `frame` values differ.
+Engine side: `src/game/mp_trace.{hpp,cpp}` emits one engine-state JSONL line
+per tick via `nfgame --mp --mp-trace out.jsonl`. The trace carries elapsed and
+total time, configured time limit and time remaining, mode/map/score-limit/
+weapon-set metadata, phase and raw match state code, team/participant scores
+and MP status bits, assassin/target and GoldenEye strike clock, per-slot
+respawn countdowns, controller pads/action values/flags, human position,
+velocity/substate/health/armour/weapon inventories and timers, bot movement
+state, live/waiting pickups, ordered objective state, live engine projectiles,
+and per-draw RNG call kind/caller source location/result bits with overflow
+counts.
+schema-v2 row, configures the map/mode/roster/options, restores the supported
+player, bot, score, pickup, objective and projectile fields. It supplies
+recorded controller pads for successive absolute frames and rejects missing or
+non-contiguous pad rows and unsupported active bot/projectile references rather
+than silently inventing state. Stale non-participant pointers in the bot history
+ring are discarded. `--mp-seed-each` re-restores each sampled pre-tick frame
+before applying that frame's next-row input; otherwise the engine advances from
+the first imported row.
+
+For a synchronized one-tick comparison, choose a `seed_ready` row `N` whose
+next absolute frame is also recorded contiguously:
+
+```sh
+nfgame <gamedir> --mp-seed oracle.jsonl:N --mp-seed-each --frames 1 --mp-trace synced.jsonl
+python3 tools/oracle/mp_compare.py diff oracle.jsonl synced.jsonl
+```
+
+For a free-run/lockstep window, seed only the first pre-tick state and advance
+with the recorded controller inputs:
+
+```sh
+nfgame <gamedir> --mp-seed oracle.jsonl:N --frames M --mp-trace lockstep.jsonl
+python3 tools/oracle/mp_compare.py diff oracle.jsonl lockstep.jsonl
+```
+
+Both runs require contiguous absolute-frame `pad_all` rows through `N+M`;
+`--mp-seed-each` additionally reimports every pre-tick state, while free-run
+imports only frame `N` and exercises the engine's intervening simulation.
+
+Recorded Skyrail comparisons (outputs in `~/.cache/mp-oracle-tmp/engine-traces/`):
+
+| Mode | Seed frame | Synchronized one-tick result | Four-tick free-run result |
+| --- | ---: | --- | --- |
+| Arena | 34999 | 47 divergent fields at 35000; first `pk[0].stamp` (34570 vs 0) | 4/4 frames diverged; 45–47 fields per frame |
+| Team Arena | 36082 | 48 divergent fields at 36083; first `pk[0].stamp` (34926 vs 0) | 4/4 frames diverged; 48–51 fields per frame |
+| CTF | 28000 | 55 divergent fields at 28001; first objective position `[0]` (3.277029 vs 2.925545) | 4/4 frames diverged; 55–56 fields per frame |
+| Demolition | 15344 | 44 divergent fields at 15345; first objective position `[1]` (30.953730 vs 29.678719) | 4/4 frames diverged; 44–46 fields per frame |
+
+Oracle sources are `mp-skyrail-arena3bot-seedable-v5.jsonl` (sync) and
+`mp-skyrail-arena3bot-seedable-v4.jsonl` (free-run), plus the corresponding
+`mp-skyrail-{teamarena,ctf,demolition}-seedable-v5.jsonl` files. Engine traces
+are `arena-synced-1.jsonl`, `arena-lockstep.jsonl`, and `{team,ctf,demolition}-{sync,lockstep}.jsonl`.
+
+These are comparison samples, not correctness claims: all four windows diverge
+under the current importer/engine. The source recordings do not include aligned
+per-call `rng_calls`, so this run cannot attribute RNG stream divergence.
+
+This is partial state restoration, not a claim of complete PS2 lockstep. The
+oracle schema still marks `state_complete=false`. The importer restores human
+current/selected weapon ids from `cb_raw+0x62/+0x63` and reconstructs dynamic
+dropped weapon pickups from their indexed `pk[]` position, item, amount,
+timestamp, lifetime and radar-hidden state. Natural drops use a 30-second
+lifetime (`30 * rate` logic frames; 1800 frames at rate 60) and floor-snap
+their position within 1.0 world unit; seed restores retain the captured PINE
+position without re-snapping.
+Human death drops approximate `Player_PositionGun`'s origin using the head
+position, camera-basis offset `(0,-0.2,0.5)`, and the translation of
+`CharacterInstance::bone_world(0)` when available. nfmips exercised the PS2
+function's transform with a synthetic nonzero `sAnimObject+0x30` translation;
+the engine root-bone mapping to source `sAnimObject+0x30/+0x50` remains
+unverified, as does full live pickup-position parity pending a PCSX2 death/drop
+sample.
+AIMS-20 deaths also create pickup item 27 as radar-hidden secondary ammunition.
+Bot death-drop origins use weapon_data[weapon_id]+0x50
+as the animation bone id (0xFF selects bone 0), transform it to world space,
+and fall back to obj+0x30 when the 0x125 collision ray is blocked. The pickup
+factory still floor-snaps within 1.0 world unit; source-origin parity has not
+yet been compared against a seeded PINE drop. Transient hit-zone feedback and
+some bot runtime/navigation state or non-participant target references remain unmapped.
+One-frame seed-each replay from 34999 to 35000 restored held weapon 6, but
+weapon-slot clips 78/79 were one low (engine 115/229; PINE 116/230). Frame
+34999 had fire input zero, and the importer reads each clip from
+`bl_raw+440+12*weapon`; nfmips `Player_RoundToFire(weapon 6)` decremented
+only slot 6, leaving 78/79 unchanged. This rules out firing-phase timing and
+an import-offset error; the separate source update path remains unidentified.
+Those gaps can reject a row or cause observable next-tick drift. `--mp-rng X Y`
+sets only the engine's two RNG words; it does not import the other words or the
+game state.
+The seed importer maps `MPGame+0x194` directly to seconds; the PINE field is
+already seconds (for example, 600 for a ten-minute match), not minutes.
+When a seed is restored, the importer applies the captured `ArenaSeedSnapshot`
+to the live arena before replay: match phase/clocks, team and participant
+scores, respawn delay, objective state/timers/positions, pickup state/timers,
+and mode-specific target state. The source `MPGame+0x190` elapsed clock is
+restored directly; seeded traces can therefore be compared at the recorded
+absolute frames instead of restarting the match clock at zero.
+
+
+`mp_compare.py diff` aligns records by exact absolute `frame` values and
+reports every differing field, per-frame residuals and the first divergence.
+The comparator matches oracle `objectives[]` and engine `objs[]` by
+`(kind, team, occurrence)` rather than array/address order. It compares
+state/timer/carrier/damager/capturer fields and uses oracle `pos_0x40` for
+kinds 0, 1 and 3; it does not compare unverified target HP or draw masks.
+Projectile comparison inverts engine `resting` to oracle `in_air`; it omits
+oracle object yaw because the engine projectile state exposes direction instead.
+PINE savestate slots 10+ belong to the MP oracle (1-9 are Movement-2's); the
+slot number is stored by PCSX2, and JSONL recordings/logs are kept in
+`~/.cache/mp-oracle-tmp/`.
 
 ### MP address map (ACTION.ELF USA, all verified live over PINE 2026-10-02 unless noted)
 
 | Area | Address | Notes |
 |------|---------|-------|
-| `GameState` | `0x2A3768` | `+0x30` end / `+0x34` frame / `+0x3C` start counters; torn guard: `+0x30 == +0x34-1 == +0x3C-1` |
+| `GameState` | `0x2A3768` | `+0x30` `GS_DONE`; `+0x3C` `GS_FRAME_START` is the MP JSONL frame key. A live probe saw `GS_DONE` 6–7 behind `GS_FRAME_START`; `+0x34` is a distinct counter and diverged further. MP sampling brackets both counters and does not assume `GS_DONE == GS_FRAME_START-1`. |
 | RNG | `0x30D0A0` | 4 words `X Y +8 +0xC`; integer paths bit-exact vs `src/core/rng.hpp` |
-| `MPSettings` | `0x2A47A0` | 0x1dc; `+0x180` active, `+0x18c` teams, `+0x190` objective, `+0x194` participants, `+0x198` FF, `+0x19c` score limit, `+0x1a0` time min, `+0x1a4` scenario mask, `+0x1a8` map, `+0x1ac` humans, `+0x1b0` bots, `+0x1b4` weapon set, `+0x1d8` u16 pickup count |
+| `MPSettings` | `0x2A47A0` | 8 roster slots at `+0x000..+0x17F` (8 x 0x30: name[0x20], team +0x20, character +0x24, HUD +0x28, handicap +0x2c); `+0x180` active, `+0x18c` teams, `+0x190` objective, `+0x194` participants, `+0x198` FF, `+0x19c` score limit, `+0x1a0` time min, `+0x1a4` scenario mask, `+0x1a8` map, `+0x1ac` humans, `+0x1b0` bots, `+0x1b4` weapon set, `+0x1d8` u16 pickup count |
 | `MPGame` | `0x2A4980` | 8 x 0x30 slots: `+0x04` kills, `+0x08` deaths, `+0x10` streak, `+0x18` float points, `+0x1c` obj*, `+0x20` last attacker, `+0x22` FF cooldown, `+0x26` status, `+0x28` last killer; globals `+0x180/184` team scores, `+0x188` state (0 run 1 score 2 time 3 hold 4 results 5 idle 6 restart), `+0x18c` best, `+0x190` elapsed s, `+0x194` limit s, `+0x19c` total s |
 | `glb_players` | `0x2D88E0` | human obj* x4 |
-| obj | dynamic | `+0x30` pos, `+0x54` yaw (fwd `(sin,0,cos)`), `+0xDC` collbody*, `+0xE0` BLData*/PICKUPINFO*, `+0xEC` stamp, `+0xF4` u16 state (humans: 1 alive; bots: drone state id), `+0xFF` type (2 bot 3 human 0x11/0x12 dead 0x2f pickup) |
+| obj | dynamic | `+0x30` pos, `+0x54` yaw (fwd `(sin,0,cos)`), `+0xDC` collbody*, `+0xE0` BLData*/PICKUPINFO*, `+0xEC` stamp, `+0xF4` u16 state (humans: 1 alive; bots: drone state id), `+0xFF` type (2 bot / 3 human; 0x11 eliminated bot / 0x12 eliminated human; 0x2f pickup) |
+| `DynamicObjList` | `0x2705A0` (IDA-linked; head and 135-node list live-probed) | `+0x14` head; nodes link through obj `+0x14`, prev at `+0x18`; bullets are type `5`, with `BU_tag*` at obj `+0xE0`; raw payload is `0x108` bytes through BU `+0x104`. The recorder emits live bullet pose/state, owner/target, def index, velocity/timer fields and raw bytes. |
 | BLData (human) | obj+0xE0 | `+0x894` health, `+0x8B0` armour, `+0x8A8` pitch (pi/2 units) |
-| collbody (human) | obj+0xDC | `+0x96` aim bit, `+0x98` s8 weapon id, `+0xCC` foot height |
+| BLData feedback / target | human BLData | `+0x8BC` damage flash, `+0x918/+0x91C` flash-bang total/timer, `+0x963` flash color, `+0x967` pain direction, `+0x968` HUD pain alpha; `+0x114` current autoaim object pointer (`Player_AutoAim`/`Check_AutoAim`, PINE sampled null) |
+| `WeaponData` | `0x2BF150` | 115 `weapon_definition_tag` records, stride `0x10C`; bullet def pointers map to row index for the JSON `weapon_id`. |
+| collbody (human) | obj+0xDC | `+0x96` aim bit, `+0x98` 4-byte pointer-looking value (not a weapon ID; target type unidentified), `+0xCC` foot height |
 | `BOT_vars` | `0x26D660` | 4 x 0x780 (slot-4): `+0x000` 2 x 0x50 goals, `+0x0B0` 8 x 0x10 other-cache, `+0x140` 0x55 x 0xC weapons (clip u16 +4, has u8 +6), `+0x698` 0x21 u16 reserves, `+0x728` distraction, `+0x750` MPSettings ptr, `+0x754` Drone*, `+0x760` nav node, `+0x765` goal slot, `+0x766` state type, `+0x768` weapon, `+0x769` armour, `+0x76b` trait target |
 | Drone (bot) | via BOT_vars+0x754 | `+0xAC` health f32, `+0x150` last damage, `+0xD1C` BOT_vars back-ptr; obj+0xF4 mirrors the state id (0xDB step, 0xD7/0xD5 strafes, 0xEB goto, ...) |
-| `MPpickups` | `0x2A4B50` | 64 x 0xA0: obj* +0, pos vec4 +0x10; PICKUPINFO = *(obj+0xE0): `+0x20` s16 state (0/1/2), `+0x22` cat, `+0x24` item, `+0x2E` respawn, `+0x30` index |
+| `MPpickups` | `0x2A4B50` | 64 x 0xA0: obj* +0, pos vec4 +0x10; `PICKUPINFO = *(obj+0xE0)`: `+0x20` s16 state (0/1/2), `+0x22` category, `+0x24` item, `+0x26` u16 amount, `+0x2C` respawn units (10 s each), `+0x2E` dropped-item lifetime frames, `+0x30` index; `obj+0xF0` flag `0x10` is the recorder's `radar_hidden`. |
 | objective exts | `0x317210`.. | Flags/Bases/Uplinks/Demolition/Protection/GoldenEye/BluePrint/EsponageBase/Hill blobs (spec 1B); `switch_channels` `0x26FD8D` (score) / `0x8E` (time) |
+| Assassination globals | `0x30D770` / `0x30D774` | `Target` / `Assassin` player object pointers (first is ELF symbol `Assasin`; second is the adjacent word); recorder resolves pointers against the eight `MPGame` slot objects. |
+| GoldenEye strike globals | `0x318110` / `0x3181A0` | `GoldenEye[2]` effect handle / `GoldenEye[3]` target object pointer; recorder emits the effect handle/active bit and resolves target slot. The effect's remaining tick count is not a standalone mapped field. |
 | `menu_unlock_everything` | `0x30D2A7` | u8 cheat: bypasses scenario row checks (grey display, working select) |
+
+### Engine bot snapshot restore
+
+`BotSystem::restore_snapshot` accepts exactly the seedable recorder's `obj`
+(0x100), Drone (0xD20), and `BOT_vars` (0x780) byte blobs for a spawned slot
+4..7 plus the eight source-frame participant object addresses. Callers may
+also pass semantic target IDs for goal pointers resolved by the JSON decoder.
+It returns a structured status and a source-blob offset; it never stores an EE
+address in an engine pointer. Wrong slots/sizes and unsupported references/state
+checks leave the bot unchanged.
+
+Supported object values are pos/yaw (`obj+0x30/+0x54`) and object type
+(`+0xFF`); object state `+0xF4` must mirror Drone state `+0x10C`, and the Drone
+identity is cross-checked (`obj+0xE0 == BOT_vars+0x754`). These values are
+validated before mutation.
+The active state must be in the bot state table (`0xC3..0xF9`); positive
+previous/next/saved/return states must also resolve through that table.
+Drone values are state machine `cur/prev/next/saved/entry_time/pending/result`
+(`+0x10C..+0x124`), health/max health (`+0xAC/+0xB0`), last damage/modifier,
+combat stats/channels (`+0x100`, `+0x134..+0x137`, `+0x150`, `+0x1D8`,
+`+0x2B4`), type/mode/class/state/script (`+0x44`, `+0xC4..+0xDA`,
+`+0x138..+0x13A`, `+0x554`, `+0x5A0..+0x5A4`), both behavior words and active
+behavior (`+0x4D8..+0x4F3`), flags (`+0x228/+0x4F8/+0x4FC`), and the
+participant opponent object pointer (`+0x170`), remapped to a participant slot.
+The active-behavior pointer must be exactly `Drone+0x4DC` or `Drone+0x4E8`.
+Firing/weapon booleans (`+0x20/+0x21`, `+0x3B..+0x42`) and seen/lost frame
+counters (`+0x270/+0x274`) are imported as behavior state.
+
+Supported `BOT_vars` values are the two goals (`+0x000..+0x09B`, excluding
+raw `CelPos.cel` identity), stats/max health (`+0x0A0..+0x0AD`), eight
+participant perception-cache records (`+0x0B0..+0x12F`), prior opponent
+position (`+0x130`), each weapon record at `+0x140+i*0x0C`'s clip/held
+values (`+4 u16/+6 u8`), reserves (`+0x698..+0x6D9`), history
+ring/head (`+0x6DC..+0x71B`, `+0x76C`), combat ranges (`+0x71C..+0x727`),
+scalar timers/state fields (`+0x728..+0x738` and `+0x740..+0x74C`),
+participant friend pointer (`+0x758`), and these status fields: slot/index
+(`+0x75C/+0x75E`), state override and character/goal/state selectors
+(`+0x762..+0x767`), current weapon/armour/desired weapon/trait
+(`+0x768..+0x76B`), and route/pickup/alert/target/zone fields
+(`+0x76D..+0x771`). The sound handle at `+0x73C`, nav node at `+0x760`, and
+the weapon record range floats (`+0x140` record starts, stride 0xC) are not
+imported. Zero and `0xff` history/target/friend pointers map to `-1`; opponent
+and friend pointers must match a participant address. History keeps only
+references matching a current participant; unknown entries map to `-1` because
+the ring only biases current participant candidates.
+Goal pointers resolve by the same rule unless a higher-level decoder supplies
+a semantic pickup index, objective ID, or participant slot for that goal. An
+unresolved nonparticipant goal target returns `UnsupportedPointer` with its
+`BOT_vars` offset.
+
+The current weapon ID is restored to both `BotArmoury::current()` and
+`Drone::weapon` from `BOT_vars+0x768`. The raw Drone `+0xC58` u32 is not used as a mirror check:
+all 435 slot-4 rows in the v2 Skyrail capture agreed, but v5 CTF/Silo rows
+showed zero with `BOT_vars+0x768` values 6/44.
+`Drone+0xBBC/+0xBBE` clip/reserve mirrors restore into `BotArmoury`. The
+host's initialized start weapon and resource-loaded callback remain unchanged.
+
+External nav/route and animation state, opaque `Drone+0x12C` state-machine
+arguments, runtime pointers/hooks, and character, weapon, and nav resources
+are not imported; they remain as initialized on the host bot. Fields not
+listed above are also left unchanged. Callers must not treat this subset
+restore as complete match-state seeding where those values affect the
+comparison.
 
 ### Match setup (scripted, `mp_scenario.py`)
 
-From slot 1 (main menu, NightFire highlighted): down -> Multiplayer, then FOUR
-2 s holds: enter MP, join Agent 1, confirm codename, confirm ready (400 ms taps
-are eaten by the join page; the missing 4th hold was the systematic setup
-failure). Scenario wheel fresh default is Quick Game (it remembers position
-within a visit and wraps; never assume Arena). Cycle-until-match with sentinel
-writes: select, read back `MPSettings+0x1a4` (scenario) / `+0x1a8` (map),
-triangle-back + down on mismatch (bounded, loud on failure). Character
-(default Bond), handicap (0), down -> AI Bots, per bot 3x cross (config defaults
-to Playing:Yes), triangle, up -> Continue, cross to confirm. At confirm, poke
-the bot roster into `mpbots` (`@0x2DEEAA+i*0x12`: stats / `+0x0E` enabled /
-`+0x0F` team / `+0x10` char / `+0x11` custom) and `0x30D2A7=1`
-(`menu_unlock_everything`). cross (Start). Wait for `MPSettings+0x180 == 1 &&
-glb_players[0] != 0`, save the match-start slot. Standard split: MI6 human
-(Bond) + Dominique vs Phoenix Snow Guard + Yakuza.
+From a main-menu savestate (pass its PCSX2 slot with `--load-slot`; the default
+slot 1 may belong to another workflow): down -> Multiplayer, then four 2 s
+holds to enter MP, join Agent 1, confirm codename, and confirm ready. On a slow
+interpreter the ready transition can eat its tap, so the driver performs one
+guarded extra cross using `MPSettings+0x1a4` as a sentinel, backing out if the
+tap already selected Quick Game. Quick Game is a separate default entry (mask 0)
+that bypasses the map wheel; the script steps off it, selects an explicit mode,
+then commits the map at `MPSettings+0x1a8` (cycling back/down if needed). The
+map pre-click value is valid, so a missed selection cannot pass an invalid ID
+to level loading. Character (default Bond), handicap (0), down -> AI Bots, per
+bot 3x cross (config defaults to Playing:Yes),
+triangle, up -> Continue, cross to confirm. At confirm, poke the bot roster into
+`mpbots` (`@0x2DEEAA+i*0x12`: stats / `+0x0E` enabled / `+0x0F` team /
+`+0x10` char / `+0x11` custom) and `0x30D2A7=1` (`menu_unlock_everything`).
+cross (Start). After `MP_ACTIVE==1` and player object type 3 first appear, the
+driver waits `--spawn-stabilize` frames (default 60) for level initialization to
+settle, then saves only after `GS_DONE` and `GS_FRAME_START` remain stable
+within the bracketed read; the counters need not have a fixed relative offset.
+
+On a slow EE interpreter, `--page-settle` controls the wait after each menu
+page transition (default 10 s); raise it alongside `--press-ms 2000` if a tap
+arrives before the page is ready.
+Standard split: MI6 human (Bond) + Dominique vs Phoenix Snow Guard + Yakuza.
+Reproduce a setup and match-start savestate (example: Skyrail Arena, three
+bots) and record the running match:
+
+```sh
+# Set this to a saved main-menu state (the current oracle-owned slot is 42).
+MENU_SLOT=42
+python3 tools/oracle/mp_scenario.py --scenario 1 --map 0 --bots 3 --slot 10 \
+  --load-slot "$MENU_SLOT" --shots ~/.cache/mp-oracle-tmp/shots/skyrail-arena
+python3 tools/oracle/mp_record.py ~/.cache/mp-oracle-tmp/mp-skyrail-arena3bot.jsonl \
+  --load-slot 10 --timeout 600
+python3 tools/oracle/mp_compare.py summary \
+  ~/.cache/mp-oracle-tmp/mp-skyrail-arena3bot.jsonl
+```
+
+`mp_scenario.py` indexes the scenario wheel (`1` Arena, `2` Team Arena,
+`3` Capture The Flag, `4` Uplink; full masks are in `mp_addrs.py`) and maps
+by `MP_MAPS` order: Skyrail, Fort Knox, Snow Blind, Phoenix Base, Atlantis,
+
+Missile Silo, Sub Pen, Ravine. The `--shots` folder receives setup-page PNGs
+including `13-spawn.png`. Use separate PCSX2 slots and output files per setup;
+never run two PINE clients simultaneously. `mp_record.py` samples a batched
+state snapshot bracketed by logic-frame counters, writes one JSONL line per
+accepted frame, and includes a human pad sample. Pass a frame-timed
+`--script` to inject virtual-pad commands during recording.
+
+For a controlled combat capture, `--freeze-bot SLOT` holds a bot's sampled
+position/yaw on each recorded frame. `--face-bot SLOT` additionally places the
+human eight world units behind that bot once, facing it; the human remains free
+to move under `--script`. The recorder retains the exact button/input word,
+human health/armour/current weapon/auto-lock, projectile state and bot health
+on each accepted frame. This is not a deterministic combat fixture: bot AI,
+firing, damage and pickups remain live.
+
+Use `--weapon-set 4` for the PickupMatrix row containing Militek MGL (weapon
+42), or `--weapon-set 5` for the grenade row, when a capture needs those
+loadouts; this override is written to `MPSettings+0x1B4` before match start.
+
+For an engine observation run, use the same map/mode/bot options and tick count
+with `nfgame --mp --mp-trace engine.jsonl`; then compare ordinally:
+
+```sh
+python3 tools/oracle/mp_compare.py diff oracle.jsonl engine.jsonl
+```
+
+This last command is **not** a synced comparison: the engine does not import
+the PCSX2 frame-N state; `--mp-rng X Y` only overrides two stream words and
+does not establish a matching state. Differences in initial placement, bots,
+pickups and match state invalidate a parity interpretation. It remains useful
+for inspecting schema coverage and broad, unaligned residuals only.
+
+Seedable per-frame recordings cover Skyrail Arena, Team Arena, CTF and
+Demolition plus partial Missile Silo Arena; v5 objective-aware windows are
+listed above. Existing `shots/mapviews` PNGs from earlier delayed captures are
+not all valid spawn references. `skyrail-frame30/freeze-smoke2.png` is the
+visually verified frozen-gameplay calibration image (frame 3818,
+`screenshot_frozen=true`); map-pair anchors are being recaptured from coherent
+match-start savestates and should be used only when their JSONL says frozen.
+
+### Fixed pose snapshots (`mp_pose_capture.py`)
+
+Use a saved match-start slot to capture one stable human pose and one 30-logic-
+frame JSONL reference row. The utility requires one human and verifies the
+expected bot count; it freezes the human and bot slot 4 position/yaw by PINE
+writes once per tick. The recorder brackets the sampled row with both game-frame
+counters, captures the HUD crosshair kind from `BLData+0x133`
+(`HUD_UpdateCrossHair`), and reads P1's viewer FOV from `glb_viewer[0] + 0x118`
+(not `obj+0x118`).
+
+The screenshot is taken while the PCSX2 process is stopped using ImageMagick
+`import -window root` on XWayland (`DISPLAY`, default `:100`), not a Wayland
+desktop screenshot that can miss the game window. `--crop x,y,width,height` is
+optional. `screenshot_frame_range` and `screenshot_lag_frames_range` include
+the target frame and post-resume counter; `screenshot_frozen` confirms whether
+the stopped image was taken at the target, and `screenshot_crop` records the
+crop or null when the full desktop image is kept.
+
+```sh
+python3 tools/oracle/mp_pose_capture.py --slot 30 \
+  --out ~/.cache/mp-oracle-tmp/shots/mapviews/skyrail-fixed/spawn.jsonl \
+  --screenshot ~/.cache/mp-oracle-tmp/shots/mapviews/skyrail-fixed/pose.png \
+  --frames 30 --bots 1
+```
+
+The collision-body bytes at `+0x98` resemble a 32-bit pointer, but their target
+type is unidentified; recordings keep `cb_0x98_raw` and do not interpret it as
+a weapon ID.
 
 ### Recordings
+
 
 | Recording | Setup | Frames / span | Notes |
 |-----------|-------|---------------|-------|
@@ -242,10 +638,26 @@ glb_players[0] != 0`, save the match-start slot. Standard split: MI6 human
 | Skyrail Team Arena 3 bots (MI6 human+Dominique vs Phoenix Snow Guard+Yakuza) | slot 12, idle human | 10769 frames, elapsed 24.0..225.0 s | `mp-skyrail-teamarena.jsonl`; team scores 2/1 (enemy-kill team credit works); human untouched |
 | Skyrail CTF 3 bots (same split) | slot 13, idle human | 8072 frames, elapsed 12.8..179.8 s | `mp-skyrail-ctf.jsonl`; kills don't score (objective flag set); flags+bases all spawned (objx); no capture in window |
 | Skyrail Demolition 3 bots (same split) | slot 14, idle human | 8106 frames, elapsed 22.0..189.1 s | `mp-skyrail-demolition.jsonl`; 1 demo site live; states 0xF9 idle / 0xF2 death-anim observed |
+| Skyrail CTF seedable snapshot | slot 13, three bots, idle human | 363 accepted rows, frame 27853..28453 (600-frame span) | `mp-skyrail-ctf-seedable.jsonl`; all 363 rows `seed_ready`, nine objective blobs per row; no kills, pickup takes or flag-state transitions in the 10 s window |
+| Skyrail Demolition seedable snapshot | slot 14, three bots, idle human | 343 accepted rows, frame 15403..16003 (600-frame span) | `mp-skyrail-demolition-seedable.jsonl`; all 343 rows `seed_ready`, nine objective blobs per row; no kills, pickup takes or demo-state transitions in the 10 s window |
+| Skyrail CTF seedable v5 | slot 13, idle human + 3 bots | 100 rows, 100 ready; frame 27769..28382 | `~/.cache/mp-oracle-tmp/mp-skyrail-ctf-seedable-v5.jsonl`; four live objective roots; longest ready run 5 frames; 24 adjacent pairs |
+| Skyrail Team Arena seedable v5 | slot 12, idle human + 3 bots | 79 rows, 79 ready; frame 35904..36212 | `~/.cache/mp-oracle-tmp/mp-skyrail-teamarena-seedable-v5.jsonl`; longest ready run 5 frames |
+| Skyrail Demolition seedable v5 | slot 14, idle human + 3 bots | 85 rows, 85 ready; frame 15290..15600 | `~/.cache/mp-oracle-tmp/mp-skyrail-demolition-seedable-v5.jsonl`; one live objective root; longest ready run 5 frames |
+| Skyrail Arena seedable v5 | slot 10, idle human + 3 bots | 83 rows, 74 ready; frame 34999..35302 | `~/.cache/mp-oracle-tmp/mp-skyrail-arena3bot-seedable-v5.jsonl`; longest ready run 6 frames; 8 rows have projectile-list gaps |
+| Missile Silo Arena seedable v5 | slot 11, idle human + 3 bots | 59 rows, 55 ready; frame 15275..15575 | `~/.cache/mp-oracle-tmp/mp-missilesilo-arena3bot-seedable-v5.jsonl`; longest ready run 4 frames; 4 rows have projectile-list gaps |
 
 ### Residuals / limits
 
 - 60 Hz logic in MP (vs 30 Hz nominal): the recorder keeps ~77% of frames.
 - Respawn reuses obj memory (no pointer churn; `resync` frames only on pickup-table changes).
-- Projectiles are not enumerated live (shots inferred from clip deltas + health steps).
-- Engine synced seeding covers RNG + humans + scores/pickups; bot brains are structurally different (free-run residual, documented per-subsystem).
+- Projectile nodes are enumerated incrementally from the dynamic object list.
+  Spawn-frame list changes are explicitly marked unavailable; transient hit-zone
+  feedback remains unmapped. `seed_ready` describes sampled schema coverage,
+  not complete runtime state.
+- Partial engine state import is available with `--mp-seed`; `--mp-seed-each`
+  restores each accepted pre-tick row. It covers supported player, bot, pickup,
+  objective and projectile fields without guaranteeing complete state or
+  lockstep. Older seed captures that contain dynamic dropped pickups but omit
+  their amount cannot restore those rows; re-record with the current schema.
+  `mp_compare.py diff` aligns exact absolute frames and reports per-field
+  residuals; frame alignment alone does not establish behavioral parity.

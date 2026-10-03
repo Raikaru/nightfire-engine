@@ -156,11 +156,26 @@ add_executable(nfmips src/tools/nfmips.cpp)
 target_link_libraries(nfmips PRIVATE nf_ee nf_assets)
 target_compile_options(nfmips PRIVATE -Wall -Wextra)
 
-# The playable game: frontend -> SP / MP / driving sessions with HUD, audio,
-# pause and results (src/app/nightfire.cpp). Reuses nfgame's weapon view/effects
-# translation units; main.cpp itself is untouched (Movement co-owns it).
+# Online multiplayer wire protocol and UDP transport.
+add_library(nf_net STATIC src/net/net.cpp)
+target_include_directories(nf_net PUBLIC src)
+target_compile_options(nf_net PRIVATE -Wall -Wextra)
+add_executable(nfnet-test src/tools/nfnet_test.cpp)
+target_link_libraries(nfnet-test PRIVATE nf_net)
+target_compile_options(nfnet-test PRIVATE -Wall -Wextra)
+add_executable(nfnet-predict-diff src/tools/nfnet_predict_diff.cpp)
+target_link_libraries(nfnet-predict-diff PRIVATE nf_net nf_game)
+target_compile_options(nfnet-predict-diff PRIVATE -Wall -Wextra)
+# Tiny UDP server registry; the server list protocol is intentionally independent of gameplay protocol.
+add_executable(nfmaster src/net/master.cpp)
+target_link_libraries(nfmaster PRIVATE nf_net)
+target_compile_options(nfmaster PRIVATE -Wall -Wextra)
+add_executable(nfserver src/net/server.cpp src/app/config.cpp)
+target_link_libraries(nfserver PRIVATE nf_net nf_game nf_audio)
+target_compile_options(nfserver PRIVATE -Wall -Wextra)
 file(GLOB NF_APP_SOURCES CONFIGURE_DEPENDS src/app/*.cpp)
-add_executable(nightfire ${NF_APP_SOURCES} src/game/nfgame_weapon_hud.cpp
+add_executable(nightfire ${NF_APP_SOURCES} src/net/server.cpp src/game/nfgame_weapon_hud.cpp
   src/game/nfgame_weapon_view.cpp src/game/nfgame_effects.cpp src/game/nfgame_quads.cpp)
-target_link_libraries(nightfire PRIVATE nf_game nf_render nf_audio nf_ui nf_driving nf_media)
+target_link_libraries(nightfire PRIVATE nf_net nf_game nf_render nf_audio nf_ui nf_driving nf_media)
+target_compile_definitions(nightfire PRIVATE NF_SERVER_EMBEDDED)
 target_compile_options(nightfire PRIVATE -Wall -Wextra)

@@ -24,9 +24,11 @@ namespace nf {
 // What the front end (or the in-game pause menu) asks the application to do when it closes.
 struct FrontendResult {
     enum class Action {
-        None,             // still open
-        StartMultiplayer, // P_MPCONFIRM "start": `launch` holds everything MP_Start consumes
-        StartMission,     // P_NFSELECT/P_NFMAP: `level_bin` + `difficulty`
+        None,
+        StartMultiplayer,  // P_MPCONFIRM: local split-screen multiplayer
+        StartOnlineJoin,   // the multiplayer main-menu choice: open the online server browser
+        StartListenServer, // the multiplayer setup finished in host mode
+        StartMission,      // P_NFSELECT/P_NFMAP: `level_bin` + `difficulty`
         Resume,           // the pause menu was closed (start button / "Resume")
         RestartMission,   // pause menu "Restart", or P_ENDMISSION "retry"
         QuitToMenu,       // pause menu "Quit", P_ENDMISSION "quit", debriefing "Continue"

@@ -56,6 +56,8 @@ public:
     virtual bool assassin_lethal(int, int, int) const { return false; }
     // Once, when the victim's health reached 0 (Player_CheckForDeath). attacker -1 = suicide / environment.
     virtual void player_killed(int victim, int attacker, int weapon_id) = 0;
+    // Player_CheckForDeath / DroneWeap_DropWeapon: the match creates a timed world pickup before the held weapon is cleared.
+    virtual bool drop_weapon(const Vec3&, int, int, bool = false) { return false; }
     virtual void environment_kill(int victim) = 0;
 };
 

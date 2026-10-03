@@ -287,6 +287,7 @@ WeaponDef decode(const std::vector<std::uint8_t>& b, std::size_t o) {
     d.fire_interval = get<std::uint32_t>(b, at(64));
     d.fire_delay = get<std::uint16_t>(b, at(68));
     d.muzzle_script = get<std::uint32_t>(b, at(72));
+    d.drop_bone = b.at(at(80));
     d.flash_b = b.at(at(84));
     d.flash_g = b.at(at(85));
     d.flash_r = b.at(at(86));

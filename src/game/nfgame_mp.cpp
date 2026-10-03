@@ -20,10 +20,12 @@
 #include "game/arena_view.hpp"
 #include "game/bot_match.hpp"
 #include "game/mp_trace.hpp"
+#include "game/mp_seed.hpp"
 #include "game/drone_render.hpp"
 #include "game/local_pad.hpp"
 #include "render/gl.hpp"
 #include "render/level_renderer.hpp"
+#include "render/weather_renderer.hpp"
 #include "render/window.hpp"
 
 namespace nf {
@@ -138,7 +140,7 @@ struct DroneDraw {
 };
 
 void draw_views(Window& window, LevelRenderer& renderer, const ObjectDrawList& objects, const std::vector<Camera>& cameras,
-                bool side_by_side, bool wireframe, const DroneDraw& drones = {}) {
+                bool side_by_side, bool wireframe, const DroneDraw& drones = {}, WeatherRenderer* weather = nullptr) {
     int width, height;
     window.begin_frame(width, height);
     const auto clear = renderer.clear_color();
@@ -155,6 +157,8 @@ void draw_views(Window& window, LevelRenderer& renderer, const ObjectDrawList& o
         glClearColor(clear[0], clear[1], clear[2], 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         renderer.draw(cameras[i], r.aspect(), wireframe);
+        if (weather && weather->active())
+            weather->draw(cameras[i], renderer.view_projection(cameras[i], r.aspect()));
         renderer.draw_objects(cameras[i], r.aspect(), objects.collect(int(i)));
         if (drones.renderer) drones.renderer->draw(cameras[i], r.aspect(), *drones.system);
     }
@@ -164,7 +168,17 @@ void draw_views(Window& window, LevelRenderer& renderer, const ObjectDrawList& o
 
 }  // namespace
 
-int run_match(const MatchLaunch& launch) {
+int run_match(const MatchLaunch& request) {
+    MatchLaunch launch = request;
+    std::optional<MpSeedImporter> importer;
+    if (!launch.mp_seed.empty()) {
+        importer.emplace(launch.mp_seed);
+        importer->configure(launch);
+        for (const std::string& input : launch.inputs)
+            if (!input.empty()) throw std::runtime_error("--mp-seed cannot be combined with --inputs");
+    } else if (launch.mp_seed_each) {
+        throw std::runtime_error("--mp-seed-each requires --mp-seed");
+    }
     const std::filesystem::path& dir = launch.gamedir;
     GameFiles gf(dir);
     std::string bin_name = launch.level_bin.empty() ? "07000024.bin" : launch.level_bin;
@@ -208,6 +222,7 @@ int run_match(const MatchLaunch& launch) {
                              if (bot_match) bot_match->install(s);
                          });
     if (bot_match) bot_match->start();
+    if (importer) importer->restore(world, session, bot_match.get());
     if (options.log) session.log = [](const std::string& line) { std::printf("%s\n", line.c_str()); };
     ArenaSystem& arena = session.arena();
     std::printf("%s: mode %08x, %d players, %zu pickups, %zu objectives, weapon set %d, limit %d frags / %.0f s\n", bin_name.c_str(),
@@ -216,7 +231,7 @@ int run_match(const MatchLaunch& launch) {
 
     // Scripted pads (headless / --shot runs).
     std::array<Script, 4> scripts;
-    bool scripted = launch.frames >= 0;
+    bool scripted = launch.frames >= 0 || importer.has_value();
     for (int i = 0; i < options.humans; ++i) {
         if (launch.inputs[std::size_t(i)].empty()) continue;
         scripts[std::size_t(i)] = read_script(launch.inputs[std::size_t(i)]);
@@ -235,28 +250,54 @@ int run_match(const MatchLaunch& launch) {
 
     if (scripted) {
         long frames = launch.frames;
-        if (frames < 0)
-            for (const Script& s : scripts) frames = std::max(frames, s.length());
+        if (frames < 0) {
+            if (importer) frames = long(importer->available_frames() > 0 ? importer->available_frames() - 1 : 0);
+            else for (const Script& s : scripts) frames = std::max(frames, s.length());
+        }
         MpTraceSink mp_trace;
         if (!launch.mp_trace.empty() && !mp_trace.open(launch.mp_trace))
             throw std::runtime_error("cannot write mp-trace file " + launch.mp_trace);
+        std::unique_ptr<Window> shot_window;
+        std::unique_ptr<LevelRenderer> shot_renderer;
+        std::unique_ptr<WeatherRenderer> shot_weather;
+        if (!launch.shot.empty()) {
+            shot_window = std::make_unique<Window>("nfgame - " + bin_name, 1280, 720, true);
+            shot_renderer = std::make_unique<LevelRenderer>(level);
+            shot_renderer->set_level(level_id);
+            shot_weather = std::make_unique<WeatherRenderer>(level);
+            shot_weather->set_level(level_id);
+        }
         for (long f = 0; f < frames; ++f) {
             PadInputs pads{};
-            for (int i = 0; i < options.humans; ++i) pads[std::size_t(i)] = scripts[std::size_t(i)].at(f);
-            session.tick(pads);
+            float tick_rate = World::kTickHz;
+            if (importer) {
+                const std::uint64_t next_frame = world.frame() + 1;
+                if (!importer->input_for(next_frame, pads, tick_rate))
+                    throw std::runtime_error("MP seed: no contiguous recorded pad input for frame " + std::to_string(next_frame));
+                if (launch.mp_seed_each) importer->restore_at(world.frame(), world, session, bot_match.get());
+            } else {
+                for (int i = 0; i < options.humans; ++i) pads[std::size_t(i)] = scripts[std::size_t(i)].at(f);
+            }
+            session.tick(pads, FrameTiming{tick_rate});
+            if (shot_weather) {
+                shot_weather->update(world.player(0)->eye(),
+                                     [&world](int ch) { return world.objects().channel(unsigned(ch)); });
+                shot_renderer->set_time(double(world.frame()) / World::kTickHz);
+            }
             if (mp_trace.is_open())
-                mp_trace.dump(world, session.arena(), session.weapons(), bot_match ? &bot_match->bots() : nullptr);
+                mp_trace.dump(world, session.arena(), session.weapons(), pads,
+                              bot_match ? &bot_match->bots() : nullptr);
         }
         mp_trace.close();
         report();
         if (bot_match) std::printf("bots:\n%s", bot_match->summary().c_str());
         if (launch.shot.empty()) return 0;
 
-        Window window("nfgame - " + bin_name, 1280, 720, true);
+        Window& window = *shot_window;
+        LevelRenderer& renderer = *shot_renderer;
+        WeatherRenderer& weather = *shot_weather;
         std::unique_ptr<drone::DroneRenderer> drone_renderer;
         if (bot_match) drone_renderer = std::make_unique<drone::DroneRenderer>(bot_match->bank());
-        LevelRenderer renderer(level);
-        renderer.set_level(level_id);
         ObjectDrawList objects(level, arena);
         std::vector<Camera> cameras;
         for (int i = 0; i < options.humans; ++i) {
@@ -282,7 +323,7 @@ int run_match(const MatchLaunch& launch) {
         }
         DroneDraw drone_draw;
         if (drone_renderer) drone_draw = {drone_renderer.get(), &bot_match->drones()};
-        draw_views(window, renderer, objects, cameras, options.side_by_side, launch.collision_wireframe, drone_draw);
+        draw_views(window, renderer, objects, cameras, options.side_by_side, launch.collision_wireframe, drone_draw, &weather);
         const bool ok = window.save_bmp(launch.shot);
         std::printf("split screen (%d players) -> %s\n", options.humans, ok ? launch.shot.c_str() : SDL_GetError());
         return ok ? 0 : 1;
@@ -292,6 +333,8 @@ int run_match(const MatchLaunch& launch) {
     Window window("nfgame - " + bin_name + " (multiplayer)", 1280, 720, false);
     LevelRenderer renderer(level);
     renderer.set_level(level_id);
+    WeatherRenderer weather(level);
+    weather.set_level(level_id);
     ObjectDrawList objects(level, arena);
     std::unique_ptr<drone::DroneRenderer> drone_renderer;
     if (bot_match) drone_renderer = std::make_unique<drone::DroneRenderer>(bot_match->bank());
@@ -332,6 +375,9 @@ int run_match(const MatchLaunch& launch) {
             PadInputs in{};
             for (int i = 0; i < options.humans; ++i) in[std::size_t(i)] = pads[std::size_t(i)].sample();
             session.tick(in);
+            weather.update(world.player(0)->eye(),
+                           [&world](int ch) { return world.objects().channel(unsigned(ch)); });
+            renderer.set_time(double(world.frame()) / World::kTickHz);
             session.messages().clear();
             session.sounds().clear();
             accumulator -= kStep;
@@ -342,7 +388,7 @@ int run_match(const MatchLaunch& launch) {
         }
         std::vector<Camera> cameras;
         for (int i = 0; i < options.humans; ++i) cameras.push_back(camera_for(prev[std::size_t(i)], view_of(*world.player(i)), float(accumulator / kStep)));
-        draw_views(window, renderer, objects, cameras, options.side_by_side, wireframe, drone_draw);
+        draw_views(window, renderer, objects, cameras, options.side_by_side, wireframe, drone_draw, &weather);
         window.swap();
     }
     if (bot_match) std::printf("bots:\n%s", bot_match->summary().c_str());

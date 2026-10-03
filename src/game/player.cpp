@@ -62,6 +62,103 @@ Player::Player(const Vec3& position, float initial_yaw, const PlayerParams& para
     vitals.flash = 1.0f;   // Player_Init
 }
 
+PlayerPredictionState Player::prediction_state() const {
+    PlayerPredictionState state;
+    state.pos = pos;
+    state.velocity = velocity;
+    state.fall_velocity = fall_velocity;
+    state.prev_pos = prev_pos_;
+    state.prev_velocity = prev_velocity_;
+    state.settled_pos = settled_pos;
+    state.capsule_a = capsule_a;
+    state.capsule_b = capsule_b;
+    state.capsule_radius = capsule_radius;
+    state.cylinder_push_out = last_cylinder_.push_out;
+    state.cylinder_a = last_cylinder_.a;
+    state.cylinder_b = last_cylinder_.b;
+    state.cylinder_contact = last_cylinder_.contact;
+    state.cylinder_hit_count = std::uint32_t(last_cylinder_.hits.size());
+    state.yaw = yaw;
+    state.pitch = pitch;
+    state.ground_normal_y = ground_normal_y;
+    state.stand_height = stand_height;
+    state.applied_height = applied_height_;
+    state.yaw_step = yaw_step_;
+    state.turn_speed = turn_speed_;
+    state.pitch_speed = pitch_speed_;
+    state.pitch_target = pitch_target_;
+    state.aim_yaw = aim_yaw_;
+    state.fall_timer = fall_timer_;
+    state.body_flags = body_flags;
+    state.ground_history = ground_history;
+    state.anim_random_timer = anim_random_timer;
+    state.jump_state = jump_state;
+    state.jump_delay = jump_delay_;
+    state.crouch_timer = crouch_timer_;
+    state.look_state = look_state_;
+    state.walk_class = walk_class_;
+    state.enabled = enabled_;
+    state.input_frozen = input_frozen_;
+    state.movement_frozen = movement_frozen;
+    state.scope_aiming = scope_aiming;
+    state.zoom = zoom;
+    state.substate = substate;
+    state.water = water;
+    state.aim = aim_state_;
+    state.timing = timing_;
+    for (std::size_t row = 0; row < body_.size(); ++row)
+        for (std::size_t axis = 0; axis < body_[row].size(); ++axis)
+            state.body_basis[row * 3 + axis] = body_[row][axis];
+    return state;
+}
+
+void Player::restore_prediction_state(const PlayerPredictionState& state) {
+    pos = state.pos;
+    velocity = state.velocity;
+    fall_velocity = state.fall_velocity;
+    prev_pos_ = state.prev_pos;
+    prev_velocity_ = state.prev_velocity;
+    settled_pos = state.settled_pos;
+    capsule_a = state.capsule_a;
+    capsule_b = state.capsule_b;
+    capsule_radius = state.capsule_radius;
+    last_cylinder_.push_out = state.cylinder_push_out;
+    last_cylinder_.a = state.cylinder_a;
+    last_cylinder_.b = state.cylinder_b;
+    last_cylinder_.contact = state.cylinder_contact;
+    yaw = state.yaw;
+    pitch = state.pitch;
+    ground_normal_y = state.ground_normal_y;
+    stand_height = state.stand_height;
+    applied_height_ = state.applied_height;
+    yaw_step_ = state.yaw_step;
+    turn_speed_ = state.turn_speed;
+    pitch_speed_ = state.pitch_speed;
+    pitch_target_ = state.pitch_target;
+    aim_yaw_ = state.aim_yaw;
+    fall_timer_ = state.fall_timer;
+    body_flags = state.body_flags;
+    ground_history = state.ground_history;
+    anim_random_timer = state.anim_random_timer;
+    jump_state = state.jump_state;
+    jump_delay_ = state.jump_delay;
+    crouch_timer_ = state.crouch_timer;
+    look_state_ = state.look_state;
+    walk_class_ = state.walk_class;
+    enabled_ = state.enabled;
+    input_frozen_ = state.input_frozen;
+    movement_frozen = state.movement_frozen;
+    scope_aiming = state.scope_aiming;
+    zoom = state.zoom;
+    substate = state.substate;
+    water = state.water;
+    aim_state_ = state.aim;
+    timing_ = state.timing;
+    for (std::size_t row = 0; row < body_.size(); ++row)
+        for (std::size_t axis = 0; axis < body_[row].size(); ++axis)
+            body_[row][axis] = state.body_basis[row * 3 + axis];
+}
+
 std::array<Vec3, 3> Player::orientation() const {
     // obj+0x90 rows: local X (left), Y (up), Z (forward) in world space. Substates 5, 8 and 9 keep their own matrix,
     // the others rebuild it from the yaw.
@@ -301,6 +398,11 @@ void Player::update(const ActionInput& input, const PlayerSettings& settings, co
     apply_rope_root_motion();
     apply_creep_root_motion();
 
+    anim_random_timer = std::uint16_t(anim_random_timer - 1u);
+    if (std::int16_t(anim_random_timer) <= 0) {
+        const std::uint32_t random = game_rng().random();
+        anim_random_timer = std::uint16_t(0xFFu + (random & 0x3FFu));
+    }
     collision_setup(timing);
     activate_creep_wall(input, world);
 }

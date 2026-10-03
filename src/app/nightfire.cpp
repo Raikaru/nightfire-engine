@@ -15,14 +15,21 @@
 #include <exception>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "app/menu_background.hpp"
 #include "app/app.hpp"
 #include "app/movie.hpp"
 #include "app/session_drive.hpp"
 #include "app/session_mp.hpp"
 #include "app/session_sp.hpp"
+#include "app/server_browser.hpp"
+#include "core/rng.hpp"
+#include "net/server_runtime.hpp"
+#include "app/online_browser.hpp"
+#include "app/net_client.hpp"
 #include "audio/audio.hpp"
 #include "render/window.hpp"
 #include "ui/frontend.hpp"
@@ -44,14 +51,20 @@ const std::map<std::string, std::uint16_t> kPressButtons = {
     {"r1", kPadR1},       {"r2", kPadR2},         {"l3", kPadL3},       {"r3", kPadR3}};
 
 // --press replay (nfui token format): one 30 Hz frame per token.
-void replay_press(Frontend& frontend, PadHistory& pad, const std::string& script) {
+template <typename AdvanceBackground>
+void replay_press(Frontend& frontend, PadHistory& pad, const std::string& script, AdvanceBackground&& advance_background) {
     for (std::size_t p = 0; p < script.size();) {
         const std::size_t e = script.find(',', p);
         const std::string tok = script.substr(p, e == std::string::npos ? e : e - p);
         p = e == std::string::npos ? script.size() : e + 1;
+        if (tok.rfind("net-", 0) == 0) continue;  // Reserved for the Online server-browser screen.
         if (tok.rfind("wait", 0) == 0) {
             const int n = tok.size() > 4 ? std::atoi(tok.c_str() + 4) : 1;
-            for (int i = 0; i < n; ++i) pad.push({}), frontend.update(pad);
+            for (int i = 0; i < n; ++i) {
+                pad.push({});
+                frontend.update(pad);
+                advance_background();
+            }
             continue;
         }
         PadState s;
@@ -63,8 +76,12 @@ void replay_press(Frontend& frontend, PadHistory& pad, const std::string& script
             if (it == kPressButtons.end()) throw std::runtime_error("unknown button " + name);
             s.buttons |= it->second;
         }
-        pad.push(s), frontend.update(pad);
-        pad.push({}), frontend.update(pad);
+        pad.push(s);
+        frontend.update(pad);
+        advance_background();
+        pad.push({});
+        frontend.update(pad);
+        advance_background();
     }
 }
 
@@ -117,8 +134,9 @@ void sync_config_to_frontend(const AppConfig& cfg, Frontend& frontend) {
 }
 
 void report_result(const FrontendResult& r) {
-    static const char* const names[] = {"none", "start-multiplayer", "start-mission", "resume",      "restart-mission",
-                                        "quit-to-menu", "rematch", "mission-done", "quit"};
+    static const char* const names[] = {"none", "start-multiplayer", "start-online-join", "start-listen-server",
+                                        "start-mission", "resume", "restart-mission", "quit-to-menu", "rematch",
+                                        "mission-done", "quit"};
     std::printf("frontend: %s level=%s difficulty=%d", names[int(r.action)], r.level_bin.c_str(), r.difficulty);
     if (r.launch) std::printf(" mp mode=0x%08x humans=%u bots=%u", r.launch->settings.mode,
                               r.launch->settings.human_count, r.launch->settings.bot_count);
@@ -128,10 +146,13 @@ void report_result(const FrontendResult& r) {
 // One frontend screen (main menu at boot, or after a session ends). Returns
 // false when the application should exit.
 bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRenderer& text, AppConfig& cfg,
-                  audio::AudioSystem* audio, const std::string& press, const std::string& shot, FrontendResult& out) {
+                  audio::AudioSystem* audio, const std::string& press, const std::string& shot,
+                  const std::optional<std::uint32_t>& first_page, FrontendResult& out) {
     Frontend frontend(ctx.assets, ctx.menu, &ctx.mp_data, &ctx.sp_data);
     sync_config_to_frontend(cfg, frontend);
-    frontend.open(FrontendMode::MainMenu);
+    frontend.open(FrontendMode::MainMenu, first_page);
+    MenuBackground background(ctx.gamedir);
+    background.advance();
     PadHistory pad;
     bool trace = true;
     std::uint32_t last_page = 0;
@@ -146,7 +167,7 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
     if (!press.empty() || !shot.empty()) {
         // Headless verification: replay the button script, serve a pending movie
         // request into the shot when the script lands on a movie page, else screenshot.
-        if (!press.empty()) replay_press(frontend, pad, press);
+        if (!press.empty()) replay_press(frontend, pad, press, [&] { background.advance(); });
         play_sounds();
         report_result(frontend.result());
         out = frontend.result();
@@ -165,9 +186,11 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
             int w, h;
             window.begin_frame(w, h);
             ui.begin(w, h);
+            background.draw(ui);
             frontend.draw(ui, text);
             ui.end();
-            if (!window.save_bmp(shot)) throw std::runtime_error("cannot write shot");
+            window.swap();
+            if (!window.save_bmp(shot)) throw std::runtime_error("could not save frontend screenshot");
             std::printf("frontend page 0x%08x -> %s\n", frontend.page_id(), shot.c_str());
         }
         return false;
@@ -192,7 +215,7 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
         while (accumulator >= 1.0 / 30.0) {
             pad.push(live_menu_pad(gamepad));
             frontend.update(pad);
-            play_sounds();
+            background.advance();
             // Movie pages hand their PSS id to the game (fallback transition when missing).
             if (std::uint32_t movie = frontend.take_movie_request()) {
                 MovieScreen screen(window, ui, text, audio, gamepad, ctx.gamedir);
@@ -207,7 +230,7 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
         }
         int w, h;
         window.begin_frame(w, h);
-        ui.begin(w, h);
+        background.draw(ui);
         frontend.draw(ui, text);
         ui.end();
         window.swap();
@@ -259,10 +282,22 @@ struct Args {
     std::string shot;
     std::string inputs;
     std::string press;
+    std::optional<std::uint32_t> first_page;  // start on a menu page, skipping title/movie navigation
     bool mute = false;
-    int give = -1;  // debug equip: give + select this weapon id at session start
+    std::string connect;
+    std::string password;
+    std::string master;
+    std::string online_master;
+    std::string direct_lookup;
+    bool browse_lan = false, browse_master = false;
+    std::string map = "07000024.bin";
+    std::string player_name = "Player";
+    std::string chat;
+    int net_sim_loss = 0, net_sim_latency = 0;
+    int listen_port = 27500;
+    float host_time_limit = -1.0f;  // optional minutes; useful for short rotation tests
+    int give = -1;
 };
-
 bool parse_args(int argc, char** argv, Args& a) {
     if (argc < 2) return false;
     // --help anywhere (including argv[1]) prints usage without a gamedir.
@@ -290,6 +325,27 @@ bool parse_args(int argc, char** argv, Args& a) {
             a.channels.emplace_back(std::atoi(spec.substr(0, eq).c_str()), std::atoi(spec.substr(eq + 1).c_str()));
         }
         else if (v == "--mp") a.mp = true;
+        else if (v == "--connect") need(a.connect);
+        else if (v == "--password") need(a.password);
+        else if (v == "--browse-lan") a.browse_lan = true;
+        else if (v == "--browse-master") { a.browse_master = true; need(a.master); }
+        else if (v == "--online-master") need(a.online_master);
+        else if (v == "--browse-ip") need(a.direct_lookup);
+        else if (v == "--map") need(a.map);
+        else if (v == "--listen-port" && i + 1 < argc) {
+            const long port = std::strtol(argv[++i], nullptr, 10);
+            if (port < 1 || port > 65535) throw std::runtime_error("--listen-port must be 1..65535");
+            a.listen_port = int(port);
+        } else if (v == "--host-time-limit" && i + 1 < argc) {
+            char* end = nullptr;
+            a.host_time_limit = std::strtof(argv[++i], &end);
+            if (!end || *end || !(a.host_time_limit > 0.0f))
+                throw std::runtime_error("--host-time-limit must be positive minutes");
+        }
+        else if (v == "--chat") need(a.chat);
+        else if (v == "--name") need(a.player_name);
+        else if (v == "--net-sim-latency" && i + 1 < argc) a.net_sim_latency = std::clamp(std::atoi(argv[++i]), 0, 2000);
+        else if (v == "--net-sim-loss" && i + 1 < argc) a.net_sim_loss = std::clamp(std::atoi(argv[++i]), 0, 100);
         else if (v == "--drive") need(a.drive);
         else if (v == "--car") need(a.car);
         else if (v == "--movie") need(a.movie);
@@ -297,6 +353,8 @@ bool parse_args(int argc, char** argv, Args& a) {
         else if (v == "--shot") need(a.shot);
         else if (v == "--inputs") need(a.inputs);
         else if (v == "--press") need(a.press);
+        else if (v == "--page" && i + 1 < argc)
+            a.first_page = static_cast<std::uint32_t>(std::stoul(argv[++i], nullptr, 0));
         else if (v == "--mute") a.mute = true;
         else if (v == "--give" && i + 1 < argc) a.give = std::atoi(argv[++i]);  // debug equip
         else if (a.mp && v.rfind("--", 0) == 0) {
@@ -325,12 +383,61 @@ bool parse_args(int argc, char** argv, Args& a) {
     return true;
 }
 
+std::vector<nf::net::MatchConfig> make_host_rotation(const AppContext& ctx, const MpDirect& initial,
+                                                      bool repeat_current) {
+    std::vector<nf::net::MatchConfig> rotation;
+    MatchOptions match = initial.options;
+    match.enabled = true;
+    match.humans = int(nf::kMpMaxHumans);
+    if (repeat_current) rotation.push_back({initial.level_bin, match});
+    const auto map_it = std::find_if(ctx.mp_data.maps.begin(), ctx.mp_data.maps.end(),
+                                     [&](const nf::MpMap& map) { return map.bin_name == initial.level_bin; });
+    if (ctx.mp_data.maps.size() > 1) {
+        std::size_t index = map_it == ctx.mp_data.maps.end()
+                                ? 0
+                                : (std::size_t(map_it - ctx.mp_data.maps.begin()) + 1) % ctx.mp_data.maps.size();
+        for (std::size_t attempt = 0; attempt < ctx.mp_data.maps.size(); ++attempt) {
+            const nf::MpMap& map = ctx.mp_data.maps[index];
+            if (map.bin_name != initial.level_bin) {
+                rotation.push_back({map.bin_name, match});
+                break;
+            }
+            index = (index + 1) % ctx.mp_data.maps.size();
+        }
+    }
+    if (ctx.mp_data.scenarios.size() > 1) {
+        const auto scenario_it =
+            std::find_if(ctx.mp_data.scenarios.begin() + 1, ctx.mp_data.scenarios.end(),
+                         [&](const nf::MpScenario& scenario) { return scenario.item.value == match.mode; });
+        std::size_t index = scenario_it == ctx.mp_data.scenarios.end()
+                                ? 1
+                                : (std::size_t(scenario_it - ctx.mp_data.scenarios.begin()) + 1) %
+                                      ctx.mp_data.scenarios.size();
+        if (index == 0) index = 1;
+        for (std::size_t attempt = 0; attempt < ctx.mp_data.scenarios.size() - 1; ++attempt) {
+            const std::uint32_t mode = ctx.mp_data.scenarios[index].item.value;
+            if (mode != match.mode) {
+                MatchOptions changed = match;
+                changed.mode = mode;
+                rotation.push_back({initial.level_bin, changed});
+                break;
+            }
+            index = (index + 1) % ctx.mp_data.scenarios.size();
+            if (index == 0) index = 1;
+        }
+    }
+    return rotation;
+}
+
 void usage(const char* prog) {
     std::fprintf(stderr,
                  "usage: %s <gamedir> [--mission level.bin [--difficulty 0|1|2] [--channel CH=VAL]] [--mp MAP_OPTS] "
                  "[--drive name [--car name]] [--movie hexid] [--frames N] [--shot out.bmp] [--inputs file] "
-                 "[--press a,b,...] [--mute] [--give ID]\n"
-                 "  no session flags: boot to the frontend (title -> main menu -> mission / arena / driving).\n"
+                 "[--press a,b,...] [--page 0x40000002] [--mute] [--give ID]\n"
+                 "  --connect IPv4[:port] [--password text] [--map file.bin] [--name name] [--chat message] [--frames N] "
+                 "[--net-sim-loss 0..100] [--net-sim-latency ms] joins a network server.\n"
+                 "  --browse-lan, --browse-master IPv4[:port], or --browse-ip IPv4[:port] query server lists/info; the main-menu Multiplayer entry opens Host/Join.\n"
+                 "  --online-master IPv4[:port] adds the registry to that join screen; --listen-port and --host-time-limit configure a listen host.\n"
                  "  --mp options: nfgame set (--mode/--players/--bots/--frag-limit/--time-limit/--weapons/...).\n"
                  "  --give ID: debug equip (scoped-capture hook): give + select the weapon at session start.\n",
                  prog);
@@ -346,12 +453,65 @@ int run(int argc, char** argv) {
     }
     AppConfig cfg;
     load_config(config_path(), cfg);
-
+    if (args.password.size() > nf::net::kMaxPasswordBytes)
+        throw std::runtime_error("--password is limited to 64 bytes");
+    if (args.browse_lan || args.browse_master || !args.direct_lookup.empty()) {
+        ServerBrowser browser;
+        std::vector<ServerBrowserEntry> entries;
+        if (args.browse_lan) entries = browser.lan();
+        if (!args.direct_lookup.empty()) {
+            for (auto& entry : browser.direct(args.direct_lookup)) {
+                const auto found = std::find_if(entries.begin(), entries.end(), [&](const ServerBrowserEntry& item) {
+                    return item.endpoint == entry.endpoint;
+                });
+                if (found == entries.end()) entries.push_back(std::move(entry));
+                else *found = std::move(entry);
+            }
+        }
+        if (args.browse_master) {
+            const std::size_t colon = args.master.rfind(':');
+            const std::string host = args.master.substr(0, colon);
+            std::uint16_t port = 27501;
+            if (colon != std::string::npos) {
+                char* end = nullptr;
+                const long value = std::strtol(args.master.c_str() + colon + 1, &end, 10);
+                if (!end || *end || value < 1 || value > 65535)
+                    throw std::runtime_error("--browse-master has an invalid port");
+                port = std::uint16_t(value);
+            }
+            for (auto& entry : browser.master(host, port)) {
+                const auto found = std::find_if(entries.begin(), entries.end(), [&](const ServerBrowserEntry& item) {
+                    return item.endpoint == entry.endpoint;
+                });
+                if (found == entries.end()) entries.push_back(std::move(entry));
+                else *found = std::move(entry);
+            }
+        }
+        for (const ServerBrowserEntry& entry : entries)
+            std::printf("%s  %s  %s  %u/%u  %ums%s\n", entry.endpoint.c_str(), entry.name.c_str(), entry.map.c_str(),
+                        unsigned(entry.players), unsigned(entry.max_players), unsigned(entry.ping_ms),
+                        entry.password_required ? "  password" : "");
+        std::printf("nightfire: %zu server(s)\n", entries.size());
+        return 0;
+    }
     std::unique_ptr<AppContext> ctx = load_context(args.gamedir);
-
+    if (!args.connect.empty() && args.frames >= 0 && args.shot.empty()) {
+        NetworkClientOptions options;
+        options.endpoint = args.connect;
+        options.map = args.map;
+        options.password = args.password;
+        options.name = args.player_name;
+        options.press = args.press;
+        options.chat = args.chat;
+        options.frames = args.frames;
+        options.loss_percent = args.net_sim_loss;
+        options.latency_ms = args.net_sim_latency;
+        return run_network_client(*ctx, options);
+    }
     // Window first: it owns SDL/GL and must die last (teardown order: menu audio and the
     // UI renderers hold live SDL/GL objects and are destroyed before it).
-    const bool direct = !args.mission.empty() || args.mp || !args.drive.empty() || !args.movie.empty();
+    const bool direct = !args.mission.empty() || args.mp || !args.drive.empty() ||
+                        !args.movie.empty() || !args.connect.empty();
     const bool headless_opts = args.frames >= 0 || !args.shot.empty() || !args.press.empty() || !args.inputs.empty();
     const bool hidden = (direct && headless_opts) || (!direct && (!args.press.empty() || !args.shot.empty()));
     Window window("nightfire", kWindowW, kWindowH, hidden);
@@ -365,6 +525,28 @@ int run(int argc, char** argv) {
     if (menu_audio_ptr && !menu_audio_ptr->open_device()) menu_audio_ptr = nullptr;
     ui::Renderer ui(ctx->assets.sprites);
     ui::TextRenderer text(ui, ctx->assets.fonts);
+    if (!args.connect.empty()) {
+        NetworkClientOptions options;
+        options.endpoint = args.connect;
+        options.map = args.map;
+        options.password = args.password;
+        options.name = args.player_name;
+        options.chat = args.chat;
+        options.loss_percent = args.net_sim_loss;
+        options.latency_ms = args.net_sim_latency;
+        NetworkSession network(*ctx, std::move(options));
+        MpDirect direct_mp;
+        direct_mp.level_bin = args.map;
+        direct_mp.inputs[0] = args.inputs;
+        direct_mp.options.enabled = true;
+        direct_mp.options.humans = 4;
+        direct_mp.options.bots = 4;  // local drone rigs are hidden/posed from authoritative network bot snapshots
+        MpSession session(*ctx, window, ui, text, direct_mp, cfg);
+        if (!session.ready()) return 1;
+        const long frames = args.frames >= 0 ? args.frames : (!args.shot.empty() ? 300 : -1);
+        session.run_network_interactive(network, frames, args.shot);
+        return 0;
+    }
 
     // ---- direct session launches (headless verification / debug) ----
     if (!args.movie.empty()) {
@@ -464,14 +646,141 @@ int run(int argc, char** argv) {
     while (true) {
         if (pending_level == 0) {
             FrontendResult result;
-            if (!run_frontend(*ctx, window, ui, text, cfg, menu_audio_ptr, args.press, args.shot, result)) {
+            const std::string menu_press = args.press, menu_shot = args.shot;
+            const bool frontend_live = run_frontend(*ctx, window, ui, text, cfg, menu_audio_ptr,
+                                                     args.press, args.shot, args.first_page, result);
+            if (!frontend_live && result.action != FrontendResult::Action::StartOnlineJoin &&
+                result.action != FrontendResult::Action::StartListenServer) {
                 if (!args.press.empty() || !args.shot.empty()) return 0;  // headless menu run done
                 if (result.action == FrontendResult::Action::Quit) return 0;
                 return 0;
             }
             args.press.clear();
+            args.first_page.reset();
             args.shot.clear();
             if (result.action == FrontendResult::Action::Quit) return 0;
+            if (result.action == FrontendResult::Action::StartOnlineJoin) {
+                auto options =
+                    run_online_browser(*ctx, window, ui, text, menu_press, menu_shot, args.player_name,
+                                       args.online_master);
+                if (!options) {
+                    if (!frontend_live) return 0;
+                    continue;
+                }
+                NetworkClientOptions connection = std::move(*options);
+                const std::vector<ServerBrowserEntry> initial_info = ServerBrowser().direct(connection.endpoint);
+                std::uint32_t mode = initial_info.empty() ? nf::mp_mode::kArena : initial_info.front().mode;
+                ServerBrowser browser;
+                while (true) {
+                    const std::string map = connection.map;
+                    NetworkSession network(*ctx, connection);
+                    MpDirect direct_mp;
+                    direct_mp.level_bin = map;
+                    direct_mp.options.enabled = true;
+                    direct_mp.options.mode = mode;
+                    direct_mp.options.humans = int(nf::kMpMaxHumans);
+                    direct_mp.options.bots = int(nf::kMpMaxBots);
+                    nf::GameRng client_rng;
+                    nf::ScopedGameRng client_rng_binding(client_rng);
+                    MpSession session(*ctx, window, ui, text, direct_mp, cfg);
+                    if (!session.ready()) break;
+                    const MpResult match_result = session.run_network_interactive(network, args.frames);
+                    const std::uint64_t completed_revision = match_result.match_revision;
+                    if (!match_result.match_over || args.frames >= 0) break;
+                    bool advanced = false;
+                    for (int attempt = 0; attempt < 120; ++attempt) {
+                        SDL_Delay(250);
+                        const auto next = browser.direct(connection.endpoint);
+                        if (!next.empty() && next.front().match_revision > completed_revision) {
+                            connection.map = next.front().map;
+                            mode = next.front().mode;
+                            std::printf("online client: joining next match %s mode=0x%08x\n", connection.map.c_str(),
+                                        mode);
+                            advanced = true;
+                            break;
+                        }
+                    }
+                    if (!advanced) break;
+                }
+                if (!frontend_live || args.frames >= 0 || !menu_press.empty()) return 0;
+            }
+            if (result.action == FrontendResult::Action::StartListenServer && result.launch) {
+                MpDirect mp = MpSession::from_launch(*result.launch);
+                mp.options.enabled = true;
+                mp.options.humans = int(nf::kMpMaxHumans);
+                if (args.host_time_limit > 0.0f) mp.options.time_limit = args.host_time_limit * 60.0f;
+                nf::net::ServerConfig server_config;
+                server_config.data_dir = args.gamedir;
+                server_config.map = mp.level_bin;
+                server_config.match = mp.options;
+                server_config.port = std::uint16_t(args.listen_port);
+                server_config.name = args.player_name;
+                server_config.password = args.password;
+                server_config.net_sim.loss_percent = args.net_sim_loss;
+                server_config.net_sim.latency_ms = args.net_sim_latency;
+                if (!args.online_master.empty()) {
+                    const std::size_t colon = args.online_master.rfind(':');
+                    server_config.master_host = args.online_master.substr(0, colon);
+                    if (colon != std::string::npos) {
+                        char* end = nullptr;
+                        const long port = std::strtol(args.online_master.c_str() + colon + 1, &end, 10);
+                        if (!end || *end || port < 1 || port > 65535)
+                            throw std::runtime_error("--online-master has an invalid port");
+                        server_config.master_port = std::uint16_t(port);
+                    }
+                }
+                server_config.rotation = make_host_rotation(*ctx, mp, args.host_time_limit > 0.0f);
+                nf::net::ServerRuntime server(std::move(server_config));
+                std::string error;
+                if (!server.start(&error)) {
+                    std::fprintf(stderr, "nightfire: listen server failed: %s\n", error.c_str());
+                    continue;
+                }
+                std::size_t matches_played = 0;
+                while (server.running()) {
+                    const nf::net::ServerStatus before = server.current_match();
+                    NetworkClientOptions client_options;
+                    client_options.endpoint = "127.0.0.1:" + std::to_string(args.listen_port);
+                    client_options.map = before.map;
+                    client_options.password = args.password;
+                    client_options.name = args.player_name;
+                    client_options.loss_percent = args.net_sim_loss;
+                    client_options.latency_ms = args.net_sim_latency;
+                    MpDirect client_mp;
+                    client_mp.level_bin = before.map;
+                    client_mp.options = mp.options;
+                    client_mp.options.mode = before.mode;
+                    client_mp.options.humans = int(nf::kMpMaxHumans);
+                    client_mp.options.bots = int(nf::kMpMaxBots);
+                    nf::GameRng client_rng;
+                    nf::ScopedGameRng client_rng_binding(client_rng);
+                    NetworkSession network(*ctx, std::move(client_options));
+                    MpSession session(*ctx, window, ui, text, client_mp, cfg);
+                    if (!session.ready()) break;
+                    const MpResult match_result = session.run_network_interactive(network, args.frames);
+                    if (!match_result.match_over) break;
+                    bool advanced = false;
+                    while (true) {
+                        const nf::net::ServerStatus current = server.current_match();
+                        if (current.revision > before.revision && !current.match_over) {
+                            if (!current.running) {
+                                SDL_Delay(50);
+                                continue;
+                            }
+                            std::printf("listen server: next match %s mode=0x%08x\n", current.map.c_str(),
+                                        current.mode);
+                            advanced = true;
+                            break;
+                        }
+                        if (!current.running && !server.error().empty()) break;
+                        SDL_Delay(50);
+                    }
+                    ++matches_played;
+                    if (!advanced || (args.frames >= 0 && matches_played >= 2)) break;
+                }
+                server.stop();
+                continue;
+            }
             if (result.action == FrontendResult::Action::StartMission) {
                 // The mission map can also name a driving mission: launch it on the DRIVING side.
                 if (driving::find_level(result.level_bin)) {

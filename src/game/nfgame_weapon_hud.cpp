@@ -34,7 +34,9 @@ void WeaponSystem::fill_hud(int slot, HudState& hud) const {
     hud.scope_pane = cur.has(wf1::kScope);
     hud.aim_x = hud.aim_y = 0.0f;   // the aim-box cursor (BLData+280/284) is not modelled
     // HUD_UpdateCrossHair hides the crosshair for scoped weapons while aiming [INFERENCE: row mapping].
-    hud.crosshair = (p->aim && cur.has(wf1::kScope)) ? 0 : 1;
+    // PINE MP seedable rows show the default unscoped crosshair at HUDCrossCoords row 2.
+    constexpr int crosshair_kind = 2;
+    hud.crosshair = (p->aim && cur.has(wf1::kScope)) ? 0 : crosshair_kind;
     hud.crosshair_enabled = true;
     if (pl) {
         hud.health = pl->health();

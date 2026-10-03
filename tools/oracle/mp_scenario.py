@@ -1,7 +1,8 @@
 """MP match setup driver: main menu (PINE slot 1) -> configured MP match via vpad.
 
-Learned flow (2026-10-02, verified live):
-  main menu -down-> Multiplayer -cross-> P_MPJOIN -cross x2-> scenario wheel
+Learned flow (2026-10-03, verified live):
+  main menu -down-> Multiplayer -cross-> P_MPJOIN -cross-> join
+  -cross-> codename -cross-> ready -guarded cross-> scenario wheel
   (-up x15 to clamp top, -down xN-> target) -cross-> map wheel (same clamp)
   -cross-> character (default) -cross-> handicap (0) -cross-> Scenario Options
   -down-> AI Bots -cross-> [Setup Bot k -cross-> char -cross-> config(Playing:Yes
@@ -15,7 +16,9 @@ every page entry, 8 s between moves (game at ~30 fps wall). Locked scenarios
 Ops, Yakuza) come up Playing:Yes once their config page is confirmed.
 
 Usage: mp_scenario.py --scenario 1 --map 0 --bots 3 --slot 12 [--shots dir]
-         [--settle 8] [--confirm-only]
+         [--settle 8] [--page-settle 10] [--press-ms 400] [--nav-ms 800] [--live-timeout 120]
+Use `--press-ms 2000` for confirm buttons on a slow EE interpreter. Menu
+navigation/back taps have their own shorter duration; increase `--nav-ms` if needed.
 """
 
 import argparse
@@ -29,20 +32,33 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mp_addrs as A
 from pine import Pine, WRITE8, WRITE16, WRITE32
 
+PRESS_MS = 400
+NAV_MS = 800
 
-def vpad(*words):
+def _vpad(controller, words):
+    if len(words) >= 3 and words[0] == "press" and words[2] == 400:
+        duration = PRESS_MS if words[1] == "cross" else NAV_MS
+        words = (*words[:2], duration, *words[3:])
+    command = words if controller == 1 else ("p2", *words)
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "nf-vpad.sock"))
-    s.sendall((" ".join(map(str, words)) + "\n").encode())
+    s.sendall((" ".join(map(str, command)) + "\n").encode())
     reply = s.recv(256)
     s.close()
     return reply
+
+
+def vpad(*words):
+    return _vpad(1, words)
+
+
+def vpad2(*words):
+    return _vpad(2, words)
+
+
 def hold(btn, secs=2.0):
-    # The join page eats 400 ms taps; a 2 s hold registers reliably.
-    import time as _t
-    vpad("down", btn)
-    _t.sleep(secs)
-    return vpad("up", btn)
+    # Use one paired input command so the bridge releases the button reliably.
+    return vpad("press", btn, int(secs * 1000))
 
 
 def shot(path):
@@ -60,9 +76,31 @@ def main():
     ap.add_argument("--bot-chars", default="", help="e.g. 6,5,8: char ids poked into mpbots at confirm (skip wheel)")
     ap.add_argument("--bot-teams", default="", help="e.g. 0,1,0: teams poked alongside --bot-chars")
     ap.add_argument("--shots", default="", help="dir for per-page screenshots")
+    ap.add_argument("--press-ms", type=int, default=400,
+                    help="duration for scripted confirm taps (raise for slow EE interpreter)")
+    ap.add_argument("--nav-ms", type=int, default=800,
+                    help="duration for menu navigation taps")
     ap.add_argument("--settle", type=float, default=8.0)
+    ap.add_argument("--page-settle", type=float, default=10.0,
+                    help="seconds to wait after entering a menu page before confirming it")
     ap.add_argument("--load-slot", type=int, default=1)
+    ap.add_argument("--live-timeout", type=float, default=120.0,
+                    help="seconds to wait for the match player after loading")
+    ap.add_argument("--spawn-stabilize", type=int, default=60,
+                    help="logic frames after first live player before saving a match-start state")
+    ap.add_argument("--weapon-set", type=int, default=None,
+                    help="override MP PickupMatrix row (0..10) before match start")
+    ap.add_argument("--second-human", action="store_true",
+                    help="join Pad2 from the P_MPJOIN screen (requires vpad.py --dual and PCSX2 Pad2 = SDL-1)")
     args = ap.parse_args()
+    global PRESS_MS, NAV_MS
+    PRESS_MS = args.press_ms
+    NAV_MS = args.nav_ms
+
+    if args.weapon_set is not None and not 0 <= args.weapon_set <= 10:
+        ap.error("--weapon-set must be in 0..10")
+    if args.spawn_stabilize < 0:
+        ap.error("--spawn-stabilize must be non-negative")
 
     if args.shots:
         os.makedirs(args.shots, exist_ok=True)
@@ -73,6 +111,8 @@ def main():
             time.sleep(1.0)
 
     pine = Pine()
+    if args.second_human:
+        vpad2("release")
     vpad("release")
     before = pine.read32(A.GS_FRAME_START)
     pine.load_state(args.load_slot)
@@ -85,33 +125,48 @@ def main():
     vpad("press", "down", 400)
     time.sleep(args.settle)
     hold("cross")
-    time.sleep(10.0)
+    time.sleep(args.page_settle)
     snap("02-join")
+    if args.second_human:
+        vpad2("press", "cross", args.press_ms)
+        time.sleep(args.settle)
+        snap("02-join-two-players")
     hold("cross")
     time.sleep(args.settle)
     hold("cross")
-    time.sleep(10.0)
-    hold("cross")   # confirm ready -> scenario page (four holds total)
-    time.sleep(10.0)
+    time.sleep(args.page_settle)
+    hold("cross")
+    time.sleep(args.page_settle)
+    # On a slow interpreter the ready prompt can eat the transition tap. Probe
+    # the scenario mask around one additional tap so we do not accidentally
+    # select Quick Game when the wheel already opened.
+    pine.write(WRITE32, A.MPSETTINGS + A.MPS_SCENARIO_MASK, 0xAAAAAAAA)
+    hold("cross")
+    time.sleep(args.page_settle)
+    if pine.read32(A.MPSETTINGS + A.MPS_SCENARIO_MASK) != 0xAAAAAAAA:
+        vpad("press", "triangle", 400)
+        time.sleep(args.page_settle)
+        pine.write(WRITE32, A.MPSETTINGS + A.MPS_SCENARIO_MASK, 0xAAAAAAAA)
 
     snap("03-scenario")
-    # Cycle-until-match: select, read what the wheel gave, step down on mismatch.
-    # (Wheel position is unobservable; triangle-back preserves it. A Quick-Game
-    # select auto-setups past the map page, so the map loop tolerates that too.)
+    # Quick Game shares Arena's default scenario mask and skips the map wheel.
+    # Leave that entry before observing the selected scenario in RAM.
+    vpad("press", "down", 400)
+    time.sleep(args.settle)
     want_mask = A.MP_SCENARIOS[args.scenario][0]
     for attempt in range(14):
         pine.write(WRITE8, A.MENU_UNLOCK_EVERYTHING, 1)
         pine.write(WRITE32, A.MPSETTINGS + A.MPS_SCENARIO_MASK, 0xAAAAAAAA)
         vpad("press", "cross", 400)
-        time.sleep(10.0)
+        time.sleep(args.page_settle)
         m = pine.read32(A.MPSETTINGS + A.MPS_SCENARIO_MASK)
         if m == want_mask:
             break
         print(f"  scenario select gave {m:#x}, cycling", flush=True)
         vpad("press", "triangle", 400)
-        time.sleep(10.0)
+        time.sleep(args.page_settle)
         if m == 0xAAAAAAAA:
-            time.sleep(10.0)   # select never fired: page not ready, retry same row
+            time.sleep(args.page_settle)   # select never fired: page not ready, retry same row
         else:
             vpad("press", "down", 400)
             time.sleep(args.settle)
@@ -119,21 +174,20 @@ def main():
         raise SystemExit("scenario wheel never selected mask %#x" % want_mask)
     snap("04-scenario-sel")
     want_map = A.MP_MAPS[args.map][0]
-    for attempt in range(9):
-        pine.write(WRITE32, A.MPSETTINGS + A.MPS_MAP, 0xBBBBBBBB)
+    # The map wheel commits its highlighted row on cross. Use a valid ID as
+    # the pre-click value so a missed wheel cannot pass an invalid map to load.
+    for attempt in range(len(A.MP_MAPS)):
+        pine.write(WRITE32, A.MPSETTINGS + A.MPS_MAP, A.MP_MAPS[0][0])
         vpad("press", "cross", 400)
-        time.sleep(10.0)
+        time.sleep(args.page_settle)
         mp = pine.read32(A.MPSETTINGS + A.MPS_MAP)
         if mp == want_map:
             break
         print(f"  map select gave {mp:#x}, cycling", flush=True)
         vpad("press", "triangle", 400)
-        time.sleep(10.0)
-        if mp == 0xBBBBBBBB:
-            time.sleep(10.0)
-        else:
-            vpad("press", "down", 400)
-            time.sleep(args.settle)
+        time.sleep(args.page_settle)
+        vpad("press", "down", 400)
+        time.sleep(args.settle)
     else:
         raise SystemExit("map wheel never selected %#x" % want_map)
     snap("05-map-sel")
@@ -159,60 +213,79 @@ def main():
         print("poked bot roster", list(zip(chars, teams)), flush=True)
     poke_roster()   # early: options/confirm pages see the intended teams+count
     vpad("press", "cross", 400)
-    time.sleep(10.0)
+    time.sleep(args.page_settle)
     snap("07-character")
     vpad("press", "cross", 400)
-    time.sleep(10.0)
+    time.sleep(args.page_settle)
     snap("08-handicap")
     vpad("press", "cross", 400)
-    time.sleep(10.0)
+    time.sleep(args.page_settle)
     snap("09-options")
     if args.bot_chars:
         vpad("press", "cross", 400)   # Continue directly; roster already poked
-        time.sleep(10.0)
+        time.sleep(args.page_settle)
     else:
         vpad("press", "down", 400)
         time.sleep(args.settle)
         vpad("press", "cross", 400)
-        time.sleep(10.0)
+        time.sleep(args.page_settle)
         snap("10-bots")
         for _ in range(args.bots):
             vpad("press", "cross", 400)
-            time.sleep(10.0)
+            time.sleep(args.page_settle)
             vpad("press", "cross", 400)
-            time.sleep(10.0)
+            time.sleep(args.page_settle)
             vpad("press", "cross", 400)
-            time.sleep(10.0)
+            time.sleep(args.page_settle)
             vpad("press", "down", 400)
             time.sleep(args.settle)
         snap("11-bots-done")
         vpad("press", "triangle", 400)
-        time.sleep(10.0)
+        time.sleep(args.page_settle)
         vpad("press", "up", 400)
         time.sleep(args.settle)
         vpad("press", "cross", 400)
-        time.sleep(10.0)
+        time.sleep(args.page_settle)
     snap("12-confirm")
     poke_roster()   # idempotent re-poke guards menu clobbering
+    if args.weapon_set is not None:
+        pine.write(WRITE32, A.MPSETTINGS + A.MPS_WEAPON_SET, args.weapon_set)
+        print("poked MP weapon set", args.weapon_set, flush=True)
     vpad("press", "cross", 400)
-    # wait for the match to go live
     live = False
-    for _ in range(30):
-        time.sleep(8)
+    first_live_frame = None
+    deadline = time.monotonic() + args.live_timeout
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
         try:
-            mp = struct.unpack("<I", pine.read_block(A.MPSETTINGS + A.MPS_MP_ACTIVE, 4))[0]
-            pl = struct.unpack("<I", pine.read_block(A.GLB_PLAYERS, 4))[0]
-            if mp == 1 and pl != 0:
-                live = True
-                break
+            frame0, mp, player, done0, done1, frame1 = pine.read_ranges([
+                (A.GS_FRAME_START, 4), (A.MPSETTINGS + A.MPS_MP_ACTIVE, 4),
+                (A.GLB_PLAYERS, 4), (A.GS_DONE, 4), (A.GS_DONE, 4),
+                (A.GS_FRAME_START, 4),
+            ])
+            frame0, mp, player, done0, done1, frame1 = (
+                struct.unpack("<I", value)[0]
+                for value in (frame0, mp, player, done0, done1, frame1))
+            if frame0 != frame1 or done0 != done1:
+                continue
+            is_live = (mp == 1 and player and pine.read_block(
+                player + A.OBJ_TYPE, 1)[0] == 3)
+            if not is_live:
+                first_live_frame = None
+                continue
+            if first_live_frame is None:
+                first_live_frame = frame1
+            if frame1 - first_live_frame < args.spawn_stabilize:
+                continue
+            live = True
+            pine.save_state(args.slot)
+            print("live:", live, "saved slot", args.slot, "at frame", frame1, flush=True)
+            break
         except Exception:
             pass
-    print("live:", live)
+    if not live:
+        print("live:", live, flush=True)
     snap("13-spawn")
-    if live:
-        time.sleep(5.0)
-        pine.save_state(args.slot)
-        print("saved slot", args.slot)
     pine.close()
 
 

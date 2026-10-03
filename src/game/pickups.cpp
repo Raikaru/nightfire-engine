@@ -127,6 +127,66 @@ PickupField::PickupField(Level& level, const CollisionWorld& collision, const st
             add(collision, pp, box, false, at, int(PickupCategory::Ammo), kAmmoBoxItem, ammo.clip_size, -1, kSetRespawnUnits, slot, 0.5f);
         }
     }
+    static_count_ = pickups_.size();
+}
+
+void PickupField::ensure_dynamic_slots(std::size_t count) {
+    while (pickups_.size() < count) {
+        Pickup pickup;
+        pickup.instance = SIZE_MAX;
+        pickup.dynamic = true;
+        pickup.state = Pickup::State::Gone;
+        pickups_.push_back(pickup);
+    }
+}
+
+bool PickupField::add_dynamic_weapon(const CollisionWorld& collision, const Vec3& pos, int weapon_id, int rounds,
+                                    std::uint64_t stamp, std::uint32_t lifetime_frames, bool radar_hidden,
+                                    std::size_t index) {
+    if (rounds <= 0) return false;
+    const PickupWeaponInfo info = weapon_(weapon_id);
+    const PickupWeaponInfo base = weapon_(info.base);
+    const ModelRef model = find_model(base.model_hash);
+    if (model.chunk == SIZE_MAX) return false;
+
+    const bool from_snapshot = index != SIZE_MAX;
+    if (index == SIZE_MAX) {
+        index = pickups_.size();
+        for (std::size_t i = static_count_; i < pickups_.size(); ++i)
+            if (pickups_[i].dynamic && pickups_[i].state == Pickup::State::Gone) {
+                index = i;
+                break;
+            }
+    } else if (index < static_count_) {
+        return false;
+    }
+    ensure_dynamic_slots(index + 1);
+
+    Pickup pickup;
+    pickup.instance = SIZE_MAX;
+    pickup.model_chunk = model.chunk;
+    pickup.model_index = model.index;
+    pickup.model_to_world = identity();
+    pickup.pos = pos;
+    if (!from_snapshot) {
+        if (const auto floor = collision.point_on_floor(pos, 1.0f)) pickup.pos = *floor;
+    }
+    for (std::size_t k = 0; k < 3; ++k) pickup.model_to_world[12 + k] = pickup.pos[k];
+    const nf::Model& mesh = level_.chunks()[model.chunk].chunk.models[model.index];
+    pickup.centre = transform_point(pickup.model_to_world, {mesh.params[0], mesh.params[1], mesh.params[2]});
+    pickup.radius = mesh.params[3] * max_scale(pickup.model_to_world);
+    pickup.category = int(PickupCategory::Weapon);
+    pickup.item = weapon_id;
+    pickup.amount = rounds;
+    pickup.sound = kSetSound;
+    pickup.respawn_units = 0;
+    pickup.state = Pickup::State::Active;
+    pickup.stamp = stamp;
+    pickup.lifetime_total_frames = lifetime_frames;
+    pickup.radar_hidden = radar_hidden;
+    pickup.dynamic = true;
+    pickups_[index] = pickup;
+    return true;
 }
 
 bool PickupField::handle(Pickup& p, const PickupToucher& who, PickupEvent& event) const {
@@ -172,6 +232,11 @@ void PickupField::update(const CollisionWorld& collision, const std::vector<Pick
                          float rate, float dt, std::vector<PickupEvent>& events) {
     for (Pickup& p : pickups_) {
         if (p.state == Pickup::State::Gone) continue;
+        if (p.dynamic && p.lifetime_total_frames != 0 && frame >= p.stamp &&
+            frame - p.stamp >= p.lifetime_total_frames) {
+            p.state = Pickup::State::Gone;
+            continue;
+        }
         if (p.state == Pickup::State::Waiting) {
             // Pickup_Update state 2: back after 10 * FRAME_RATE_INT * units frames (strictly more).
             if (std::uint64_t(10.0f * rate * float(p.respawn_units)) < frame - p.stamp) p.state = Pickup::State::Active;

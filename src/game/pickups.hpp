@@ -60,7 +60,10 @@ struct Pickup {
     int set_slot = -1;                  // 0..4 for placement categories 7..11
 
     State state = State::Active;
-    std::uint64_t stamp = 0;            // obj+0xEC: frame the pickup was taken
+    std::uint64_t stamp = 0;            // obj+0xEC: frame the pickup was taken or dropped
+    std::uint32_t lifetime_total_frames = 0;  // dropped pickup removal interval; zero for map placements
+    bool dynamic = false;               // no backing map placement; registered into MPpickups at runtime
+    bool radar_hidden = false;          // obj+0xF0 bit 0x10: do not expose this special ammo drop on radar
     std::array<float, 4> visit_until{}; // MP_PICKUP+0x80: per-bot "visited until" clock (seconds)
 
     bool available() const { return state == State::Active; }
@@ -97,6 +100,12 @@ public:
 
     const std::vector<Pickup>& all() const { return pickups_; }
     std::vector<Pickup>& all() { return pickups_; }
+    std::size_t static_count() const { return static_count_; }
+    void ensure_dynamic_slots(std::size_t count);
+    bool add_dynamic_weapon(const CollisionWorld& collision, const Vec3& pos, int weapon_id, int rounds,
+                            std::uint64_t stamp, std::uint32_t lifetime_frames, bool radar_hidden = false,
+                            std::size_t index = SIZE_MAX);
+
 
     // Pickup_Update for every pickup: spin, respawn timers, then the touch test (humans in slot order, then bots; the
     // first toucher in range with a clear line of sight goes to Pickup_Handler and ends this pickup's tick).
@@ -119,6 +128,7 @@ private:
     bool handle(Pickup& p, const PickupToucher& who, PickupEvent& event) const;
 
     std::vector<Pickup> pickups_;
+    std::size_t static_count_ = 0;
     PickupWeaponFn weapon_;
     Level& level_;
 };

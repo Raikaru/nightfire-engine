@@ -122,8 +122,11 @@ void WeaponEffects::set_level(Level* level) {
     model_cache_.clear();
 }
 
-void WeaponEffects::set_explosion_script(std::uint32_t hash, CutsceneBin bin) {
-    fx_bins_.emplace(hash, std::move(bin));
+void WeaponEffects::set_explosion_script(std::uint32_t hash, Bytes data) {
+    StoredExplosionScript script;
+    script.bytes.assign(data.begin(), data.end());
+    script.bin = parse_cutscene_bin(Bytes(script.bytes));
+    fx_bins_.emplace(hash, std::move(script));
 }
 
 void WeaponEffects::start_playback(const ExplosionEvent& x) {
@@ -134,7 +137,7 @@ void WeaponEffects::start_playback(const ExplosionEvent& x) {
     pb->pos = x.position;
     pb->radius = x.radius;
     pb->yaw = x.yaw;
-    pb->bin = &it->second;
+    pb->bin = &it->second.bin;
     pb->host.switches = &switches_;
     pb->player = std::make_unique<CutscenePlayer>(pb->bin, x.script, &pb->host);
     pb->player->play(false);

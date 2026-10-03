@@ -1,14 +1,14 @@
 """MP ground-truth address map (ACTION.ELF USA, SLUS-20579).
 
-Single source of truth for tools/oracle/mp_*.py. Every address was probed live
-over PINE on 2026-10-02 unless marked [SPEC] (from docs/spec-arena-ai.md, not
-yet re-verified this session). Struct notes cite the spec section.
+Single source of truth for tools/oracle/mp_*.py. Most addresses were probed live
+over PINE on 2026-10-02; [SPEC] denotes spec-derived addresses and [IDA] denotes
+offsets recovered from ACTION.ELF pseudocode/disassembly but not yet live-probed. Struct notes cite the source.
 """
 
 # ---- global timebase -------------------------------------------------------
 GAMESTATE = 0x2A3768
 GS_DONE = GAMESTATE + 0x30      # ++ at END of each logic update
-GS_FRAME = GAMESTATE + 0x34     # frame counter (verified == +0x3C here)
+GS_FRAME = GAMESTATE + 0x34     # separate counter; live-diverges from +0x3C, not an MP frame key
 GS_FRAME_START = GAMESTATE + 0x3C  # ++ at START of each logic update
 FRAME_RATE = 0x30D0D0          # float, 60 / vsyncs per logic frame
 FRAME_RATE_INT = 0x30D0CC       # int, 30 or 60
@@ -69,13 +69,38 @@ OBJ_BL = 0xE0                  # BLData*
 OBJ_STAMP = 0xEC               # i32 spawn/death frame
 OBJ_STATE = 0xF4               # u16: humans 1 alive; bots = drone state id
 OBJ_TYPE = 0xFF                # u8: 2 bot 3 human 0x11/0x12 dead 0x2f pickup
+
+# DynamicObjList (ACTION.ELF control_* assembly) and bullet object payload
+DYNAMIC_OBJ_LIST = 0x2705A0   # [IDA] head at +0x14; nodes are doubly linked
+OBJ_LIST_NEXT = 0x14
+OBJ_CUSTOM_DATA = 0xE0        # obj_tag* -> BU_tag for type-5 bullets
+BULLET_RAW_SIZE = 0x108       # [SPEC] through BU+0x104 in spec-weapons.md §7.1
+BULLET_DIR = 0x00             # vec3
+BULLET_OWNER = 0x30           # obj_tag*
+BULLET_TARGET = 0x40          # obj_tag* homing target
+BULLET_WEAPON_DEF = 0x44      # weapon_definition_tag*
+BULLET_TRAVELLED = 0xF4       # f32
+BULLET_SPEED = 0xF8           # f32
+BULLET_TIMER = 0xFC           # f32
+BULLET_BOUNCES = 0x100        # u16
+BULLET_IN_AIR = 0x104          # u8
+WEAPON_DATA = 0x2BF150        # [SPEC] 115 x 268-byte weapon_definition_tag table
+WEAPON_DEF_STRIDE = 0x10C
 # BLData (verified)
 BL_HEALTH = 0x894              # f32 humans
 BL_ARMOUR = 0x8B0              # f32 humans
 BL_PITCH = 0x8A8               # f32 humans, units of pi/2
-# collbody (verified; MpCombat correction: BLData=*(obj+0xE0), weapon=*(obj+0xDC)+98)
+BL_AUTOTARGET = 0x114         # obj_tag* held by Player_AutoAim / Check_AutoAim
+# BLData feedback fields ([IDA] ACTION.ELF offsets; pending live confirmation)
+BL_DAMAGE_FLASH = 0x8BC      # f32, regular pain flash (Player_HandlePain)
+BL_FADE_TOTAL = 0x918         # f32, flash-bang total duration
+BL_FADE_TIMER = 0x91C         # f32, flash-bang remaining duration
+BL_FADE_COLOUR = 0x963       # u8, flash-bang color
+BL_PAIN_DIR = 0x967           # u8, Player_HandlePain
+BL_PAIN_ALPHA = 0x968         # u8, HUD damage overlay alpha
+# collbody (verified; +0x98 is a pointer-looking 4-byte field, not a weapon ID)
 CB_AIM = 0x96                  # u8 aim bit
-CB_WEAPON = 0x98               # s8 current weapon id
+CB_98 = 0x98                   # 4-byte field; target type not identified
 CB_FOOT = 0xCC                 # f32 animated foot height
 
 # ---- bot brain (spec Part 2, §1.5/1.6; slot layout verified, rest [SPEC]) ---
@@ -118,8 +143,10 @@ PICKUPINFO_OFF = 0xE0          # obj+0xE0 for type-0x2f objs
 PI_STATE = 0x20                # s16 0 settling 1 active 2 respawning
 PI_CAT = 0x22                  # u16 category
 PI_ITEM = 0x24                 # u16 item/weapon id
-PI_RESPAWN_FLAG = 0x2C         # u16 0 delete ... 0xffff hide+respawn
-PI_RESPAWN = 0x2E              # u16 respawn value (seconds = 10 x units [SPEC])
+PI_RESPAWN_UNITS = 0x2C     # u16 units of 10 s; 0 one-shot, 0xffff never removed
+PI_LIFETIME_FRAMES = 0x2E   # u16 lifetime countdown for dropped items (0 = infinite)
+PI_AMOUNT = 0x26              # u16 item quantity (PICKUPINFO+0x26)
+OBJ_FLAGS = 0xF0              # bit 0x10 hides dropped pickup from radar
 PI_INDEX = 0x30                # s16 MPpickups index
 
 # ---- objectives (spec 1B; ext blobs for the recorder) -----------------------
@@ -130,6 +157,10 @@ UPLINKS = 0x317450             # 8 x 0x90
 DEMOLITION = 0x3178D0          # 0x90
 PROTECTION = 0x317C60          # 0x90
 GOLDENEYE = 0x317FF0           # 4 x 0x90 (key, crystal, effect-handle, target)
+GOLDENEYE_EFFECT = GOLDENEYE + 2 * 0x90  # effect handle in first word
+GOLDENEYE_TARGET = GOLDENEYE + 3 * 0x90  # active strike target obj*
+MP_ASSASSINATION_TARGET = 0x30D770       # Target obj* ("Assasin" ELF symbol)
+MP_ASSASSIN = 0x30D774                  # Assassin obj* (adjacent unlabeled word)
 BLUEPRINT = 0x318830           # 0x90
 ESPONAGE_BASE = 0x3188C0       # 2 x 0x90
 HILL = 0x318CE0                # 0x90
@@ -142,6 +173,12 @@ MENU_UNLOCK_EVERYTHING = 0x30D2A7  # u8 cheat flag; bypasses scenario row checks
 SP_LEVEL = 0x2DF2E0            # 12 x 0x18 SP mission unlock rows, +0x10 flag
 
 # ---- input (trace.py compat) ------------------------------------------------
+PLAYER_SETTING_STRIDE = 0x158       # 4 per-controller PlayerSetting entries
+TSLOT_STRIDE = 0x180                 # per-port tSlot; verified Input_Init offsets
+OBJ_SUBSTATE = 0xF6                 # u16 player substate
+BL_RAW_SIZE = 0x970                 # through BLData+0x968 feedback byte
+CB_RAW_SIZE = 0xD0                  # full collbody sample used by trace.py
+DRONE_RAW_SIZE = 0xD20              # through bot_vars back-pointer at +0xD1C
 TSLOT0 = 0x245680
 TSLOT_PADW = 0x122              # Sony button word (active-high)
 TSLOT_STICKS = 0x128           # rx ry lx ly post-deadzone

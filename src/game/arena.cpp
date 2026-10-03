@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <utility>
+#include <stdexcept>
 
 #include "game/collision_world.hpp"
 
@@ -67,6 +68,103 @@ ArenaSystem::ArenaSystem(World& world, ArenaSettings settings, const WeaponSets&
 
     for (std::size_t i = 0; i < kMpSlots; ++i)
         if (settings_.slots[i].present && settings_.mode == mp_mode::kTopAgent) slots_[i].points = float(settings_.score_limit);   // starts at the lives limit
+}
+
+void ArenaSystem::restore_snapshot(const ArenaSeedSnapshot& snapshot) {
+    if (snapshot.objectives.size() != objectives_.size() || snapshot.objectives.size() != runtime_.size())
+        throw std::invalid_argument("arena snapshot objective count does not match the started match");
+    if (snapshot.pickups.size() < pickups_->static_count())
+        throw std::invalid_argument("arena snapshot pickup count is shorter than the map pickup field");
+    pickups_->ensure_dynamic_slots(snapshot.pickups.size());
+
+    phase_ = snapshot.phase;
+    state_code_ = snapshot.state_code;
+    elapsed_ = snapshot.elapsed;
+    total_elapsed_ = snapshot.total_elapsed;
+    settings_.time_limit = snapshot.time_limit;
+    frame_ = snapshot.frame;
+    rate_ = snapshot.rate;
+    dt_ = rate_ > 0.0f ? 1.0f / rate_ : 0.0f;
+    team_score_ = snapshot.team_score;
+    best_score_ = snapshot.best_score;
+    assassin_ = snapshot.assassin;
+    target_ = snapshot.target;
+    golden_target_ = snapshot.golden_target;
+    golden_effect_ = snapshot.golden_effect;
+    result_ = {};
+    pickup_events_.clear();
+    messages_.clear();
+    sounds_.clear();
+
+    for (std::size_t i = 0; i < slots_.size(); ++i) {
+        SlotState& slot = slots_[i];
+        const ArenaSeedSnapshot::Participant& source = snapshot.participants[i];
+        slot.kills = source.kills;
+        slot.deaths = source.deaths;
+        slot.streak = source.streak;
+        slot.points = source.points;
+        slot.last_attacker = source.last_attacker;
+        slot.last_killer = source.last_killer;
+        slot.status = source.status;
+        slot.dead = source.dead;
+        slot.out = source.out;
+        slot.spawn_frame = frame_;
+        if (source.dead && source.respawn_remaining >= 0.0f && rate_ > 0.0f) {
+            const double age = std::max(0.0, double(kHumanRespawnDelay - source.respawn_remaining) * double(rate_));
+            const std::uint64_t age_frames = std::min(frame_, std::uint64_t(std::llround(age)));
+            slot.died_frame = frame_ - age_frames;
+        } else {
+            slot.died_frame = frame_;
+        }
+    }
+
+    for (std::size_t i = 0; i < objectives_.size(); ++i) {
+        const ArenaSeedSnapshot::Objective& source = snapshot.objectives[i];
+        MpObjective& objective = objectives_[i];
+        ObjectiveRuntime& runtime = runtime_[i];
+        objective.state = source.state;
+        objective.carrier = source.carrier;
+        objective.team = source.team;
+        objective.hit_points = source.hit_points;
+        objective.visible = source.visible;
+        objective.pos = source.pos;
+        objective.yaw = source.yaw;
+        runtime.timer = source.timer;
+        runtime.last_damager = source.last_damager;
+        runtime.capturer = source.capturer;
+        runtime.round_over = source.round_over;
+        if (source.place != SIZE_MAX) runtime.place = source.place;
+    }
+
+    std::vector<Pickup>& pickups = pickups_->all();
+    for (std::size_t i = pickups_->static_count(); i < pickups.size(); ++i) {
+        pickups[i].dynamic = true;
+        pickups[i].state = Pickup::State::Gone;
+    }
+    for (std::size_t i = 0; i < snapshot.pickups.size(); ++i) {
+        const ArenaSeedSnapshot::Pickup& source = snapshot.pickups[i];
+        if (i >= pickups_->static_count()) {
+            if (!source.dynamic || !source.has_pos) continue;
+            if (!pickups_->add_dynamic_weapon(world_.collision(), source.pos, source.item, source.amount, source.stamp,
+                                              source.lifetime_total_frames, source.radar_hidden, i))
+                throw std::invalid_argument("arena snapshot dynamic pickup cannot be reconstructed");
+        }
+        Pickup& pickup = pickups[i];
+        if (source.has_pos) pickup.pos = source.pos;
+        pickup.state = source.state;
+        if (source.has_stamp) {
+            pickup.stamp = source.stamp;
+        } else if (pickup.state == Pickup::State::Waiting && rate_ > 0.0f) {
+            const double lifetime = 10.0 * double(pickup.respawn_units);
+            const double age = std::max(0.0, (lifetime - double(source.respawn_remaining)) * double(rate_));
+            const std::uint64_t age_frames = std::min(frame_, std::uint64_t(std::llround(age)));
+            pickup.stamp = frame_ - age_frames;
+        } else {
+            pickup.stamp = frame_;
+        }
+        pickup.radar_hidden = source.radar_hidden;
+        if (source.has_lifetime) pickup.lifetime_total_frames = source.lifetime_total_frames;
+    }
 }
 
 void ArenaSystem::register_body(int slot, ArenaBody* body) {
@@ -224,6 +322,12 @@ bool ArenaSystem::hit_applies(int attacker, int victim) {
     return attacker == victim || settings_.friendly_fire;
 }
 
+bool ArenaSystem::drop_weapon(const Vec3& pos, int weapon_id, int rounds, bool radar_hidden) {
+    if (rounds <= 0 || !pickups_ || rate_ <= 0.0f) return false;
+    const auto lifetime = static_cast<std::uint32_t>(std::lround(30.0f * rate_));  // Pickup_CreateSimple MP lifetime.
+    return pickups_->add_dynamic_weapon(world_.collision(), pos, weapon_id, rounds, world_.frame(), lifetime, radar_hidden);
+}
+
 void ArenaSystem::environment_kill(int victim) {
     if (valid(victim)) slots_[std::size_t(victim)].last_attacker = kAttackerEnvironment;
     player_killed(victim, kAttackerEnvironment, -1);
@@ -350,7 +454,7 @@ void ArenaSystem::check_end_condition(float dt) {
                         break;
                     }
         }
-        if (limit >= 0 && !time_channel_) time_channel_ = limit <= elapsed_;
+        if (limit > 0.0f && !time_channel_) time_channel_ = limit <= elapsed_;
         best_score_ = best_score();
         if (mode == mp_mode::kTopAgent) {
             if (time_channel_) state_code_ = 2;

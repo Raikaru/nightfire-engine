@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <utility>
@@ -34,6 +35,7 @@ public:
     // `sleeve` selects the arm mesh of weapon skins (AnimSleeveGetEntity index). Rigid parts follow their bone.
     // `facial` = the object's morph weights (CharacterInstance::facial()); the strongest eight displace the
     // morphed vertices of skinned meshes before skinning, as SkinIt does.
+    // `weapon_arm_only` keeps the sleeve branch that owns rigid weapon parts and suppresses sibling arm branches.
     // Datum overrides (Player_WeaponFiring rewrites datum 0 per frame; WeaponView feeds vm.datum0_*):
     // `hidden_part` skips the rigid part with that model hash (0 = none; the parked suppressor placeholder
     // the original never loads for Semi variants — our bank loads everything, so the skip replicates the
@@ -42,7 +44,8 @@ public:
     // object space like the palette). Never both for the same model: the caller sets exactly one path.
     void draw(const Camera& cam, float aspect, const SkinDef& skin, const Palette& palette, const Mat4& model,
               unsigned sleeve = 0, const std::vector<float>& facial = {}, const CharacterLighting& lighting = {},
-              std::uint32_t hidden_part = 0, std::uint32_t attached_hash = 0, const Mat4& attached_matrix = Mat4{});
+              std::uint32_t hidden_part = 0, std::uint32_t attached_hash = 0,
+              const Mat4& attached_matrix = Mat4{}, bool weapon_arm_only = false);
 
     // Union of the bind-pose bounding boxes of the skin's meshes (skinned meshes and rigid parts).
     void bounds(const SkinDef& skin, unsigned sleeve, Vec3& lo, Vec3& hi);
@@ -81,7 +84,8 @@ private:
 
     CharacterBank& bank_;
     GLuint program_ = 0, white_ = 0;
-    GLint u_mvp_ = -1, u_world_ = -1, u_bones_ = -1, u_lights_ = -1, u_tint_ = -1, u_alpha_ = -1, u_env_ = -1;
+    GLint u_mvp_ = -1, u_world_ = -1, u_bones_ = -1, u_bone_visible_ = -1, u_lights_ = -1, u_tint_ = -1,
+          u_alpha_ = -1, u_env_ = -1;
     GLint u_cam_right_ = -1, u_cam_up_ = -1;
     std::array<GLint, 2> u_light_pos_{}, u_light_col_{}, u_light_inv_r2_{};
     std::map<std::pair<std::size_t, std::int32_t>, GLuint> textures_;
