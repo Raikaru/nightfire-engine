@@ -43,7 +43,9 @@ struct PlayerSettings {
     bool auto_center = true;     // PlayerSetting[7]: Player_SSWalk recentres pitch when walking
     bool health_fade = false;    // PlayerSetting[0xB]: Player_Update lets the health bar's damage flash fade (default 0: stays lit)
     bool idle_count_hold = false;   // PlayerSetting[340]: pins the weapon-idle counter +2362 at 0 (deep fidget never fires; no known frontend writer)
-    // Controller style (PlayerSetting+0xE). Only style 7, the default, is mapped.
+    // PlayerSetting+0xE: controller style, the psiInput_MapInputs layout (0 NightFire, 1 Moonraker, 2 Octopussy,
+    // 3 Goldfinger, 4 Dr. No, 5 Thunderball, 6 GoldenEye, 7 Classic Bond = the default).
+    int controller_style = 7;
 };
 
 // gAnalogStickMappingFunction: 129-entry response curve used by MapAnalogStick.
@@ -52,12 +54,16 @@ struct InputTables {
     static InputTables from_elf(const Elf32& action_elf);
 };
 
-// One player's PlayerSetting action state: psiInput_MapInputs (style 7) + Input_Update.
+// psiInput_MapInputs for one player's pad: the 40 action values of `style` before Input_Update shapes them
+// (`player` 0 also gets the start+cross action 25, written into player 0's record only).
+std::array<float, kActionCount> map_inputs(const PadState& pad, int style, int player);
+
+// One player's PlayerSetting action state: psiInput_MapInputs (the player's controller style) + Input_Update.
 class ActionInput {
 public:
-    // Input_Update for this player: maps the pad, shapes the sticks (StickCompensation2/3), clamps
+    // Input_Update for local player `player`: maps the pad, shapes the sticks (StickCompensation2/3), clamps
     // to [-1, 1] and derives the flag bytes (held = 1, newly pressed = 4, auto-repeat = 8).
-    void update(const PadState& pad, const InputTables& tables, const PlayerSettings& settings);
+    void update(const PadState& pad, const InputTables& tables, const PlayerSettings& settings, int player = 0);
 
     float actionf(int action) const { return value_[action]; }            // Input_Actionf
     bool held(int action) const { return (flags_[action] & 1) != 0; }      // Input_Action(.., 1)

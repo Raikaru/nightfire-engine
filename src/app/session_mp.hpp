@@ -43,12 +43,14 @@ struct MpDirect {
     std::string shot;
     std::array<std::string, 4> inputs;
     int give = -1;  // debug equip (nightfire --give ID): give + select slot 0 at start
+    // The P_MPJOIN device claims (FrontendResult::slot_devices); all empty = open_local_pads(count) enumeration.
+    std::array<SlotDevice, 4> devices{};
 };
 
 class MpSession {
 public:
     MpSession(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRenderer& text, const MpDirect& direct,
-              const AppConfig& cfg);
+              AppConfig& cfg);   // the pause menu writes player 1's controller style / Y-inversion back
     // Frontend path: options converted from the P_MPCONFIRM record.
     static MpDirect from_launch(const MpLaunch& launch);
     ~MpSession();

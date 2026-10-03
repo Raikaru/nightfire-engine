@@ -263,6 +263,7 @@ constexpr std::uint32_t kMpPickupStride = 0xa0;
 constexpr std::uint32_t kMpFlagsAddress = 0x317210;
 constexpr std::uint32_t kMpBasesAddress = 0x317330;
 constexpr std::uint32_t kMpObjectiveStride = 0x90;
+constexpr std::uint32_t kMpDemolitionAddress = 0x3178d0;
 struct MpSeedImporter::Impl {
     std::uint64_t selected = 0;
     std::map<std::uint64_t, Json> rows;
@@ -334,7 +335,7 @@ void MpSeedImporter::configure(MatchLaunch& launch) const {
     o.time_limit = f32_at(mpg, 0x194);
     o.weapon_set = int(u32_at(mps, 0x34));
     o.humans = std::clamp(int(u32_at(mps, 0x2c)), 1, 4);
-    o.bots = std::clamp(int(u32_at(mps, 0x30)), 0, 4);
+    o.bots = std::clamp(int(u32_at(mps, 0x30)), 0, int(kMpMaxBots));
     const int spawn = int(u32_at(mps, 0x40));
     if (spawn < 0 || spawn > 2) throw std::runtime_error("MP seed: invalid spawn selection");
     o.spawn = SpawnSelection(spawn);
@@ -345,9 +346,12 @@ void MpSeedImporter::configure(MatchLaunch& launch) const {
     o.rng_y = uint_number(index(seed.at("rng_words"), 1));
     o.roster_override = true;
     const auto& roster = seed.at("mp_roster").array();
-    if (roster.size() != kMpSlots) throw std::runtime_error("MP seed: expected eight MP roster records");
+    if (roster.size() != kMpPs2Slots && roster.size() != kMpGcXboxSlots && roster.size() != kMpSlots)
+        throw std::runtime_error("MP seed: expected 8, 10, or 16 MP roster records");
+    o.rules = roster.size() == kMpSlots ? MpRuleSet::Extended :
+              roster.size() == kMpGcXboxSlots ? MpRuleSet::GcXbox : MpRuleSet::Ps2;
     std::ostringstream bot_chars;
-    for (std::size_t i = 0; i < kMpSlots; ++i) {
+    for (std::size_t i = 0; i < roster.size(); ++i) {
         const Json& source = roster[i];
         ArenaSettings::Slot& target = o.roster[i];
         const int slot = int_number(source.at("slot"));
@@ -396,6 +400,8 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
     const std::vector<std::byte> mps = raw_for(source, "mps", 0x60);
     const std::vector<std::byte> mpg = raw_for(source, "mpg", 0x1d0);
     world.frame_ = frame;
+    const Json* timer_frame_record = source.find("timer_frame");
+    world.timer_frame_ = timer_frame_record ? uint_number(*timer_frame_record) : frame;
     session.weapons().seed(uint_number(index(source.at("rng_words"), 0)), uint_number(index(source.at("rng_words"), 1)));
 
     ArenaSeedSnapshot snapshot;
@@ -502,6 +508,7 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
             PlayerSettings& ps = world.settings(int(s));
             ps.invert_look = byte_at(settings, 0) != 0;
             ps.crouch_toggle = byte_at(settings, 4) != 0;
+            ps.controller_style = std::int16_t(byte_at(settings, 0xE) | (byte_at(settings, 0xF) << 8));
             ps.auto_center = byte_at(settings, 7) != 0;
             ps.health_fade = byte_at(settings, 0x0B) != 0;
             ps.idle_count_hold = byte_at(settings, 0x154) != 0;
@@ -614,11 +621,19 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                    float_number(index(p.at("pos"), 2))};
         dst.has_pos = true;
         const int stamp = int_number(p.at("stamp"));
-        if (stamp < 0 || std::uint64_t(stamp) > frame)
-            throw std::runtime_error("MP seed: pickup timestamp is outside the selected frame history");
+        if (stamp < 0 || std::uint64_t(stamp) > world.timer_frame_)
+            throw std::runtime_error("MP seed: pickup timestamp is outside the selected timer history");
         dst.stamp = std::uint64_t(stamp);
+        if (const Json* visits = p.find("visit_until")) {
+            const auto& values = visits->array();
+            const std::size_t ps2_bot_count = kMpPs2Slots - kMpMaxLocalHumans;
+            if (values.size() != ps2_bot_count)
+                throw std::runtime_error("MP seed: pickup visit-lock count is not four");
+            for (std::size_t i = 0; i < values.size(); ++i)
+                dst.visit_until[i] = float_number(values[i]);
+        }
         dst.has_stamp = true;
-        const float elapsed = float(frame - dst.stamp) / snapshot.rate;
+        const float elapsed = float(world.timer_frame_ - dst.stamp) / snapshot.rate;
         if (pickup_index < static_count) {
             const auto& pickup = engine_pickups[pickup_index];
             dst.respawn_remaining =
@@ -634,7 +649,7 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
             dst.item = int_number(p.at("item"));
             dst.amount = int_number(*amount);
             if (const Json* hidden = p.find("radar_hidden")) dst.radar_hidden = hidden->boolean();
-            const std::uint64_t lifetime = uint_number(*remaining) + (frame - dst.stamp);
+            const std::uint64_t lifetime = uint_number(*remaining) + (world.timer_frame_ - dst.stamp);
             if (lifetime > std::numeric_limits<std::uint32_t>::max())
                 throw std::runtime_error("MP seed: dynamic pickup lifetime exceeds the supported range");
             dst.lifetime_total_frames = std::uint32_t(lifetime);
@@ -700,6 +715,8 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                            (address - kMpBasesAddress) % kMpObjectiveStride == 0) {
                     goal_targets[i] = objective_id(int(MpObjective::Kind::Base),
                                                    int((address - kMpBasesAddress) / kMpObjectiveStride));
+                } else if (address == kMpDemolitionAddress) {
+                    goal_targets[i] = objective_id(int(MpObjective::Kind::Demolition), kTeamNone);
                 }
             }
             const auto result = system.restore_snapshot(s, drone, bv, obj, participant_addresses, goal_targets);

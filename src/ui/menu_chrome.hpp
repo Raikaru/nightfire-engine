@@ -19,6 +19,7 @@ namespace nf::ui {
 namespace menu_style {
 constexpr std::uint32_t kLabelColor = 0x7D6D59FF;   // every MP page label (messages 0x1b/0x1c)
 constexpr std::uint32_t kItemColor = 0x73330F80;    // unselected buttons and keys (P_MAIN, P_CNCREATE)
+constexpr std::uint32_t kHighContrastColor = 0x80807CFF;   // Settings > Accessibility > High contrast (near white)
 constexpr std::uint32_t kLogo = 0x0300016D;         // "007 nightfire", page box 434,38 156x43
 constexpr std::uint32_t kPanel = 0x03000199;        // P_MPJOIN agent panel: header strip + translucent body
 constexpr std::uint32_t kAtlas = 0x03000042;        // frame atlas (orange selection gradient at v 33)
@@ -30,6 +31,12 @@ constexpr std::uint16_t kKeyboardSkin = 7;          // P_CNCREATE key frame
 constexpr std::uint16_t kFieldSkin = 8;             // P_CNCREATE name field (rounded tab corner)
 constexpr float kRowPitch = 21.0f;                  // Menu_CreateOptionBox list row height (0x15)
 }  // namespace menu_style
+
+// Nine-slice: `src` split `corner` texels in from each edge, corners drawn corner_w x corner_h canvas units.
+void draw_nine_slice(Renderer& renderer, std::uint32_t hash, Rect src, float corner, Rect dst, float corner_w,
+                     float corner_h, Color color);
+// The P_MPJOIN agent panel (menu_style::kPanel) stretched over `dst` (MenuChrome::panel without the header text).
+void draw_agent_panel(Renderer& renderer, Rect dst);
 
 class MenuChrome {
 public:
@@ -55,8 +62,9 @@ public:
     // A sprite of the engine's own art sheets (assets/ui, tools/art) drawn 1:1 with its top-left at (x, y); returns
     // the drawn rectangle (empty when the sheet has no such sprite).
     Rect art(std::string_view sheet, std::string_view name, float x, float y, std::uint32_t color = 0x7F7F7FFF);
-    // The busy spinner (online.png spinner_0..11) centred on (x, y); `frame` counts 30 Hz updates.
-    void spinner(float x, float y, unsigned frame);
+    // The busy spinner (online.png spinner_0..11) centred on (x, y), `scale` canvas units per texel; `frame`
+    // counts 30 Hz updates.
+    void spinner(float x, float y, unsigned frame, float scale = 1.0f);
 
     void title(std::string_view text);     // page title, script box 50,40 376x17, font 1
     void logo();                           // script box 434,38 156x43, kept on the right margin

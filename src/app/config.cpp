@@ -8,6 +8,7 @@
 
 #include "assets/menu_validate.hpp"
 #include "assets/sp_menu.hpp"
+#include "ui/input_devices.hpp"
 
 namespace nf::app {
 
@@ -43,8 +44,14 @@ void set_key(AppConfig& c, const std::string& key, const std::string& value) {
     else if (key == "crosshair_style") c.crosshair_style = std::clamp(n, 0, 4);
     else if (key == "high_contrast") c.high_contrast = b;
     else if (key == "colorblind_teams") c.colorblind_teams = b;
+    else if (key == "favourite_server") {
+        if (!value.empty() && std::find(c.favourite_servers.begin(), c.favourite_servers.end(), value) ==
+                                  c.favourite_servers.end())
+            c.favourite_servers.push_back(value);
+    }
     else if (key == "profile") c.profile = value;
     else if (key == "difficulty") c.difficulty = std::clamp(n, 0, 2);
+    else input_bindings().set(key, value);   // bind_<context>_<button> / pad_<context>_<button>
 }
 
 }  // namespace
@@ -80,7 +87,10 @@ bool save_config(const std::filesystem::path& path, const AppConfig& c) {
     out << "fullscreen=" << (c.fullscreen ? 1 : 0) << "\nvsync=" << (c.vsync ? 1 : 0) << "\n";
     out << "crosshair_style=" << c.crosshair_style << "\nhigh_contrast=" << (c.high_contrast ? 1 : 0) << "\n";
     out << "colorblind_teams=" << (c.colorblind_teams ? 1 : 0) << "\n";
+    for (const std::string& server : c.favourite_servers) out << "favourite_server=" << server << "\n";
     out << "profile=" << c.profile << "\ndifficulty=" << c.difficulty << "\n";
+    out << "# button bindings per context (docs/ui.md \"Button prompts\")\n";
+    input_bindings().save(out);
     return bool(out);
 }
 

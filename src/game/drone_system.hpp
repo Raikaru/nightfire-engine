@@ -157,7 +157,7 @@ public:
     WeaponSystem* weapons() const { return weapons_; }
     void set_audio(audio::AudioSystem* a) { audio_ = a; }
     audio::AudioSystem* audio() const { return audio_; }
-    std::uint32_t now() const { return std::uint32_t(world_.frame()); }
+    std::uint32_t now() const { return std::uint32_t(world_.timer_frame()); }
     // Shared per-tick state of NPCGlobals: LOS rays spent this tick (+0x282), the alert record (+0x290), the
     // round-robin cursors (+0x284/+0x288/+0x28c).
     std::uint32_t los_rays = 0;

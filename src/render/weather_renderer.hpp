@@ -25,9 +25,11 @@ public:
     bool active() const { return type_ >= 0 || !emitters_.empty(); }
     // Level id (0x07000005...): selects the InitDrops velocity spread (levels 07-09 are tighter).
     void set_level(std::uint32_t id) { level_id_ = id; }
-    // Advance drops and emitters one 30 Hz tick around `viewer` (the camera eye). `channel` answers
-    // switch-channel state for switch-gated emitters (absent = always on).
-    void update(const Vec3& viewer, const std::function<bool(int)>& channel = {});
+    // Advance drops and emitters by one logic step (`delta_seconds`), around `viewer` (the camera eye).
+    // `frame_mul` and `delta_seconds` are FrameTiming::FRAME_RATE_MUL / REC_FRAME_RATE respectively.
+    // `channel` answers switch-channel state for switch-gated emitters (absent = always on).
+    void update(const Vec3& viewer, float frame_mul, float delta_seconds,
+                const std::function<bool(int)>& channel = {});
     // Draw live drops and emitter particles. No fog: all live within ~15 units of the camera.
     void draw(const Camera& cam, const Mat4& vp);
 
@@ -69,6 +71,7 @@ private:
         Vec3 up = {0, 1, 0};
         int ch_a = 0, ch_b = 0;  // switch channels: run iff A on (or 0) and B off (or 0)
         float remaining = -1;     // seconds of emission left (< 0 = infinite)
+        float spawn_budget = 0;
         bool expired = false;
         std::vector<EmitterParticle> parts;
         GLuint tex = 0;  // billboard sprite, 0 for mesh defs
@@ -83,7 +86,7 @@ private:
     void parse_emitter_defs();
     void build_emitters();
     void build_leaf_emitters(const std::vector<const Placement*>& points);
-    void update_emitters(const std::function<bool(int)>& channel);
+    void update_emitters(float frame_mul, float delta_seconds, const std::function<bool(int)>& channel);
 
     Level& level_;
     int type_ = -1;                 // Env param 0: 0 snow, 1 rain, 2 slow snow
@@ -93,6 +96,7 @@ private:
     std::vector<Drop> drops_;
     float wind_x_ = 0, wind_z_ = 0;  // random-walk gust offsets (snow only)
     bool filled_ = false;
+    float drop_budget_ = 0;
     std::uint64_t rng_ = 0x12345678;
     float frand(float range) {  // [0, range)
         rng_ = rng_ * 6364136223846793005ULL + 1442695040888963407ULL;

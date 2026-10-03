@@ -43,11 +43,12 @@ constexpr std::uint32_t kTeamKingOfTheHill = kTeamFlag | kObjectiveFlag | 0x1000
 constexpr std::uint32_t kMpTeamPhoenix = 0, kMpTeamMi6 = 1, kMpTeamNone = 2;
 constexpr std::uint32_t kMpTeamLabels[2] = {0x1c7, 0x1c8};
 
-constexpr std::size_t kMpMaxHumans = 4;      // Local controller/connection slots.
-constexpr std::size_t kMpMaxBots = 12;       // Extended set: 16 total slots minus 4 humans.
+constexpr std::size_t kMpSlots = 16;          // Storage capacity; ArenaSettings::slot_count is the active match limit.
+constexpr std::size_t kMpMaxLocalHumans = 4; // Local controller limit; each online connection may bring up to four.
+constexpr std::size_t kMpMaxHumans = kMpSlots;
+constexpr std::size_t kMpMaxBots = kMpSlots;
 constexpr std::size_t kMpPs2Slots = 8;
 constexpr std::size_t kMpGcXboxSlots = 10;
-constexpr std::size_t kMpSlots = 16;         // Storage capacity; ArenaSettings::slot_count is the active match limit.
 constexpr std::size_t kMpBotTable = 10;      // Original `mpbots` table rows; extensions synthesize extra rows.
 enum class MpRuleSet : std::uint8_t { Ps2, GcXbox, Extended };
 constexpr std::size_t mp_rule_slot_limit(MpRuleSet rules) {

@@ -302,7 +302,7 @@ def main():
             if obj:
                 pos = struct.unpack_from("<4f", mpk, i * A.MPPICKUP_STRIDE + A.MPPICKUP_POS)
                 info = struct.unpack("<I", pine.read_block(obj + A.PICKUPINFO_OFF, 4))[0]
-                pinfo[obj] = (info, [round(v, 2) for v in pos[:3]])
+                pinfo[obj] = (info, [round(v, 2) for v in pos[:3]], i)
         cache["pinfo"] = pinfo
         goal_refs = {}
         for k in cache["drone"]:
@@ -355,8 +355,8 @@ def main():
             freeze_object_pose(pine, cache["objs"][args.freeze_bot], freeze_pose)
         projectile_old_head = cache["dynamic_head"]
         ranges, tags = [], []
-        ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4)]
-        tags += [("done", 0), ("frame", 0)]
+        ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4), (A.GS_FRAME, 4)]
+        tags += [("done", 0), ("frame", 0), ("timer_frame", 0)]
         ranges += [(A.MPGAME, 0x1D0), (A.MPSETTINGS + A.MPS_MP_ACTIVE, 0x60),
                    (A.RNG_WORDS, 16), (A.SWITCH_FD - 1, 4), (A.FRAME_RATE, 4),
                    (A.FRAME_RATE_INT, 4), (A.MP_ASSASSINATION_TARGET, 4),
@@ -431,9 +431,10 @@ def main():
                             and offset % A.MPPICKUP_STRIDE == 0):
                         tags.append(("goal_target_raw", target))
                         ranges.append((target, A.MPPICKUP_STRIDE))
-        for obj, (info, pos) in cache["pinfo"].items():
-            tags.append(("pkstamp", obj))
-            ranges.append((obj + A.OBJ_STAMP, 4))
+        for obj, (info, pos, pickup_idx) in cache["pinfo"].items():
+            tags += [("pkstamp", obj), ("pkvisit", obj)]
+            ranges += [(obj + A.OBJ_STAMP, 4),
+                       (A.MPPICKUPS + pickup_idx * A.MPPICKUP_STRIDE + A.MPPICKUP_VISIT, 16)]
             if info:
                 tags.append(("pi", obj))
                 ranges.append((info + A.PI_STATE, 0x18))
@@ -446,8 +447,8 @@ def main():
         tags.append(("projectile_head1", 0))
         ranges.append((A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT, 4))
         # tentatively assume this frame number for the full blobs
-        ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4)]
-        tags += [("done1", 0), ("frame1", 0)]
+        ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4), (A.GS_FRAME, 4)]
+        tags += [("done1", 0), ("frame1", 0), ("timer_frame1", 0)]
 
         if any(addr < 0x00100000 or addr + size > 0x02000000
                for addr, size in ranges):
@@ -465,10 +466,11 @@ def main():
             bytag.setdefault((kind, s), ch)
         done0 = struct.unpack("<I", bytag[("done", 0)])[0]
         frame0 = struct.unpack("<I", bytag[("frame", 0)])[0]
+        timer_frame0 = struct.unpack("<I", bytag[("timer_frame", 0)])[0]
         done1 = struct.unpack("<I", bytag[("done1", 0)])[0]
         frame1 = struct.unpack("<I", bytag[("frame1", 0)])[0]
-        if frame0 != frame1 or done0 != done1:
-            time.sleep(0.005)
+        timer_frame1 = struct.unpack("<I", bytag[("timer_frame1", 0)])[0]
+        if frame0 != frame1 or timer_frame0 != timer_frame1 or done0 != done1:
             continue
         objective_ptrs = []
         if args.seedable:
@@ -490,17 +492,26 @@ def main():
             if object_frame != frame0 or object_done != done0:
                 time.sleep(0.005)
                 continue
-        if args.weapon_anim_raw:
+        if args.seedable:
             anim_targets = []
             for slot in range(n_humans):
                 bl_raw = bytag.get(("bl_raw", slot))
                 if bl_raw is None:
                     continue
                 target = struct.unpack_from("<I", bl_raw, 0x7E8)[0]
-                if (0x00100000 <= target and target + 0x100 <= 0x02000000
+                if (0x00100000 <= target and target + 0xF6 <= 0x02000000
                         and not target & 0xF):
                     anim_targets.append((slot, target))
             if anim_targets:
+                state_ranges = [(target + 0xF4, 2) for _, target in anim_targets]
+                state_ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4)]
+                state_chunks = read_ranges_batched(pine, state_ranges)
+                state_done, state_frame = (
+                    struct.unpack("<I", raw)[0] for raw in state_chunks[-2:])
+                if state_frame == frame0 and state_done == done0:
+                    for (slot, _), raw in zip(anim_targets, state_chunks[:-2]):
+                        bytag[("weapon_anim_state", slot)] = raw
+            if args.weapon_anim_raw and anim_targets:
                 anim_ranges = [(target, 0x100) for _, target in anim_targets]
                 anim_ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4)]
                 anim_chunks = read_ranges_batched(pine, anim_ranges)
@@ -531,7 +542,7 @@ def main():
         if objs != cache["objs"] or pkcount != cache["pkcount"]:
             # Object set changed (respawn/re-register): core-only frame, re-resolve.
             resyncs += 1
-            rec = {"frame": frame0, "resync": 1, "mpg": mpg.hex(),
+            rec = {"frame": frame0, "timer_frame": timer_frame0, "resync": 1, "mpg": mpg.hex(),
                    "mps": bytag[("mps", 0)].hex(), "rng": bytag[("rng", 0)].hex(),
                    "projectiles": [], "projectiles_available": False,
                    "state_missing": ["projectiles"]}
@@ -552,7 +563,7 @@ def main():
                 pine, cache, pine.read32(A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT))
             resolve(pine)
             continue
-        rec = {"frame": frame0}
+        rec = {"frame": frame0, "timer_frame": timer_frame0}
         if rng_trace is not None:
             rec["rng_calls"], rec["rng_trace"] = R.read_events(pine, rng_trace)
         rec["rate"] = struct.unpack("<f", bytag[("rate", 0)])[0]
@@ -658,7 +669,7 @@ def main():
             rec["bot_goal_targets"] = goal_targets
             if not goal_target_stable:
                 rec["state_missing"].append("bot_goal_target_changed")
-            rec["seed_version"] = 2
+            rec["seed_version"] = 3
             rec["state_complete"] = False
 
         parts = []
@@ -716,6 +727,9 @@ def main():
                 anim_raw = bytag.get(("weapon_anim_raw", s))
                 if anim_raw is not None:
                     entry["weapon_anim_raw"] = anim_raw.hex()
+                anim_state_raw = bytag.get(("weapon_anim_state", s))
+                if anim_state_raw is not None:
+                    entry["weapon_anim_state"] = struct.unpack("<h", anim_state_raw)[0]
                 entry["vel"] = list(struct.unpack_from("<3f", blr, 0x10))
                 entry["fall_vel"] = list(struct.unpack_from("<3f", blr, 0x50))
                 entry["ammo_pool"] = list(struct.unpack_from("<33H", blr, 368))
@@ -875,9 +889,10 @@ def main():
             rec["state_missing"].append("projectiles")
 
         pks = []
-        for obj, (info, pos) in cache["pinfo"].items():
+        for obj, (info, pos, pickup_idx) in cache["pinfo"].items():
             p = {"obj": obj, "pos": pos,
-                 "stamp": struct.unpack("<i", bytag[("pkstamp", obj)])[0]}
+                 "stamp": struct.unpack("<i", bytag[("pkstamp", obj)])[0],
+                 "visit_until": list(struct.unpack("<4f", bytag[("pkvisit", obj)]))}
             if ("pi", obj) in bytag:
                 ch = bytag[("pi", obj)]
                 p["st"] = struct.unpack_from("<h", ch, 0)[0]
@@ -891,6 +906,8 @@ def main():
                     "<H", ch, A.PI_AMOUNT - A.PI_STATE)[0]
                 p["radar_hidden"] = bool(bytag[("pkflags", obj)][0] & 0x10)
                 p["idx"] = struct.unpack_from("<h", ch, 16)[0]
+            else:
+                p["idx"] = pickup_idx
             pks.append(p)
         rec["pk"] = pks
 
@@ -938,11 +955,12 @@ def main():
             pickup_fields_ready = all(
                 isinstance(p, dict)
                 and all(field in p for field in
-                        ("idx", "st", "cat", "item", "stamp", "amount", "lifetime_frames"))
+                        ("idx", "st", "cat", "item", "stamp", "amount", "lifetime_frames", "visit_until"))
+                and isinstance(p["visit_until"], list) and len(p["visit_until"]) == 4
                 for p in rec["pk"])
             pickup_identity_ready = pickup_fields_ready and (
                 len({p["idx"] for p in rec["pk"]}) == len(rec["pk"])
-                and all(0 <= p["idx"] < 64 and 0 <= p["stamp"] <= frame0 for p in rec["pk"]))
+                and all(0 <= p["idx"] < 64 and 0 <= p["stamp"] <= timer_frame0 for p in rec["pk"]))
             pickup_seed_ready = pickup_fields_ready and pickup_identity_ready
             if not pickup_fields_ready:
                 rec["state_missing"].append("pickup_seed_fields")
@@ -953,6 +971,12 @@ def main():
                 for p in rec["projectiles"])
             if rec["projectiles_available"] and not projectile_refs_ready:
                 rec["state_missing"].append("projectile_seed_reference")
+            weapon_anim_state_ready = all(
+                p is None or not p.get("weapon_timers", {}).get("weapon_anim")
+                or "weapon_anim_state" in p
+                for p in rec["pl"][:n_humans])
+            if not weapon_anim_state_ready:
+                rec["state_missing"].append("weapon_anim_state")
             rec["seed_ready"] = (
                 "objx" in rec and len(rec["rng_words"]) == 4 and len(rec["pad_all"]) == 4
                 and all(p is None or "obj_raw" in p for p in rec["pl"])
@@ -962,6 +986,7 @@ def main():
                 and all("obj_raw" in objective for objective in rec.get("objectives", []))
                 and "bot_goal_target_changed" not in rec["state_missing"]
                 and projectile_refs_ready
+                and weapon_anim_state_ready
             )
             if "objx" not in rec:
                 rec["state_missing"].append("objective_blobs")

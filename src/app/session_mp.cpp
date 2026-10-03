@@ -18,6 +18,7 @@
 #include "assets/bin_archive.hpp"
 #include "assets/cutscene.hpp"
 #include "assets/level.hpp"
+#include "assets/menu_validate.hpp"
 #include "audio/audio.hpp"
 #include "audio/music_director.hpp"
 #include "game/arena_view.hpp"
@@ -32,7 +33,9 @@
 #include "render/character_renderer.hpp"
 #include "render/gl.hpp"
 #include "ui/mp_setup.hpp"
+#include "ui/hud_overlay.hpp"
 #include "ui/mp_feed.hpp"
+#include "ui/prompts.hpp"
 #include "render/level_renderer.hpp"
 #include "render/weather_renderer.hpp"
 
@@ -43,32 +46,13 @@ namespace {
 // P_MPDEBRIEFING in the frontend script (frontend_mp.cpp).
 constexpr std::uint32_t kPageDebriefing = 0x40000033;
 
-PadState menu_pad(SDL_Gamepad* gamepad) {
-    PadState s;
-    const bool* k = SDL_GetKeyboardState(nullptr);
-    if (k[SDL_SCANCODE_UP]) s.buttons |= kPadUp;
-    if (k[SDL_SCANCODE_DOWN]) s.buttons |= kPadDown;
-    if (k[SDL_SCANCODE_LEFT]) s.buttons |= kPadLeft;
-    if (k[SDL_SCANCODE_RIGHT]) s.buttons |= kPadRight;
-    if (k[SDL_SCANCODE_Z] || k[SDL_SCANCODE_RETURN]) s.buttons |= kPadCross;
-    if (k[SDL_SCANCODE_X]) s.buttons |= kPadCircle;
-    if (k[SDL_SCANCODE_A]) s.buttons |= kPadSquare;
-    if (k[SDL_SCANCODE_S]) s.buttons |= kPadTriangle;
-    if (k[SDL_SCANCODE_SPACE]) s.buttons |= kPadStart;
-    if (k[SDL_SCANCODE_BACKSPACE]) s.buttons |= kPadSelect;
-    if (gamepad) {
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_UP)) s.buttons |= kPadUp;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_DOWN)) s.buttons |= kPadDown;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_LEFT)) s.buttons |= kPadLeft;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) s.buttons |= kPadRight;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_SOUTH)) s.buttons |= kPadCross;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_EAST)) s.buttons |= kPadCircle;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_WEST)) s.buttons |= kPadSquare;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_NORTH)) s.buttons |= kPadTriangle;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_START)) s.buttons |= kPadStart;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_BACK)) s.buttons |= kPadSelect;
-    }
-    return s;
+PadState menu_pad(SDL_Gamepad* gamepad) { return input_bindings().sample(InputContext::Menu, gamepad); }
+
+// Local players' devices for the prompt glyphs of their HUD views.
+void assign_prompt_devices(const std::vector<LocalPad>& pads) {
+    std::vector<SlotDevice> slots;
+    for (const LocalPad& p : pads) slots.push_back(p.device());
+    input_devices().assign(slots);
 }
 
 // Player body matrix (object -> world) in the drone convention (feet + yaw).
@@ -83,27 +67,38 @@ MpDirect MpSession::from_launch(const MpLaunch& launch) {
     MpDirect d;
     d.level_bin = launch.level_bin;
     d.options.enabled = true;
+    d.options.rules = launch.settings.rules;
     d.options.mode = launch.settings.mode;
-    d.options.humans = std::clamp<int>(int(launch.settings.human_count), 1, 4);
-    d.options.bots = std::clamp<int>(int(launch.settings.bot_count), 0, 4);
-    d.options.score_limit = launch.settings.score_limit;
+    d.options.humans = std::clamp<int>(int(launch.settings.human_count), 1, int(kMpMaxLocalHumans));
+    const int capacity = int(mp_rule_slot_limit(d.options.rules));
+    const int reserved = d.options.rules == MpRuleSet::Extended ? d.options.humans : int(kMpMaxLocalHumans);
+    d.options.bots = std::clamp<int>(int(launch.settings.bot_count), 0, std::max(0, capacity - reserved));
+    d.options.roster_override = true;
+    std::string chars;
+    for (const MpParticipant& p : launch.participants) {
+        if (p.slot >= d.options.roster.size()) continue;
+        ArenaSettings::Slot& slot = d.options.roster[p.slot];
+        slot.present = true;
+        slot.bot = p.bot;
+        slot.name = p.name;
+        slot.team = int(p.team);
+        slot.character = int(p.character);
+        slot.health_bonus = p.handicap;
+        slot.hud = p.hud;
+        if (!p.bot) continue;
+        if (!chars.empty()) chars += ',';
+        chars += std::to_string(p.character);
+    }
+    d.bot_characters = chars;
     d.options.time_limit = float(launch.settings.duration);
     d.options.friendly_fire = launch.settings.friendly_fire != 0;
     d.options.weapon_set = launch.settings.weapon_set;
-    // Bot characters: the P_MPCONFIRM participant names, in slot order.
-    std::string chars;
-    for (const MpParticipant& p : launch.participants) {
-        if (!p.bot) continue;
-        if (!chars.empty()) chars += ',';
-        chars += p.name;
-    }
-    d.bot_characters = chars;
     return d;
 }
 
 struct MpSession::Impl {
-    Impl(AppContext& c, Window& w, ui::Renderer& u, ui::TextRenderer& t, const MpDirect& d, const AppConfig& cfg)
-        : ctx(c), window(w), ui(u), text(t), direct(d), config(cfg) {}
+    Impl(AppContext& c, Window& w, ui::Renderer& u, ui::TextRenderer& t, const MpDirect& d, AppConfig& cfg)
+        : ctx(c), window(w), ui(u), text(t), direct(d), config(cfg), user_config(cfg) {}
 
     AppContext& ctx;
     Window& window;
@@ -111,6 +106,9 @@ struct MpSession::Impl {
     ui::TextRenderer& text;
     MpDirect direct;
     AppConfig config;
+    AppConfig& user_config;   // player 1's controller style / Y-inversion (the active profile's) persist here
+    MenuFile level_menu;      // the level bin's menu script (the pause page)
+    bool has_level_menu = false;
 
     std::unique_ptr<Level> level;
     std::uint32_t level_id = 0;
@@ -129,10 +127,16 @@ struct MpSession::Impl {
     std::unique_ptr<WeaponView> weapon_view;
     std::unique_ptr<drone::DroneRenderer> drone_renderer;
     std::vector<std::unique_ptr<Hud>> huds;
+    std::vector<HudOverlay> overlays;   // per viewer: kill feed, name plates, scoreboard, chat (ui/hud_overlay.hpp)
+    std::vector<std::string> pending_chat;   // network chat received since the last overlay tick
     // Remote-player bodies: one animated character per human slot (PlayerAnimator
     // over the participant skin), drawn in every other viewer's split view.
     std::vector<std::unique_ptr<PlayerAnimator>> bodies;
-    std::array<bool, 4> network_body_visible{true, true, true, true};
+    std::array<bool, nf::kMpSlots> network_body_visible = [] {
+        std::array<bool, nf::kMpSlots> visible{};
+        visible.fill(true);
+        return visible;
+    }();
     NetworkSession* network = nullptr;
     std::uint32_t network_projectiles_tick = 0;
     std::vector<Projectile> network_projectiles;
@@ -166,6 +170,10 @@ struct MpSession::Impl {
         if (const GameFile* txt = ctx.files.find("USATxt.dat")) strings = StringTable::parse(ctx.files.read(*txt), false);
 
         world = std::make_unique<World>(*level, InputTables::from_elf(ctx.action_elf), params);
+        // Player 1 plays with the active profile's controller style and Y-axis inversion; the other local players
+        // start on the defaults (Classic Bond) and change theirs in their own pause menu.
+        world->settings(0).controller_style = std::clamp(config.controller_style, 0, 7);
+        world->settings(0).invert_look = config.invert_y;
         MatchOptions options = direct.options;
         options.enabled = true;
         if (options.bots > 0) {
@@ -208,14 +216,22 @@ struct MpSession::Impl {
         }
 
         add_level_sprites(ctx.assets.sprites, Bytes(effect_bin));
+        // The pause page (P_PAUSE) lives in the level's menu script, not the front end's.
+        try {
+            level_menu = load_menu_from_bin(Bytes(effect_bin));
+            has_level_menu = true;
+        } catch (const std::exception&) {
+        }
         for (int i = 0; i < options.humans; ++i) {
             HudConfig hcfg;
             hcfg.multiplayer = true;
             hcfg.players = options.humans;
             hcfg.player = i;
             hcfg.side_by_side = options.side_by_side;
-            hcfg.frame_rate = 30.0f;
+            hcfg.frame_rate = float(config.logic_hz);
+            hcfg.slot_count = session->arena().settings().slot_count;
             huds.push_back(std::make_unique<Hud>(ctx.assets, ctx.hud_data, hcfg));
+            overlays.emplace_back();
         }
 
         renderer = std::make_unique<LevelRenderer>(*level);
@@ -229,7 +245,7 @@ struct MpSession::Impl {
         // Remote bodies over the MP skins of the arena setup (mp_characters value = character index).
         const std::vector<AnimSet> sets = read_anim_sets(ctx.action_elf);
         anim_sets = std::make_unique<std::vector<AnimSet>>(sets);
-        for (int i = 0; i < options.humans; ++i) {
+        for (std::size_t i = 0; i < session->arena().settings().slot_count; ++i) {
             // First MP skin of the bank (the arena setup's skins resolve through the same bank).
             const SkinDef* skin = nullptr;
             for (const auto& [hash, def] : bank->skins()) {
@@ -299,6 +315,7 @@ struct MpSession::Impl {
     HudState hud_state(int slot, const Camera& cam, float vw, float vh) {
         HudState hs;
         session->weapons().fill_hud(slot, hs);
+        hs.controller_style = world->settings(slot).controller_style;
         const ArenaHud ah = session->hud(slot);
         hs.mp.mode = static_cast<HudMpMode>(ah.mode);
         hs.mp.teams = ah.teams;
@@ -339,7 +356,7 @@ struct MpSession::Impl {
         for (int i = 0; i < 3 && i < ah.uplink_count; ++i) hs.mp.uplink[std::size_t(i)] = ah.uplink[std::size_t(i)];
         hs.mp.health_bonus = ah.health_bonus;
         for (const ArenaHud::Blip& b : ah.blips)
-            hs.mp.blips.push_back(HudBlip{b.x, b.y, b.z, b.color, b.kind});
+            hs.mp.blips.push_back(HudBlip{b.x, b.y, b.z, b.color, b.kind, b.slot});
         // Name tags float over heads in screen space (projected, y up). The raw
         // camera-space blip coords feed the radar, never the labels: unprojected
         // tags land anywhere on the canvas (e.g. over the health bar).
@@ -358,11 +375,44 @@ struct MpSession::Impl {
             tag.x = (nx * 0.5f + 0.5f) * vw;
             tag.y = (ny * 0.5f + 0.5f) * vh;
             tag.same_team = b.same_team;
+            tag.slot = b.slot;
             hs.mp.name_tags.push_back(tag);
         }
         return hs;
     }
 
+    // HudOverlay inputs, once per game tick: scoreboard rows (the network snapshot's when connected), Select held,
+    // received chat.
+    void tick_overlays(const PadInputs& pads) {
+        const ArenaSettings& settings = session->arena().settings();
+        std::vector<HudParticipant> rows;
+        rows.reserve(settings.slot_count);
+        if (network) {
+            if (const nf::net::Snapshot* snapshot = network->latest_snapshot()) {
+                for (const nf::net::PlayerSnapshot& p : snapshot->players)
+                    if (p.present)
+                        rows.push_back({p.slot, p.name, p.team, p.bot, p.kills, p.deaths, p.score});
+            }
+        } else {
+            for (const ScoreRow& r : session->arena().scoreboard())
+                rows.push_back({r.slot, r.name, r.team, r.bot, r.kills, r.deaths, r.score});
+        }
+        const std::vector<std::string> chat = std::move(pending_chat);
+        pending_chat.clear();
+        // Overlay k serves global slot base + k: the network client's first local slot, or slot k in local play.
+        const int base = network ? int(network->slot()) : 0;
+        for (std::size_t k = 0; k < overlays.size(); ++k) {
+            const int slot = base + int(k);
+            HudOverlayState st;
+            st.slot_count = settings.slot_count;
+            st.teams = settings.uses_teams();
+            st.viewer_slot = slot;
+            st.participants = rows;
+            st.scoreboard = std::size_t(slot) < pads.size() && (pads[std::size_t(slot)].buttons & kPadSelect);
+            st.chat = chat;
+            overlays[k].update(st);
+        }
+    }
     // Match feed drained once per frame so every viewer sees the same lines.
     struct PendingMessage {
         MatchMessage message;
@@ -460,7 +510,9 @@ struct MpSession::Impl {
             r.x += gv.x;
             r.y += gv.y;
             const int gl_y = height - r.y - r.h;
-            const Player& p = *world->player(i);
+            const Player* view_player = world->player(i);
+            if (!view_player) continue;
+            const Player& p = *view_player;
             Camera cam = camera_for_eye_yaw_pitch(p.eye(), p.yaw, p.view_pitch());
             cam.fovy = kViewFovY / std::max(1.0f, session->weapons().zoom(i));
             glViewport(r.x, gl_y, r.w, r.h);
@@ -472,10 +524,11 @@ struct MpSession::Impl {
             if (weather && weather->active()) weather->draw(cam, renderer->view_projection(cam, r.aspect()));
             // Bots, remote players, then effects and the viewer's own gun.
             if (drone_renderer && bot_match) drone_renderer->draw(cam, r.aspect(), bot_match->drones());
-            for (int j = 0; j < humans; ++j) {
+            for (int j = 0; j < int(session->arena().settings().slot_count); ++j) {
                 if (j == i || !network_body_visible[std::size_t(j)] || !bodies[std::size_t(j)]) continue;
-                const Player& q = *world->player(j);
-                if (!q.alive()) continue;
+                const Player* remote = world->player(j);
+                if (!remote || !remote->alive()) continue;
+                const Player& q = *remote;
                 const auto& anim = bodies[std::size_t(j)]->character();
                 chars->draw(cam, r.aspect(), anim.skin(), anim.palette(), player_model_matrix(q), 0, anim.facial(), {});
             }
@@ -494,16 +547,26 @@ struct MpSession::Impl {
             glDisable(GL_BLEND);
             // HUD for this viewer, clipped to its rectangle.
             HudState hs = hud_state(i, cam, float(r.w), float(r.h));
+            // Local play has a HUD per human slot; a network client one per local player (its views are the
+            // consecutive global slots from network->slot()).
+            const std::size_t h = network ? std::size_t(view) : std::size_t(i);
+            if (HudOverlay::extended(session->arena().settings().slot_count)) {
+                // Extended rule set: name tags become plates drawn by the overlay.
+                overlays[h].set_name_tags(std::move(hs.mp.name_tags), float(r.w), float(r.h));
+                hs.mp.name_tags.clear();
+            }
             for (const PendingMessage& pm : pending_messages) {
                 if (pm.message.slot != -1 && pm.message.slot != i) continue;
-                huds[std::size_t(i)]->add_message(HudMessage{static_cast<HudMsgType>(int(pm.message.type)), 0xFFFFFFFF,
-                                                            pm.message.text, pm.message.frames});
+                huds[h]->add_message(HudMessage{static_cast<HudMsgType>(int(pm.message.type)), 0xFFFFFFFF,
+                                                pm.message.text, pm.message.frames});
             }
-            huds[std::size_t(i)]->update(hs);
+            huds[h]->update(hs);
             ui.begin(r.w, r.h, false);
             glViewport(r.x, gl_y, r.w, r.h);
             glScissor(r.x, gl_y, r.w, r.h);
-            huds[std::size_t(i)]->draw(ui, text);
+            ui::select_prompts(i, InputContext::OnFoot);
+            huds[h]->draw(ui, text);
+            overlays[h].draw(ui, text, huds[h]->geometry(ui.canvas_width()));
             ui.end();
         }
         pending_messages.clear();
@@ -517,15 +580,18 @@ struct MpSession::Impl {
     // crouch, per-tick body-space velocity), plus anim-script sound events served positional.
     // Footstep SFX need the surface->sound table (Audio owns it); only Sound events play for now.
     void tick_bodies() {
+        const FrameTiming timing{float(config.logic_hz)};
         if (weather && world->player(0)) {
-            weather->update(world->player(0)->eye(),
+            weather->update(world->player(0)->eye(), timing.mul(), timing.rec(),
                             [this](int ch) { return world->objects().channel(unsigned(ch)); });
         }
-        renderer->set_time(double(world->frame()) / World::kTickHz);
-        for (int j = 0; j < session->humans(); ++j) {
+        renderer->set_time(double(world->frame()) / double(config.logic_hz));
+        for (int j = 0; j < int(session->arena().settings().slot_count); ++j) {
             if (!bodies[std::size_t(j)]) continue;
             PlayerAnimator& body = *bodies[std::size_t(j)];
-            const Player& q = *world->player(j);
+            const Player* remote = world->player(j);
+            if (!remote) continue;
+            const Player& q = *remote;
             const auto* st = session->weapons().state(j);
             int category = 1;
             const nf::net::PlayerSnapshot* replicated = nullptr;
@@ -540,9 +606,9 @@ struct MpSession::Impl {
             body.set_category(category);
             if (replicated) {
                 const Vec3 velocity{replicated->velocity[0], replicated->velocity[1], replicated->velocity[2]};
-                body.update(replicated->substate == std::uint8_t(SubState::Crouch), velocity, 2.0f);
+                body.update(replicated->substate == std::uint8_t(SubState::Crouch), velocity, timing.mul());
             } else {
-                body.update(q.substate == SubState::Crouch, q.velocity, 2.0f);
+                body.update(q.substate == SubState::Crouch, q.velocity, timing.mul());
             }
             // Event drain: character() is exposed const (Movement's local-player accessor); the
             // animator object itself is ours and mutable, so the cast only recovers that.
@@ -569,11 +635,13 @@ struct MpSession::Impl {
             d.deaths = row.deaths;
             d.points = row.points;
             d.is_bot = row.bot;
+            d.slot = row.slot;
             if (row.slot >= 0 && std::size_t(row.slot) < settings.slots.size())
                 d.character = settings.slots[std::size_t(row.slot)].character;
             info.rows.push_back(d);
         }
         info.banner = res.banner;
+        info.slot_count = settings.slot_count;
         return info;
     }
 
@@ -586,9 +654,12 @@ struct MpSession::Impl {
                         r.deaths, r.points, r.out ? "  (out)" : "");
     }
 
-    // Pause menu (frontend script) or the debriefing page. Returns the session exit when the menu closed.
-    std::optional<MpResult> run_menu(bool debrief) {
-        Frontend menu(ctx.assets, ctx.menu, &ctx.mp_data, &ctx.sp_data);
+    // Pause menu (frontend script) or the debriefing page. Returns the session exit when the menu closed. The pause
+    // belongs to local player `pauser`: it reads that player's devices, shows their prompts and edits their controller
+    // style and Y-axis inversion (player 1's are the active profile's and persist in nightfire.cfg).
+    std::optional<MpResult> run_menu(bool debrief, int pauser = 0) {
+        Frontend menu(ctx.assets, !debrief && has_level_menu ? level_menu : ctx.menu, &ctx.mp_data, &ctx.sp_data);
+        PlayerSettings& settings = world->settings(pauser);
         if (debrief) {
             menu.set_debriefing(debrief_info());
             menu.open(FrontendMode::MainMenu, kPageDebriefing);
@@ -602,8 +673,28 @@ struct MpSession::Impl {
                 info.score.push_back(row);
             }
             menu.set_pause_info(info);
+            menu.player_options().controller_style = settings.controller_style;
+            menu.player_options().invert_y = settings.invert_look;
             menu.open(FrontendMode::Pause);
         }
+        struct KeepOptions {
+            Impl& s;
+            Frontend& menu;
+            PlayerSettings& settings;
+            int pauser;
+            bool active;
+            ~KeepOptions() {
+                const PlayerOptions& o = menu.player_options();
+                if (!active || (settings.controller_style == o.controller_style && settings.invert_look == o.invert_y))
+                    return;
+                settings.controller_style = std::clamp(o.controller_style, 0, 7);
+                settings.invert_look = o.invert_y;
+                if (pauser != 0) return;
+                s.user_config.controller_style = s.config.controller_style = settings.controller_style;
+                s.user_config.invert_y = s.config.invert_y = settings.invert_look;
+                save_config(config_path(), s.user_config);
+            }
+        } keep{*this, menu, settings, pauser, !debrief};
         std::optional<MenuBackground> background;
         if (debrief) {
             background.emplace(ctx.gamedir);
@@ -611,12 +702,14 @@ struct MpSession::Impl {
         }
         PadHistory hist;
         bool wait_release = true;
+        long menu_frames = 0;   // MpDirect::frames >= 0 (verification): the menu is shot and left after 3 s
         while (!menu.wants_close()) {
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
                 if (e.type == SDL_EVENT_QUIT) return MpResult{MpExit::QuitToMenu};
             }
-            const PadState s = menu_pad(menu_pad_handle);
+            const PadState s = std::size_t(pauser) < pads.size() ? pads[std::size_t(pauser)].sample_menu()
+                                                                  : menu_pad(menu_pad_handle);
             if (wait_release) {
                 if (s.buttons == 0) wait_release = false;
                 hist.push({});
@@ -629,8 +722,15 @@ struct MpSession::Impl {
             window.begin_frame(w, h);
             ui.begin(w, h);
             if (background) background->draw(ui);
+            ui::select_prompts(pauser, InputContext::Menu);
             menu.draw(ui, text);
             ui.end();
+            if (direct.frames >= 0 && ++menu_frames >= 90) {
+                if (!direct.shot.empty() && !window.save_bmp(direct.shot))
+                    throw std::runtime_error("could not save menu screenshot");
+                if (!direct.shot.empty()) std::printf("menu of player %d -> %s\n", pauser + 1, direct.shot.c_str());
+                return MpResult{MpExit::QuitToMenu};
+            }
             window.swap();
             SDL_Delay(33);
         }
@@ -645,7 +745,7 @@ struct MpSession::Impl {
 };
 
 MpSession::MpSession(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRenderer& text, const MpDirect& direct,
-                     const AppConfig& cfg)
+                     AppConfig& cfg)
     : impl_(std::make_unique<Impl>(ctx, window, ui, text, direct, cfg)) {
     ready_ = impl_->build();
 }
@@ -654,7 +754,17 @@ MpSession::~MpSession() = default;
 
 MpResult MpSession::run_interactive() {
     Impl& s = *impl_;
-    s.pads = open_local_pads(s.session->humans());
+    const bool claimed = std::any_of(s.direct.devices.begin(), s.direct.devices.end(),
+                                     [](const SlotDevice& d) { return !d.empty(); });
+    s.pads = claimed ? open_local_pads(s.direct.devices, s.session->humans()) : open_local_pads(s.session->humans());
+    assign_prompt_devices(s.pads);
+    for (std::size_t i = 0; i < s.pads.size(); ++i) {
+        const SlotDevice d = s.pads[i].device();
+        const InputDevice kind = input_devices().device(int(i));
+        std::printf("local player %zu: %s%s%s (%s glyphs)\n", i + 1, d.keyboard_mouse ? "keyboard+mouse" : "",
+                    d.keyboard_mouse && d.gamepad ? " + " : "", d.gamepad ? SDL_GetGamepadNameForID(d.gamepad) : "",
+                    kind == InputDevice::PlayStation ? "PlayStation" : kind == InputDevice::Xbox ? "Xbox" : "keyboard");
+    }
     int count = 0;
     if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
         if (count > 0) s.menu_pad_handle = SDL_OpenGamepad(ids[0]);
@@ -663,11 +773,13 @@ MpResult MpSession::run_interactive() {
     const bool has_audio = s.audio->open_device();
     std::printf("audio: output device %s\n", has_audio ? "open" : "none");
     bool running = true, captured = false;
+    const FrameTiming timing{float(s.config.logic_hz)};
     double accumulator = 0;
     Uint64 last = SDL_GetTicksNS();
-    constexpr double kStep = 1.0 / 30.0;
+    const double kStep = timing.rec();
     MpResult done{MpExit::QuitToMenu};
     bool finished = false, debrief_shown = false;
+    long ticks = 0;   // MpDirect::frames >= 0: stop after that many ticks (headless verification, --frames)
     while (running && !finished) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -681,7 +793,8 @@ MpResult MpSession::run_interactive() {
                     captured = !SDL_SetWindowRelativeMouseMode(s.window.sdl(), false);
                     for (auto& p : s.pads) p.set_captured(captured);
                 }
-                if (auto r = s.run_menu(false)) {
+                const int keyboard_player = std::max(0, input_devices().keyboard_player());
+                if (auto r = s.run_menu(false, keyboard_player)) {
                     done = *r;
                     finished = true;
                 }
@@ -694,8 +807,11 @@ MpResult MpSession::run_interactive() {
         while (accumulator >= kStep) {
             PadInputs pads{};
             for (int i = 0; i < s.session->humans(); ++i) pads[std::size_t(i)] = s.pads[std::size_t(i)].sample();
-            if (pads[0].buttons & kPadStart) {
-                if (auto r = s.run_menu(false)) {
+            int pauser = -1;   // the first local player whose start button is down opens their pause menu
+            for (int i = 0; i < s.session->humans() && pauser < 0; ++i)
+                if (pads[std::size_t(i)].buttons & kPadStart) pauser = i;
+            if (pauser >= 0) {
+                if (auto r = s.run_menu(false, pauser)) {
                     done = *r;
                     finished = true;
                 } else {
@@ -704,13 +820,15 @@ MpResult MpSession::run_interactive() {
                 }
                 break;
             }
-            s.session->tick(pads);
+            s.session->tick(pads, timing);
+            s.tick_overlays(pads);
             s.tick_bodies();
             if (has_audio) s.audio_frame();
             s.effects->consume(s.session->weapons().events());
-            s.effects->tick(FrameTiming{}.mul());
+            s.effects->tick(timing.mul());
             s.session->weapons().events().clear();
             accumulator -= kStep;
+            ++ticks;
             if (s.session->arena().over() && !debrief_shown) {
                 debrief_shown = true;
                 s.report();
@@ -727,9 +845,16 @@ MpResult MpSession::run_interactive() {
         }
         if (finished) break;
         s.draw_views();
+        if (s.direct.frames >= 0 && ticks >= s.direct.frames) {
+            if (!s.direct.shot.empty() && !s.window.save_bmp(s.direct.shot))
+                throw std::runtime_error("could not save match screenshot");
+            if (!s.direct.shot.empty()) std::printf("match tick %ld -> %s\n", ticks, s.direct.shot.c_str());
+            break;
+        }
         s.window.swap();
     }
     if (s.menu_pad_handle) SDL_CloseGamepad(s.menu_pad_handle);
+    input_devices().assign({});
     return done;
 }
 
@@ -737,6 +862,7 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
     Impl& s = *impl_;
     s.network = &network;
     s.pads = open_local_pads(nf::net::kMaxLocalPlayers);
+    assign_prompt_devices(s.pads);
     int gamepad_count = 0;
     if (SDL_JoystickID* ids = SDL_GetGamepads(&gamepad_count)) {
         if (gamepad_count > 0) s.menu_pad_handle = SDL_OpenGamepad(ids[0]);
@@ -826,11 +952,12 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
         return local < s.pads.size() ? s.pads[local].sample() : PadState{};
     };
     std::uint8_t viewer = 0;
+    const nf::FrameTiming timing{float(s.config.logic_hz)};
+    const double kStep = timing.rec();
     bool running = true, captured = false, match_over = false;
     long input_frames = 0;
     double accumulator = 0;
     Uint64 last = SDL_GetTicksNS(), results_until = 0;
-    constexpr double kStep = 1.0 / 30.0;
     struct UnackedInput {
         std::uint32_t tick;
         nf::ActionInput mapped;
@@ -856,12 +983,20 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
         for (const nf::net::PlayerSnapshot& state : snapshot.players) {
             if (state.slot >= nf::World::kMaxPlayers) continue;
             const std::size_t slot = state.slot;
-            nf::Player* player = s.world->player(int(slot));
-            if (!player) continue;
+            if (state.present && !s.world->player(int(slot)))
+                s.session->ensure_human_actor(int(slot), state.name, true);
+            nf::ArenaSettings::Slot& settings = s.session->arena().mutable_settings().slots[slot];
+            settings.present = state.present;
+            settings.bot = state.bot;
+            settings.name = state.name;
+            settings.team = state.team;
+            settings.character = state.character;
             const bool is_viewer = state.slot >= viewer && state.slot < viewer + network.local_players();
             const std::size_t local = is_viewer ? std::size_t(state.slot - viewer) : 0;
             s.network_body_visible[slot] = state.present && state.alive && (state.visible || is_viewer);
             if (!state.present) continue;
+            nf::Player* player = s.world->player(int(slot));
+            if (!player) continue;
             if (is_viewer) {
                 const nf::Vec3 authoritative{state.x, state.y, state.z};
                 const nf::Vec3 predicted_before = player->pos;
@@ -898,6 +1033,13 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
                                     correction * 100.0f);
                 }
             } else {
+                player->pos = {state.x, state.y, state.z};
+                player->yaw = state.yaw;
+                player->pitch = state.pitch;
+                player->velocity = {state.velocity[0], state.velocity[1], state.velocity[2]};
+                player->substate = static_cast<nf::SubState>(state.substate);
+                player->vitals.health = state.health;
+                player->vitals.armour = state.armor;
                 player->life = state.alive ? nf::LifeState::Alive : nf::LifeState::Dead;
             }
         }
@@ -954,8 +1096,10 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
         std::array<nf::Vec3, nf::World::kMaxPlayers> saved_positions{};
         std::array<float, nf::World::kMaxPlayers> saved_yaw{};
         const Uint64 render_now = SDL_GetTicksNS();
-        const double extrapolated = std::min(4.5, double(render_now - latest_snapshot_time) * 30.0e-9);
-        const double render_tick = double(latest_snapshot_tick) + extrapolated - 3.0;
+        const double rate = double(s.config.logic_hz);
+        const double extrapolated =
+            std::min(rate * 0.15, double(render_now - latest_snapshot_time) * rate * 1.0e-9);
+        const double render_tick = double(latest_snapshot_tick) + extrapolated - rate / 10.0;
         rendered_view_tick = render_tick;
         for (std::uint8_t slot = 0; slot < nf::World::kMaxPlayers; ++slot) {
             if (slot >= network.slot() && slot < std::uint8_t(network.slot() + network.local_players())) continue;
@@ -983,22 +1127,21 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
             player->pos = state_position;
             player->yaw = state.yaw;
         }
-        std::array<nf::drone::Drone*, nf::kMpMaxBots> bot_drones{};
-        std::array<nf::Vec3, nf::kMpMaxBots> bot_positions{};
-        std::array<float, nf::kMpMaxBots> bot_yaws{};
-        std::array<bool, nf::kMpMaxBots> bot_hidden{};
+        std::array<nf::drone::Drone*, nf::kMpSlots> bot_drones{};
+        std::array<nf::Vec3, nf::kMpSlots> bot_positions{};
+        std::array<float, nf::kMpSlots> bot_yaws{};
+        std::array<bool, nf::kMpSlots> bot_hidden{};
         if (s.bot_match) {
-            for (std::uint8_t bot_index = 0; bot_index < nf::kMpMaxBots; ++bot_index) {
-                const std::uint8_t slot = std::uint8_t(nf::World::kMaxPlayers + bot_index);
-                auto* bot = s.bot_match->bots().bot_at_slot(slot);
+            for (std::size_t slot = 0; slot < s.session->arena().settings().slot_count; ++slot) {
+                auto* bot = s.bot_match->bots().bot_at_slot(int(slot));
                 if (!bot || !bot->drone) continue;
                 nf::drone::Drone& drone = *bot->drone;
-                bot_drones[bot_index] = &drone;
-                bot_positions[bot_index] = drone.pos;
-                bot_yaws[bot_index] = drone.yaw;
-                bot_hidden[bot_index] = drone.hidden;
+                bot_drones[slot] = &drone;
+                bot_positions[slot] = drone.pos;
+                bot_yaws[slot] = drone.yaw;
+                bot_hidden[slot] = drone.hidden;
                 nf::net::PlayerSnapshot state;
-                if (!sample_player(slot, render_tick, state)) {
+                if (!sample_player(std::uint8_t(slot), render_tick, state)) {
                     has_previous_remote_render[slot] = false;
                     drone.hidden = true;
                     continue;
@@ -1006,7 +1149,7 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
                 const nf::Vec3 state_position{state.x, state.y, state.z};
                 if (has_previous_remote_render[slot] && have_previous_render_tick) {
                     nf::net::PlayerSnapshot previous;
-                    if (sample_player(slot, previous_render_tick, previous)) {
+                    if (sample_player(std::uint8_t(slot), previous_render_tick, previous)) {
                         const nf::Vec3 expected{state.x - previous.x, state.y - previous.y, state.z - previous.z};
                         const nf::Vec3 actual = state_position - previous_remote_render[slot];
                         remote_position_jitter_cm.push_back(nf::length(actual - expected) * 100.0f);
@@ -1095,6 +1238,7 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
                         row.points = player.points;
                         row.score = player.score;
                         row.is_bot = player.bot;
+                        row.slot = int(player.slot);
                         info.rows.push_back(std::move(row));
                     }
                     std::stable_sort(info.rows.begin(), info.rows.end(), [](const nf::DebriefRow& a, const nf::DebriefRow& b) {
@@ -1103,14 +1247,17 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
                         return a.kills > b.kills;
                     });
                     info.banner = "Match Results";
+                    info.slot_count = s.session->arena().settings().slot_count;
                     results_frontend = std::make_unique<Frontend>(s.ctx.assets, s.ctx.menu, &s.ctx.mp_data, &s.ctx.sp_data);
                     results_frontend->set_debriefing(std::move(info));
                     results_frontend->open(FrontendMode::MainMenu, kPageDebriefing);
                 }
             }
         }
-        for (const std::string& message : network.take_chat())
+        for (std::string& message : network.take_chat()) {
             std::printf("chat: %s\n", message.c_str());
+            s.pending_chat.push_back(std::move(message));   // shown by the HUD overlay's chat lines
+        }
         const Uint64 now = SDL_GetTicksNS();
         accumulator = std::min(accumulator + double(now - last) * 1e-9, 0.25);
         last = now;
@@ -1134,7 +1281,8 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
             const std::uint32_t input_tick = ++local_input_tick;
             const std::uint32_t view_tick = std::uint32_t(std::max(0.0, std::floor(rendered_view_tick)));
             network.send_inputs(std::span<const PadState>(local_pads.data(), network.local_players()), view_tick);
-            s.session->tick(pads);
+            s.session->tick(pads, timing);
+            s.tick_overlays(pads);
             for (std::size_t local = 0; local < network.local_players(); ++local) {
                 auto& pending = unacked_inputs[local];
                 pending.push_back({input_tick, s.world->input(int(viewer) + int(local))});
@@ -1143,7 +1291,7 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
             s.tick_bodies();
             if (has_audio) s.audio_frame();
             s.effects->consume(s.session->weapons().events());
-            s.effects->tick(FrameTiming{}.mul());
+            s.effects->tick(timing.mul());
             s.session->weapons().events().clear();
             accumulator -= kStep;
             ++input_frames;
@@ -1191,6 +1339,7 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
                     remote_position_jitter_cm.size(), remote_position_jitter_cm[p99_index]);
     }
     s.network = nullptr;
+    input_devices().assign({});
     if (s.menu_pad_handle) {
         SDL_CloseGamepad(s.menu_pad_handle);
         s.menu_pad_handle = nullptr;
@@ -1243,13 +1392,15 @@ MpResult MpSession::run_headless() {
             if (f == frame) return p;
         return compensate_sticks(PadState{});   // headless neutral (see session_sp.cpp)
     };
+    const FrameTiming timing{float(s.config.logic_hz)};
     for (long f = 0; f < frames; ++f) {
         PadInputs pads{};
         for (int i = 0; i < s.session->humans(); ++i) pads[std::size_t(i)] = at(i, f);
-        s.session->tick(pads);
+        s.session->tick(pads, timing);
+        s.tick_overlays(pads);
         s.tick_bodies();
         s.effects->consume(s.session->weapons().events());
-        s.effects->tick(FrameTiming{}.mul());
+        s.effects->tick(timing.mul());
         s.session->weapons().events().clear();
         // Like the interactive loop: stop ticking once the match is over (post-Over
         // ticks would keep the bots fighting after the debrief snapshot).

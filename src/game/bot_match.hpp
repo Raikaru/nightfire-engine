@@ -10,6 +10,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "assets/elf.hpp"
@@ -25,7 +26,7 @@
 namespace nf::bots {
 
 struct BotMatchOptions {
-    int count = 0;                 // --bots N (1..4)
+    int count = 0;                 // --bots N, capped by the selected ruleset's remaining slots
     std::string characters;        // --bot-char list (indices or names); defaults: Drake, Kiko, Rook, then 6..
     bool log = false;              // --bot-log
     bool log_states = false;       // --bot-log-states
@@ -42,6 +43,10 @@ public:
     void install(ArenaSession& session);
     // After the ArenaSession exists.
     void start();
+    // Server roster lifecycle: exact-slot additions, removals, and bot-to-human handoff.
+    void add_bot(BotSpec spec);
+    bool remove_bot(int slot);
+    bool replace_bot_with_human(ArenaSession& session, int slot, std::string_view name);
 
     const std::vector<BotSpec>& roster() const { return roster_; }
     drone::DroneSystem& drones() { return *drones_; }
@@ -63,6 +68,7 @@ private:
     std::unique_ptr<CharacterBank> bank_;
     std::unique_ptr<NavNetwork> nav_;
     drone::DroneSystem* drones_ = nullptr;   // owned by the world
+    ArenaSession* session_ = nullptr;
     BotSystem* bots_ = nullptr;              // owned by the world
 };
 

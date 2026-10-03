@@ -46,12 +46,17 @@ void Frontend::Impl::show_controller_styles() {
     mgr->send_to(*list, ui::Msg{0x0E, 0x34, 1});          // second column, 52 percent
     mgr->send_to(*list, ui::Msg{0x28, 0, 0x34});
     const auto& rows = kStyles[std::size_t(style)];
+    // Lowercase escapes: the glyph of the gameplay binding on the player's device (ui/prompts.hpp).
+    const auto entry = [&](const StyleRow& r) {
+        std::string text = std::string("~") + r.glyph[0] + " " + label(r.label);
+        for (std::size_t i = text.find('~'); i != std::string::npos && i + 1 < text.size(); i = text.find('~', i + 1))
+            if (text[i + 1] >= 'A' && text[i + 1] <= 'Z') text[i + 1] = char(text[i + 1] - 'A' + 'a');
+        return text;
+    };
     for (std::size_t i = 0; i < rows.size(); i += 2) {
-        const std::string first = std::string("~") + rows[i].glyph + " " + label(rows[i].label);
-        const int row = mgr->send_to(*list, ui::Msg{kAddItem, 1, 0, first});
+        const int row = mgr->send_to(*list, ui::Msg{kAddItem, 1, 0, entry(rows[i])});
         if (i + 1 < rows.size())
-            mgr->send_to(*list, ui::Msg{kListSetCell, (std::uint32_t(row) << 16) | 1, 0,
-                                        std::string("~") + rows[i + 1].glyph + " " + label(rows[i + 1].label)});
+            mgr->send_to(*list, ui::Msg{kListSetCell, (std::uint32_t(row) << 16) | 1, 0, entry(rows[i + 1])});
     }
 }
 

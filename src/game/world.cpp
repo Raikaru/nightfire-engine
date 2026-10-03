@@ -106,10 +106,12 @@ Player& World::spawn_player(int index, const SpawnPoint& at) {
 
 void World::tick(const PadInputs& pads, FrameTiming timing) {
     ++frame_;
+    ++timer_frame_;
     game_rng().set_trace_frame(frame_);
     // Env_Update draws Rand_Rand(20000) once for a live world before Player_Update.
     (void)game_rng().rand_int(20000);
-    for (int i = 0; i < kMaxPlayers; ++i) inputs_[std::size_t(i)].update(pads[std::size_t(i)], tables_, settings_[std::size_t(i)]);
+    for (int i = 0; i < kMaxPlayers; ++i)
+        inputs_[std::size_t(i)].update(pads[std::size_t(i)], tables_, settings_[std::size_t(i)], i);
     for (int i = 0; i < kMaxPlayers; ++i)
         if (auto& p = players_[std::size_t(i)])
             p->update(inputs_[std::size_t(i)], settings_[std::size_t(i)], collision_, timing);

@@ -46,12 +46,13 @@ int state_type(int state) {
     return i >= 0 && i < 55 ? kStateTypes[i] : 0;
 }
 
-BotBrain::BotBrain(const BotSpec& s, BotEnv& e, BotBody& b, const WeaponTable& weapons, BotArmoury::LoadedFn loaded)
+BotBrain::BotBrain(const BotSpec& s, BotEnv& e, BotBody& b, const WeaponTable& weapons, int bot_index,
+                   BotArmoury::LoadedFn loaded)
     : arm(weapons, std::move(loaded)), env(&e), body(&b), spec(s) {
     v.stats = s.stats;
     v.max_health = s.stats.health;
     v.slot = s.slot;
-    v.bot_index = s.slot - 4;
+    v.bot_index = bot_index;
     v.character = s.character;
     team_ = s.team;
     v.history.fill(-1);
@@ -66,7 +67,7 @@ bool BotBrain::is_protection_or_demolition_defender() const {
 }
 
 bool BotBrain::alive_participant(int slot) const {
-    if (slot < 0 || slot >= 8) return false;
+    if (slot < 0 || slot >= int(kMpSlots)) return false;
     const Participant p = env->participant(slot);
     return p.valid && p.alive;
 }
@@ -294,10 +295,10 @@ bool BotBrain::opponent_seen() const {
 void BotBrain::set_other_player_info() {
     const Participant me = env->participant(v.slot);
     v.targeted_by_bot = false;
-    for (int s = 4; s < env->participant_count(); ++s) {
+    for (int s = 0; s < env->participant_count(); ++s) {
         if (s == v.slot) continue;
         const Participant p = env->participant(s);
-        if (p.valid && p.alive && env->bot_opponent(s) == v.slot) v.targeted_by_bot = true;
+        if (p.valid && p.is_bot && p.alive && env->bot_opponent(s) == v.slot) v.targeted_by_bot = true;
     }
     int my_team = me.team;
     if (my_team == 2 || (!env->teams_on() && env->scenario() != scenario::kAssassination)) my_team = 3;
@@ -335,7 +336,7 @@ void BotBrain::set_other_player_info() {
         float mirrored_dist = 0.0f;
         bool mirrored_visible = false;
         const bool mirror_visible =
-            j >= 4 && env->bot_mirror(j, v.slot, &mirrored_dist, &mirrored_visible) && mirrored_visible;
+            p.is_bot && env->bot_mirror(j, v.slot, &mirrored_dist, &mirrored_visible) && mirrored_visible;
         const Vec3 delta = p.pos - me.pos;
         o.facing = wrap_pi(p.yaw - (std::atan2(delta[0], delta[2]) + 3.14159265f)) * kAngleToDeg;
         o.sq_dist = mirror_visible ? mirrored_dist : dot(delta, delta);
@@ -449,17 +450,17 @@ bool BotBrain::find_opponent() {
         if (gone || float(self->lost_frames) > float(int(limit))) set_opponent(-1);
     }
 
-    std::array<float, 8> score;
+    std::array<float, kMpSlots> score;
     score.fill(640000.0f);
-    std::array<bool, 8> concealed_hit{};
+    std::array<bool, kMpSlots> concealed_hit{};
     int best = -1;
     float best_score = 640000.0f;
     const int trait_opp = trait;
-    for (int j = 0; j < 8; ++j) {
+    for (int j = 0; j < env->participant_count(); ++j) {
         if (j == v.slot) continue;
         const Participant p = env->participant(j);
         if (!p.valid || !p.alive) continue;
-        const OtherInfo& o = v.other[std::size_t(j)];
+        const OtherInfo& o = v.other_info(j);
         if (!(o.flags & otherflag::kValid)) continue;
         if (!(o.sq_dist < radius_sq && ((o.flags & otherflag::kVisible) || aware))) continue;
         if (o.flags & otherflag::kSameTeam) continue;
@@ -479,15 +480,14 @@ bool BotBrain::find_opponent() {
                 s *= 0.25f;
             }
         }
-        // Berserkers and Guardians avoid targets already picked by others (x16): for bot candidates the
-        // candidate's own targeted flag (BOT_vars+0x770, set when any bot — including me — targets it);
-        // for humans, any bot in slots 5..7 targeting them, unless bot 4 does (MPGame[4] gate, EE quirk).
+        // Bot candidates use their own targeted flag. Legacy human candidates retain the original MPGame[4] gate;
+        // Extended rosters consider every bot that currently targets the human.
         if (j != opponent_slot_ && j != trait_opp &&
             (v.personality() == Personality::Berserker || v.personality() == Personality::Guardian)) {
             bool piled = false;
-            if (j >= 4) {
+            if (p.is_bot) {
                 piled = env->bot_targeted(j);
-            } else {
+            } else if (env->participant_count() <= 8) {
                 const int b4opp = env->bot_opponent(4);
                 if (b4opp == -1 || b4opp != j) {
                     for (int b = 5; b < 8; ++b)
@@ -495,6 +495,14 @@ bool BotBrain::find_opponent() {
                             piled = true;
                             break;
                         }
+                }
+            } else {
+                for (int b = 0; b < env->participant_count(); ++b) {
+                    const Participant candidate = env->participant(b);
+                    if (candidate.valid && candidate.is_bot && env->bot_opponent(b) == j) {
+                        piled = true;
+                        break;
+                    }
                 }
             }
             if (piled) s *= 16.0f;
@@ -526,7 +534,7 @@ bool BotBrain::find_opponent() {
         score[std::size_t(best)] = 640000.0f;
         best = -1;
         float m = 640000.0f;
-        for (int j = 0; j < 8; ++j)
+        for (int j = 0; j < env->participant_count(); ++j)
             if (score[std::size_t(j)] < m) {
                 m = score[std::size_t(j)];
                 best = j;
@@ -582,10 +590,10 @@ int BotBrain::preferred_trait_opponent() {
     switch (v.personality()) {
     case Personality::Guardian: {
         float best = 640000.0f;
-        for (int j = 0; j < 8; ++j) {
+        for (int j = 0; j < env->participant_count(); ++j) {
             const Participant p = env->participant(j);
-            if (!p.valid || !(v.other[std::size_t(j)].flags & otherflag::kSameTeam) || !p.alive) continue;
-            if (!(j < 4 || env->bot_personality(j) != int(Personality::Guardian))) continue;
+            if (!p.valid || !(v.other_info(j).flags & otherflag::kSameTeam) || !p.alive) continue;
+            if (p.is_bot && env->bot_personality(j) == int(Personality::Guardian)) continue;
             const Vec3 d = p.pos - me.pos;
             const float sq = dot(d, d);
             if (sq < best) {
@@ -601,9 +609,9 @@ int BotBrain::preferred_trait_opponent() {
     }
     case Personality::Judge: {
         float best = 0;
-        for (int j = 0; j < 8; ++j) {
+        for (int j = 0; j < env->participant_count(); ++j) {
             const Participant p = env->participant(j);
-            if (!p.valid || j == v.slot || (v.other[std::size_t(j)].flags & otherflag::kSameTeam) || !p.alive) continue;
+            if (!p.valid || j == v.slot || (v.other_info(j).flags & otherflag::kSameTeam) || !p.alive) continue;
             if (best < p.score) {
                 result = j;
                 best = p.score;
@@ -614,8 +622,8 @@ int BotBrain::preferred_trait_opponent() {
     case Personality::Berserker: {
         if (!has_opponent()) {
             float best = 640000.0f;
-            for (int j = 0; j < 8; ++j) {
-                const OtherInfo& o = v.other[std::size_t(j)];
+            for (int j = 0; j < env->participant_count(); ++j) {
+                const OtherInfo& o = v.other_info(j);
                 if ((o.flags & 10) == 2 && o.sq_dist < best) {
                     result = j;
                     best = o.sq_dist;
@@ -627,16 +635,16 @@ int BotBrain::preferred_trait_opponent() {
     }
     case Personality::Vengeful: {
         const int killer = me.last_killer;
-        if (killer < 0 || killer >= 8 || killer == v.slot) return -1;
+        if (killer < 0 || killer >= env->participant_count() || killer == v.slot) return -1;
         const Participant k = env->participant(killer);
-        if (!k.valid || (v.other[std::size_t(killer)].flags & otherflag::kSameTeam) || !k.alive) return -1;
+        if (!k.valid || (v.other_info(killer).flags & otherflag::kSameTeam) || !k.alive) return -1;
         return killer;
     }
     case Personality::Assassin: {
         float weakest = me.health;
-        for (int j = 0; j < 8; ++j) {
+        for (int j = 0; j < env->participant_count(); ++j) {
             const Participant p = env->participant(j);
-            if (!p.valid || j == v.slot || (v.other[std::size_t(j)].flags & otherflag::kSameTeam) || !p.alive) continue;
+            if (!p.valid || j == v.slot || (v.other_info(j).flags & otherflag::kSameTeam) || !p.alive) continue;
             if (p.health < weakest) {
                 weakest = p.health;
                 result = j;

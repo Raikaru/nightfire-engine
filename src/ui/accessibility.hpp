@@ -24,11 +24,18 @@ struct Accessibility {
 const Accessibility& accessibility();
 void set_accessibility(const Accessibility& options);
 
-// Team colours (0xRRGGBBAA, full-scale bytes): the game's red / blue, or vermillion / sky blue (Okabe-Ito), which stay
+// Team colours (0xRRGGBBAA, full-scale bytes): the game's red / blue, or Okabe-Ito orange / sky blue, which stay
 // distinct under protan, deutan and tritan colour vision. `team` 0 Phoenix, 1 MI6, anything else neutral grey.
 std::uint32_t team_color(int team);
 // The same for colour words the game builds on the GS scale (0x80 = 1.0): maps the two team words the arena and
 // HUD use when the colour-blind option is on and returns `word` unchanged otherwise.
 std::uint32_t remap_team_word(std::uint32_t word);
+
+// Per-participant colours for the 16-slot (Extended) rule set, 0xRRGGBBAA full scale, readable on the HUD's dark
+// plates: 16 distinct hues; with the colour-blind option the eight Okabe-Ito colours, slots 8..15 repeating them
+// with a hollow marker / swatch (player_hollow).
+constexpr int kPlayerColorCount = 16;
+std::uint32_t player_color(int slot);
+bool player_hollow(int slot);
 
 }  // namespace nf::ui

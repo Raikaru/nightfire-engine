@@ -152,9 +152,8 @@ public:
     // Multiplayer view RNG runs after bot systems, matching Player_LaserPointer's source frame order.
     void post_tick_rng();
 
-    // --- combatants -----------------------------------------------------------------------------
-    // Bots and drones: returns the shooter id (>= 4) to pass to fire() and see in HitInfo::attacker.
-    int register_target(DamageTarget* target);
+    // Bots may request their participant slot as shooter id; other targets receive ids above the player slots.
+    int register_target(DamageTarget* target, int preferred_id = -1);
     void unregister_target(DamageTarget* target);
 
     // Any shooter (Player_WeaponInitBullet's spawn loop -> Bullet_init): spawns weapon `weapon_id`'s bullets or
@@ -187,7 +186,7 @@ public:
     void explode_at(const Vec3& pos, const WeaponDef& def, int attacker, float scale = 1.0f,
                     std::uint32_t script = 0);
 
-    // --- players (slot 0..3) ----------------------------------------------------------------------
+    // --- players (MP participant slot 0..15) ------------------------------------------------------
     void spawn_player(int slot, const SpawnLoadout& loadout = {});   // MP_EquipPlayer, done lazily by tick()
     void respawn(int slot, const Vec3& position, float yaw, const SpawnLoadout& loadout);
     bool has_player(int slot) const;
@@ -323,8 +322,6 @@ private:
     WeaponEvents events_;
     World* world_ = nullptr;   // valid during tick() and fire()
     FrameTiming timing_;
-    // Weapon anim scripts advance FRAME_RATE_MUL script frames per logic frame (60 fps scripts), see docs/gameplay.md.
-    static constexpr float kScriptRate = 2.0f;
 };
 
 }  // namespace nf

@@ -85,7 +85,7 @@ DroneSystem::~DroneSystem() = default;
 
 // ---- Drone conveniences -----------------------------------------------------------------------------
 std::uint32_t Drone::now() const { return sys->now(); }
-float Drone::rate() const { return sys->timing().rate; }
+float Drone::rate() const { return sys->timing().FRAME_RATE; }
 std::uint32_t Drone::seconds(float s) const { return std::uint32_t(std::lround(s * rate())); }
 
 void Drone::set_state(int state, std::intptr_t arg) {
@@ -272,16 +272,23 @@ Drone& DroneSystem::spawn(SpawnInfo info) {
     Drone& ref = *d;
     drones_.push_back(std::move(d));
     targets_.push_back(std::make_unique<Target>(this, ref.id));
-    place_on_floor(ref);
-    if (weapons_) ref.shooter_id = weapons_->register_target(targets_.back().get());
+    if (weapons_) {
+        const int preferred_id = ref.dtype == kDtypeBot ? ref.player_slot : -1;
+        ref.shooter_id = weapons_->register_target(targets_.back().get(), preferred_id);
+    }
     return ref;
 }
 
 void DroneSystem::set_weapons(WeaponSystem* ws) {
     weapons_ = ws;
     if (!ws) return;
-    for (std::size_t i = 0; i < drones_.size(); ++i)
-        if (drones_[i]->shooter_id < 0) drones_[i]->shooter_id = ws->register_target(targets_[i].get());
+    for (std::size_t i = 0; i < drones_.size(); ++i) {
+        if (drones_[i]->shooter_id < 0) {
+            const int preferred_id = drones_[i]->dtype == kDtypeBot ? drones_[i]->player_slot : -1;
+            drones_[i]->shooter_id = ws->register_target(targets_[i].get(), preferred_id);
+        }
+    }
+
 }
 
 float DroneSystem::visibility_for_position(const Vec3& pos) const {

@@ -229,7 +229,7 @@ bool PickupField::handle(Pickup& p, const PickupToucher& who, PickupEvent& event
 }
 
 void PickupField::update(const CollisionWorld& collision, const std::vector<PickupToucher>& touchers, std::uint64_t frame,
-                         float rate, float dt, std::vector<PickupEvent>& events) {
+                         std::uint64_t timer_frame, float rate, float dt, std::vector<PickupEvent>& events) {
     for (Pickup& p : pickups_) {
         if (p.state == Pickup::State::Gone) continue;
         if (p.dynamic && p.lifetime_total_frames != 0 && frame >= p.stamp &&
@@ -238,8 +238,7 @@ void PickupField::update(const CollisionWorld& collision, const std::vector<Pick
             continue;
         }
         if (p.state == Pickup::State::Waiting) {
-            // Pickup_Update state 2: back after 10 * FRAME_RATE_INT * units frames (strictly more).
-            if (std::uint64_t(10.0f * rate * float(p.respawn_units)) < frame - p.stamp) p.state = Pickup::State::Active;
+            if (std::uint64_t(10.0f * rate * float(p.respawn_units)) < timer_frame - p.stamp) p.state = Pickup::State::Active;
             continue;
         }
         p.spin += dt;   // spin about Y by REC_FRAME_RATE radians per frame (MP: spin flag set on every pickup)
@@ -257,7 +256,7 @@ void PickupField::update(const CollisionWorld& collision, const std::vector<Pick
                 p.state = Pickup::State::Gone;   // flagged deleted, MP_UnregisterPickup
             } else if (p.respawn_units != 0xFFFF) {
                 p.state = Pickup::State::Waiting;
-                p.stamp = frame;
+                p.stamp = timer_frame;
             }
             break;
         }

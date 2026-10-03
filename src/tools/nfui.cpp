@@ -1,5 +1,6 @@
 // nfui: preview the 2D UI of Nightfire (PS2): fonts, HUD and front-end menus.
-//   nfui <gamedir> <mode> [--shot out.bmp] [--press a,b,...] [--frames N] [mode options]
+//   nfui <gamedir> <mode> [--shot out.bmp] [--press a,b,...] [--frames N] [--size WxH] [--prompts ps|xbox|keyboard]
+//   [mode options]
 // Modes: font | hud | menu (see docs/ui.md). With --shot the frame is rendered headless into a BMP
 // (1280x960, 4:3); --frames N runs N idle frames after --press and exits (also headless, no window
 // loop); otherwise a window opens (Esc quits). `mp [flow]` is a text mode: it prints the
@@ -19,6 +20,9 @@
 
 #include "render/window.hpp"
 #include "tools/nfui_scene.hpp"
+#include "ui/art_sheet.hpp"
+#include "ui/input_devices.hpp"
+#include "ui/prompts.hpp"
 
 using namespace nf;
 
@@ -92,16 +96,21 @@ int run(int argc, char** argv) {
     std::string shot, press;
     long frames = -1;
     std::vector<std::string> extra;
+    std::string prompts_arg;   // --prompts ps|xbox|keyboard: fixed button-prompt glyph set
+    int window_w = kWindowW, window_h = kWindowH;   // --size WIDTHxHEIGHT
     for (int i = 3; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--shot" && i + 1 < argc) shot = argv[++i];
         else if (a == "--press" && i + 1 < argc) press = argv[++i];
         else if (a == "--frames" && i + 1 < argc) frames = std::strtol(argv[++i], nullptr, 10);
+        else if (a == "--prompts" && i + 1 < argc) prompts_arg = argv[++i];
+        else if (a == "--size" && i + 1 < argc && std::sscanf(argv[i + 1], "%dx%d", &window_w, &window_h) == 2) ++i;
         else extra.push_back(a);
     }
 
     GameFiles files(gamedir);
     UiAssets assets = load_ui_assets(gamedir, files);
+    ui::register_art_sheets(assets.sprites);
     if (mode == "mp") {  // headless text mode: prints to stdout, never opens a window
         SceneArgs text_args{files, assets, gamedir, extra};
         return run_mp_text(text_args);
@@ -115,9 +124,23 @@ int run(int argc, char** argv) {
             if (a == "--stats") return run_movie_stats(gamedir, extra);
     }
     const bool headless = !shot.empty() || frames >= 0;
-    Window window("nfui - " + mode, kWindowW, kWindowH, headless);
+    Window window("nfui - " + mode, window_w, window_h, headless);
     ui::Renderer renderer(assets.sprites);
     ui::TextRenderer text(renderer, assets.fonts);
+    input_devices().install();
+    if (prompts_arg == "ps") input_devices().force(InputDevice::PlayStation);
+    else if (prompts_arg == "xbox") input_devices().force(InputDevice::Xbox);
+    else if (prompts_arg == "keyboard") input_devices().force(InputDevice::KeyboardMouse);
+    else if (!prompts_arg.empty()) throw std::runtime_error("--prompts takes ps, xbox or keyboard");
+    ui::PromptGlyphs prompts(assets.fonts);
+    ui::TextRenderer::set_prompts(&prompts);
+    ui::select_prompts(0, mode == "hud" ? InputContext::OnFoot : InputContext::Menu);
+    struct PromptsReset {   // before the Window (SDL_Quit) goes
+        ~PromptsReset() {
+            ui::TextRenderer::set_prompts(nullptr);
+            input_devices().shutdown();
+        }
+    } prompts_reset;
     SceneArgs args{files, assets, gamedir, extra};
     std::unique_ptr<Scene> scene = make_scene(mode, args);
 

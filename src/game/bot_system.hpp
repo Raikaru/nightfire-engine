@@ -24,8 +24,8 @@
 
 namespace nf::bots {
 
-// Names of the participants in `slots` 4.. for ArenaSettings (call before constructing the ArenaSystem): fills
-// present/bot/name/team/character from the roster (BOT_init: teams off -> team 2, assassination -> 0).
+// Names of bot participants at the ruleset's first bot slot and later in `slots` for ArenaSettings (before constructing
+// the ArenaSystem): fills present/bot/name/team/character (BOT_init: teams off -> team 2, assassination -> 0).
 void fill_bot_slots(ArenaSettings& settings, const std::vector<BotSpec>& roster);
 
 // Parses a `--bot-char a,b,c` list (indices or names) into `count` character indexes, defaulting to the Quick Game
@@ -66,10 +66,10 @@ public:
     explicit BotSystem(Config config);
     ~BotSystem() override;
 
-    // Creates a bot: registers the state handlers once, spawns the drone at MP_GetSpawnPoint, installs the hooks
-    // (BOT_validateStateChange, FindOpponent, BOT_handlePain, ammo, damage mods) and registers the body with the arena.
-    // Call before ArenaSystem::start(), in slot order 4, 5, 6, 7 (the weapon system hands out shooter ids in order).
+    // Creates a bot in its exact participant slot and registers its drone as that slot's combat target.
     Bot& add_bot(const BotSpec& spec);
+    // Removes a bot and clears its ArenaSystem participant state; false if the slot has no bot.
+    bool remove_bot(int slot);
     enum class SnapshotBlob : std::uint8_t { None, Object, Drone, BotVars };
     struct SnapshotRestoreResult {
         enum class Code : std::uint8_t { Ok, InvalidSlot, WrongSize, MissingBot, UnsupportedPointer, UnsupportedState };

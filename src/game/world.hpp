@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "assets/elf.hpp"
+#include "assets/mp_data.hpp"
 #include "assets/level.hpp"
 #include "game/actions.hpp"
 #include "game/collision_world.hpp"
@@ -45,13 +46,13 @@ public:
     virtual void tick(World& world, FrameTiming timing) = 0;
 };
 
-// The simulation: level collision, up to four players and a fixed-step tick that mirrors one
-// iteration of the original's logic loop (Input_Update, Player_Update, Collide_Update +
+// The simulation supports up to sixteen combatants (Extended); the PS2 game uses only its first four controller slots.
+// One fixed-step tick mirrors one iteration of the original's logic loop (Input_Update, Player_Update, Collide_Update +
 // Player_CollisionHandler, Player_PositionCamera).
 class World {
 public:
-    static constexpr int kMaxPlayers = 4;
-    static constexpr float kTickHz = 30.0f;
+    static constexpr int kMaxPlayers = int(kMpSlots);
+    static constexpr float kTickHz = FrameTiming::kDefaultRate;
 
     World(Level& level, InputTables tables, PlayerParams params);
 
@@ -59,8 +60,7 @@ public:
     Player& spawn_player(int index, const SpawnPoint& at);
     void add_system(std::unique_ptr<System> system) { systems_.push_back(std::move(system)); }
 
-    // One logic frame. `pads` holds the sticks as the game sees them after psiInput_PollDevices
-    // (see compensate_sticks). The default timing is kTickHz.
+    // One fixed logic frame. The default gameplay rate is deterministic 60 Hz.
     void tick(const PadInputs& pads) { tick(pads, FrameTiming{kTickHz}); }
     void tick(const PadInputs& pads, FrameTiming timing);
 
@@ -69,6 +69,8 @@ public:
     void replay_player(int index, const ActionInput& input, FrameTiming timing = FrameTiming{kTickHz});
 
     std::uint64_t frame() const { return frame_; }
+    // Independent ACTION.ELF GameState+0x34 timer; seedable rows capture it separately from frame().
+    std::uint64_t timer_frame() const { return timer_frame_; }
     Level& level() { return level_; }
     const CollisionWorld& collision() const { return collision_; }
     Player* player(int index) { return players_[std::size_t(index)].get(); }
@@ -102,6 +104,7 @@ private:
     std::array<PlayerSettings, kMaxPlayers> settings_;
     std::vector<std::unique_ptr<System>> systems_;
     std::uint64_t frame_ = 0;
+    std::uint64_t timer_frame_ = 0;
 };
 
 }  // namespace nf

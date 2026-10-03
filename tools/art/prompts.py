@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import pixel_font  # noqa: E402
 from style import (BODY_DARK, BODY_LIGHT, GOLD_DARK, GOLD_LIGHT, GOLD_MID, INK, INK_EDGE, PLATE_BOTTOM,  # noqa: E402
                    PLATE_EDGE_DARK, PLATE_EDGE_LIGHT, PLATE_FACE, PLATE_SHADE, PLATE_SHADOW, Sheet, body_shade,
-                   circle_inside, fill_shape, lerp, noise, put, round_rect_inside)
+                   circle_inside, fill_shape, lerp, noise, outline, put, round_rect_inside)
 
 CAP_H = 13          # keycap / plate height (L1/R1 plates are 13 texels tall)
 FACE = 19           # face buttons (the cross/circle/square/triangle discs are 19x19)
@@ -149,7 +149,7 @@ def disc(size=FACE, seed=1):
     rim = circle_inside(c, c, r - 1.1)
 
     def shade(u, v, x, y):
-        rgb = body_shade(u, v, x, y, seed)
+        rgb = lerp(body_shade(u, v, x, y, seed), BODY_DARK, 0.3)
         if not rim(x + 0.5, y + 0.5):  # soft dark rim, lighter on the lit top-right
             rgb = lerp(rgb, (12, 12, 13) if u + (1 - v) < 1.0 else (90, 86, 74), 0.55)
         return rgb
@@ -236,37 +236,30 @@ def stick(label):
 
 
 def dpad(lit):
-    """A generic plus-shaped pad; the arms in `lit` are gold."""
+    """A generic D-pad of four separate arms with rounded tips (the game's D-pad glyphs are drawn the same way);
+    the arms in `lit` are gold, the others charcoal. Each arm is lit from the top right."""
     size = FACE
     img = blank(size, size)
-    arm, span = 7, size
-    lo, hi = (size - arm) / 2.0, (size + arm) / 2.0
+    c, half, gap = size / 2.0, 3.4, 1.6   # centre, arm half-width, gap around the hub
+    tip = round_rect_inside(2 * half, c - gap, half)
 
-    def plus(px, py):
-        return (lo <= px <= hi and 0.3 <= py <= span - 0.3) or (lo <= py <= hi and 0.3 <= px <= span - 0.3)
-
-    def which(x, y):
-        if lo <= x + 0.5 <= hi and lo <= y + 0.5 <= hi:
-            return "centre"
-        if y + 0.5 < lo:
-            return "up"
-        if y + 0.5 > hi:
-            return "down"
-        return "left" if x + 0.5 < lo else "right"
+    def arm_of(px, py):
+        # Local coordinates along each arm: `along` from the tip (0) towards the hub, `across` centred.
+        for name, along, across in (("up", py, px - c), ("down", size - py, px - c),
+                                    ("left", px, py - c), ("right", size - px, py - c)):
+            if 0.3 <= along <= c - gap and abs(across) <= half and tip(across + half, along - 0.3):
+                return name
+        return None
 
     def shade(u, v, x, y):
-        part = which(x, y)
+        part = arm_of(x + 0.5, y + 0.5)
         g = noise(x, y, 31) * 5
         t = max(0.0, min(1.0, (u + (1 - v)) * 0.5))
-        if part in lit:
-            rgb = lerp(GOLD_DARK, GOLD_LIGHT, t)
-        elif part == "centre":
-            rgb = (28, 28, 30)
-        else:
-            rgb = lerp(BODY_DARK, (96, 96, 100), t)
+        rgb = lerp(GOLD_DARK, GOLD_LIGHT, t) if part in lit else lerp(BODY_DARK, (100, 100, 104), t)
         return tuple(max(0, min(255, int(ch + g))) for ch in rgb)
 
-    fill_shape(img, (0, 0, size, size), plus, shade)
+    fill_shape(img, (0, 0, size, size), lambda px, py: arm_of(px, py) is not None, shade)
+    outline(img, 128, alpha=120)
     return img
 
 
@@ -328,6 +321,69 @@ def mouse_side(which):
         put(img, 1, y + j, GOLD_MID)
     return img
 
+# ---------------------------------------------------------------------------------------------- diagrams
+
+def diagram_keyboard():
+    """The controls page's centre picture for keyboard + mouse: a keyboard block and a mouse, in the charcoal of
+    the controller picture it replaces (neutral keys: the labels around it carry the bindings)."""
+    img = blank(150, 72)
+    body = round_rect_inside(112, 50, 5.0)
+
+    def shade(u, v, x, y):
+        t = max(0.0, min(1.0, (u + (1 - v)) * 0.5))
+        rgb = lerp(BODY_DARK, (78, 78, 82), t)
+        g = noise(x, y, 51) * 4
+        return tuple(max(0, min(255, int(c + g))) for c in rgb)
+
+    fill_shape(img, (0, 14, 112, 50), body, shade)
+    rows = [(0, 13), (2, 13), (4, 12), (6, 11)]   # (indent, keys) of the four letter rows
+    for r, (indent, keys) in enumerate(rows):
+        for k in range(keys):
+            mini_cap(img, 4 + indent + k * 8, 18 + r * 8)
+    for k in range(3):
+        mini_cap(img, 4 + k * 8, 50)
+    cap_body(img, 28, 50, 52, 8, radius=1.5)    # space bar
+    for k in range(3):
+        mini_cap(img, 82 + k * 8, 50)
+    mouse_body(img, 124, 18, 22, 38)
+    # The cable from the mouse to the keyboard.
+    for x in range(112, 135):
+        put(img, x, 15 if x > 118 else 16, (40, 40, 42))
+    for y in range(15, 19):
+        put(img, 135, y, (40, 40, 42))
+    return img
+
+
+def diagram_pad():
+    """A generic twin-grip gamepad seen from above (no console's shape): body, two sticks, a D-pad and four
+    face buttons in the prompt colours."""
+    w, h = 150, 96
+    img = blank(w, h)
+
+    def inside(px, py):
+        top = 10 <= px <= w - 10 and 16 <= py <= 52 and round_rect_inside(w - 20, 36, 14)(px - 10, py - 16)
+        left = ((px - 34) / 26.0) ** 2 + ((py - 56) / 36.0) ** 2 <= 1.0
+        right = ((px - (w - 34)) / 26.0) ** 2 + ((py - 56) / 36.0) ** 2 <= 1.0
+        return top or left or right
+
+    def shade(u, v, x, y):
+        t = max(0.0, min(1.0, (u + (1 - v)) * 0.5))
+        rgb = lerp(BODY_DARK, (84, 84, 88), t)
+        g = noise(x, y, 61) * 4
+        return tuple(max(0, min(255, int(c + g))) for c in rgb)
+
+    # Shoulder plates behind the body.
+    for x0 in (14, w - 14 - 36):
+        fill_shape(img, (x0, 9, 36, 10), round_rect_inside(36, 10, 3), lambda u, v, x, y: lerp(PLATE_SHADE, PLATE_FACE, u))
+    fill_shape(img, (0, 0, w, h), inside, shade)
+    img.alpha_composite(dpad({"up", "down", "left", "right"}), (24, 22))
+    for cx, cy, letter in ((112, 22, "Y"), (102, 31, "X"), (122, 31, "B"), (112, 40, "A")):
+        fill_shape(img, (cx - 4, cy - 4, 9, 9), circle_inside(4.5, 4.5, 4.3),
+                   lambda u, v, x, y, c=FACE_LETTERS[letter]: lerp(lerp(c, BODY_DARK, 0.35), c, 1 - v))
+    for cx in (52, w - 52):
+        img.alpha_composite(stick(""), (cx - 9, 48))
+    return img
+
 
 # ---------------------------------------------------------------------------------------------- sheet
 
@@ -385,6 +441,8 @@ def build():
                     (".", "period")):
         s.add("key_kp_" + name, keycap("KP" + c, small=True))
     s.add("key_kp_enter", keycap("KPENT", small=True))
+    s.add("diagram_keyboard", diagram_keyboard())
+    s.add("diagram_pad", diagram_pad())
     return s.save()
 
 

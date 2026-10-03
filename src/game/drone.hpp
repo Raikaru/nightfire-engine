@@ -5,9 +5,9 @@
 // single-player enemies (DTYPE/DMODE tables, states 0..194) and multiplayer bots (BOT_*, DTYPE 0x1e,
 // states 0xc3..0xf9). A bot IS a drone: `dtype == kDtypeBot`.
 //
-// Time: everything is counted in world ticks (`World::frame()`, 30 Hz). The original counts
-// FRAME_RATE_INT-second timers; `Drone::seconds(x)` converts them to ticks of the current rate. Literal
-// frame counts in the spec (e.g. "30-frame shout delay") stay literal.
+// Time: everything is counted in `World::timer_frame()` ticks (GameState+0x34) at the current session rate.
+// `Drone::seconds(x)` converts seconds to ticks using FRAME_RATE; literal frame counts in the spec (e.g.
+// "30-frame shout delay") stay literal.
 
 #include <array>
 #include <cstdint>
@@ -164,7 +164,7 @@ struct SpawnInfo {
     int sub_class = 0;               // Drone+0xda
     int initial_state = -1;          // -1: Global ENTER picks dtype/dmode initial state
     Behaviour behaviour{};
-    int player_slot = -1;            // bots: 4..7 (MP participant slot)
+    int player_slot = -1;            // bots: MP participant slot
     std::unique_ptr<DroneExt> ext;
 };
 
@@ -173,7 +173,7 @@ struct DroneHit {
     float damage = 0;
     int type = 0;                 // weapon damage type
     int weapon = 0;               // weapon_data id
-    int attacker = -1;            // player slot 0..3, drone/bot slot >= 4, -1 env
+    int attacker = -1;            // participant slot; -1 env
     Vec3 point{};
     Vec3 direction{};
     int part = -1;                // hit bone id (5 head, arms {0x14,0x15,0x17,0x20,0x23,0x27}, legs 0x31..0x38)
@@ -185,7 +185,7 @@ public:
     // ---- identity / SM ------------------------------------------------------------------------------
     int id = 0;                         // StateMachineInfo+0 (unique, 1-based)
     std::uint8_t obj_type = 2;          // obj+0xff: 2 drone, 0x11 MP bot body
-    int player_slot = -1;               // bots: MP slot (4..7); SP drones -1
+    int player_slot = -1;               // bots: MP participant slot; SP drones -1
     DroneSystem* sys = nullptr;
 
     struct StateMachine {               // Drone+0x108 StateMachineInfo_tag

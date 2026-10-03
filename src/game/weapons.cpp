@@ -459,7 +459,7 @@ float WeaponSystem::script_frame(const PlayerWeapons& p) const {
 // script passes their frame (AnimProcessScriptCmds).
 void WeaponSystem::advance_anim(int slot, PlayerWeapons& p, const World& world) {
     if (!p.anim) return;
-    const int steps = std::max(1, int(std::lround(timing_.mul())));
+    const int steps = std::max(1, int(std::lround(timing_.FRAME_RATE_MUL)));
     const AnimScript* script = bank_ && p.anim_script ? bank_->script(p.anim_script) : nullptr;
     for (int i = 0; i < steps; ++i) {
         if (p.anim_reverse) {
@@ -1110,7 +1110,7 @@ void WeaponSystem::tick_player(int slot, World& world, FrameTiming timing) {
     }
     // Player_Update slowly refills clips unless its weapon animation object is in firing state 9.
     if (p.anim_state != WeaponAnim::Firing) {
-        const std::uint64_t game_frame = world.frame();
+        const std::uint64_t game_frame = world.timer_frame();
         const auto recharge_clip = [this, &p, timing](int weapon_id) {
             auto& clip = p.weapon[std::size_t(weapon_id)].clip;
             const int clip_size = table_.weapon(weapon_id).clip_size;

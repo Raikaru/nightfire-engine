@@ -34,7 +34,7 @@ namespace objflag {
 constexpr std::uint16_t kCarryingFlag = 1, kCarryingBlueprint = 2, kInHill = 0x10, kCarryingAny = 0xf;
 }
 
-// One participant slot (0..3 humans, 4..7 bots): MPSettings[slot] + MPGame[slot] + the body.
+// One participant slot: MPSettings[slot] + MPGame[slot] + the body; legacy humans use 0..3 and bots 4..7.
 struct Participant {
     bool valid = false;            // a registered participant
     bool alive = false;            // alive test of BotGlobal (health > 0, not eliminated)
@@ -104,7 +104,7 @@ public:
     // Designated victim (BOT_vars+0x76b) of a bot slot, -1 none: the Vengeful +2 kill bonus reads it.
     virtual int bot_trait_opponent(int slot) const { (void)slot; return -1; }
     // Whether bot `target` is itself targeted by a bot (BOT_vars+0x770): Berserker/Guardian pile-on reads
-    // the *candidate's* flag and only for bot candidates (slot >= 4).
+    // the candidate bot's own flag.
     virtual bool bot_targeted(int slot) const { (void)slot; return false; }
     // Another bot's perception cache (BOT_vars+0x0b0 other[]) for the mirror in BOT_setOtherPlayerInfo:
     // when bot `slot` sees `other` as valid, this bot copies its sq_dist and visible bit instead of

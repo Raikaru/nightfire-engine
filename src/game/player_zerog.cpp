@@ -89,7 +89,7 @@ void Player::update_zerog(const ActionInput& input, FrameTiming timing) {
     // The turn deltas rotate the body about its own axes: RotMatrix(pitch, yaw, 0) applied first.
     body_ = basis_mul(rot_euler({pitch_delta, yaw_step_, 0.0f}), body_);
 
-    if (input.pressed(kActLevel)) zerog.level_timer = std::int16_t(int(timing.rate * 1.5f));
+    if (input.pressed(kActLevel)) zerog.level_timer = std::int16_t(int(timing.FRAME_RATE * 1.5f));
     if (zerog.level_timer != 0) {
         --zerog.level_timer;
         // Roll the body upright: face the horizontal projection of its heading (straight up or down: along its

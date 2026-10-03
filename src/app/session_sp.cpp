@@ -38,50 +38,32 @@
 #include "render/gl.hpp"
 #include "render/level_renderer.hpp"
 #include "render/weather_renderer.hpp"
+#include "ui/prompts.hpp"
 
 namespace nf::app {
 
 namespace {
 
+constexpr float kTau = 6.2831853071795864769f;
+
+Camera interpolate_camera(const Vec3& previous_eye, float previous_yaw, float previous_pitch,
+                          const Player& current, float alpha) {
+    const Vec3 eye = previous_eye + (current.shaken_eye() - previous_eye) * alpha;
+    const float yaw = previous_yaw + std::remainder(current.yaw - previous_yaw, kTau) * alpha;
+    const float pitch = previous_pitch + (current.view_pitch() - previous_pitch) * alpha;
+    return camera_for_eye_yaw_pitch(eye, yaw, pitch);
+}
 // P_ENDMISSION lives in the level-bin menu script (frontend_level.cpp); P_NFRESULTS in the frontend script.
 constexpr std::uint32_t kPageEndMission = 0x40000042, kPageResults = 0x40000036;
 
-// Menu pad from the keyboard (nfui mapping) plus the first gamepad's buttons.
-PadState menu_pad(SDL_Gamepad* gamepad) {
-    PadState s;
-    const bool* k = SDL_GetKeyboardState(nullptr);
-    if (k[SDL_SCANCODE_UP]) s.buttons |= kPadUp;
-    if (k[SDL_SCANCODE_DOWN]) s.buttons |= kPadDown;
-    if (k[SDL_SCANCODE_LEFT]) s.buttons |= kPadLeft;
-    if (k[SDL_SCANCODE_RIGHT]) s.buttons |= kPadRight;
-    if (k[SDL_SCANCODE_Z] || k[SDL_SCANCODE_RETURN]) s.buttons |= kPadCross;
-    if (k[SDL_SCANCODE_X]) s.buttons |= kPadCircle;
-    if (k[SDL_SCANCODE_A]) s.buttons |= kPadSquare;
-    if (k[SDL_SCANCODE_S]) s.buttons |= kPadTriangle;
-    if (k[SDL_SCANCODE_SPACE]) s.buttons |= kPadStart;
-    if (k[SDL_SCANCODE_BACKSPACE]) s.buttons |= kPadSelect;
-    if (k[SDL_SCANCODE_Q]) s.buttons |= kPadL1;
-    if (k[SDL_SCANCODE_E]) s.buttons |= kPadR1;
-    if (gamepad) {
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_UP)) s.buttons |= kPadUp;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_DOWN)) s.buttons |= kPadDown;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_LEFT)) s.buttons |= kPadLeft;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) s.buttons |= kPadRight;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_SOUTH)) s.buttons |= kPadCross;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_EAST)) s.buttons |= kPadCircle;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_WEST)) s.buttons |= kPadSquare;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_NORTH)) s.buttons |= kPadTriangle;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_START)) s.buttons |= kPadStart;
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_BACK)) s.buttons |= kPadSelect;
-    }
-    return s;
-}
+// Menu pad from the keyboard plus the first gamepad's buttons (the shared menu bindings).
+PadState menu_pad(SDL_Gamepad* gamepad) { return input_bindings().sample(InputContext::Menu, gamepad); }
 
 }  // namespace
 
 struct SpSession::Impl {
-    Impl(AppContext& c, Window& w, ui::Renderer& u, ui::TextRenderer& t, const SpLaunch& l, const AppConfig& cfg)
-        : ctx(c), window(w), ui(u), text(t), launch(l), config(cfg) {}
+    Impl(AppContext& c, Window& w, ui::Renderer& u, ui::TextRenderer& t, const SpLaunch& l, AppConfig& cfg)
+        : ctx(c), window(w), ui(u), text(t), launch(l), config(cfg), timing(float(cfg.logic_hz)), user_config(cfg) {}
 
     AppContext& ctx;
     Window& window;
@@ -89,6 +71,8 @@ struct SpSession::Impl {
     ui::TextRenderer& text;
     SpLaunch launch;
     AppConfig config;
+    FrameTiming timing;
+    AppConfig& user_config;   // controller style / Y-inversion edited in the pause menu persist here
 
     // Declared in dependency order (Level outlives World, bank outlives renderers).
     std::vector<std::uint8_t> bin_bytes;  // raw level .bin (cutscenes, menu script)
@@ -159,6 +143,9 @@ struct SpSession::Impl {
 
         world = std::make_unique<World>(*level, InputTables::from_elf(ctx.action_elf), params);
         world->spawn_player(0, spawns.front());
+        // The profile's controller style and Y-axis inversion (PlayerSetting+0xE / +0).
+        world->settings(0).controller_style = std::clamp(config.controller_style, 0, 7);
+        world->settings(0).invert_look = config.invert_y;
 
         bank = open_character_bank(ctx.files, launch.bin);
         auto weapons_owned =
@@ -232,7 +219,7 @@ struct SpSession::Impl {
 
         add_level_sprites(ctx.assets.sprites, Bytes(bin_bytes));
         HudConfig hcfg;
-        hcfg.frame_rate = 30.0f;
+        hcfg.frame_rate = timing.FRAME_RATE;
         hud = std::make_unique<Hud>(ctx.assets, ctx.hud_data, hcfg);
 
         renderer = std::make_unique<LevelRenderer>(*level);
@@ -278,7 +265,7 @@ struct SpSession::Impl {
         return true;
     }
 
-    void audio_frame() {
+    void audio_frame(FrameTiming timing) {
         for (const SoundEvent& e : weapons->events().sounds) {
             if (e.exclude == 0 || (e.listener >= 0 && e.listener != 0)) continue;
             audio::PlayOptions o;
@@ -298,9 +285,11 @@ struct SpSession::Impl {
         l.dir = {std::sin(p.yaw) * c, std::sin(p.view_pitch()), std::cos(p.yaw) * c};
         l.norm = {std::cos(p.yaw), 0.0f, -std::sin(p.yaw)};  // Mat_GetNorm: the listener's left
         audio->set_listener(l);
-        music->update();
-        audio->update();
-        audio->update();
+        const int updates = static_cast<int>(timing.FRAME_RATE_MUL);
+        for (int i = 0; i < updates; ++i) {
+            music->update();
+            audio->update();
+        }
     }
 
     // --give ID debug equip: slot state is spawned lazily on the first tick and select
@@ -326,14 +315,14 @@ struct SpSession::Impl {
         const bool use = pad.held(kPadCross) && !prev_use_;
         prev_use_ = pad.held(kPadCross);
         if (mission_sys) mission_sys->pre_tick(*world, {use, false, false, false});
-        world->tick(pads);
+        world->tick(pads, timing);
         if (weather)
-            weather->update(world->player(0)->eye(),
+            weather->update(world->player(0)->eye(), timing.FRAME_RATE_MUL, timing.REC_FRAME_RATE,
                             [this](int ch) { return spsys->channels.on(ch); });
         feed_stats();
         poll_mission();
         effects->consume(weapons->events());
-        effects->tick(FrameTiming{}.mul());
+        effects->tick(timing.FRAME_RATE_MUL);
         weapons->events().clear();
         maybe_give();
         // End of mission: the state machine settles on Done (success shows results, failure the
@@ -438,8 +427,11 @@ struct SpSession::Impl {
         // HUD overlay (the ui canvas letterboxes over the 3D frame; no clear).
         HudState hs;
         weapons->fill_hud(0, hs);
+        hs.context_icon = world->player(0)->icon_context();   // HUD_UpdateHealthPane reads BLData+0x95F
+        hs.controller_style = world->settings(0).controller_style;
         hud->update(hs);
         ui.begin(width, height, false);
+        ui::select_prompts(0, InputContext::OnFoot);
         hud->draw(ui, text);
         // Cutscene fade overlay (MissionSystem::fade 0..1 black).
         if (mission_sys && mission_sys->fade() > 0.001f) {
@@ -465,7 +457,25 @@ struct SpSession::Impl {
             }
         }
         menu.set_pause_info(info);
+        // The CONTROLS tab edits the player's controller style and Y-axis inversion: write them back however the
+        // menu closes, into the game and the saved settings.
+        menu.player_options().controller_style = world->settings(0).controller_style;
+        menu.player_options().invert_y = world->settings(0).invert_look;
         menu.open(FrontendMode::Pause, page);
+        struct KeepOptions {
+            Impl& s;
+            Frontend& menu;
+            ~KeepOptions() {
+                const PlayerOptions& o = menu.player_options();
+                PlayerSettings& ps = s.world->settings(0);
+                if (ps.controller_style == o.controller_style && ps.invert_look == o.invert_y) return;
+                ps.controller_style = std::clamp(o.controller_style, 0, 7);
+                ps.invert_look = o.invert_y;
+                s.user_config.controller_style = s.config.controller_style = ps.controller_style;
+                s.user_config.invert_y = s.config.invert_y = ps.invert_look;
+                save_config(config_path(), s.user_config);
+            }
+        } keep{*this, menu};
         PadHistory hist;
         bool wait_release = true;
         while (!menu.wants_close()) {
@@ -492,6 +502,7 @@ struct SpSession::Impl {
             int w, h;
             window.begin_frame(w, h);
             ui.begin(w, h);
+            ui::select_prompts(0, InputContext::Menu);
             menu.draw(ui, text);
             ui.end();
             window.swap();
@@ -562,6 +573,7 @@ struct SpSession::Impl {
         int w, h;
         window.begin_frame(w, h);
         ui.begin(w, h);
+        ui::select_prompts(0, InputContext::Menu);
         menu.draw(ui, text);
         ui.end();
         if (!window.save_bmp(path)) throw std::runtime_error("cannot write shot");
@@ -598,6 +610,7 @@ struct SpSession::Impl {
             int w, h;
             window.begin_frame(w, h);
             ui.begin(w, h);
+            ui::select_prompts(0, InputContext::Menu);
             menu.draw(ui, text);
             ui.end();
             window.swap();
@@ -610,7 +623,7 @@ struct SpSession::Impl {
 };
 
 SpSession::SpSession(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRenderer& text, const SpLaunch& launch,
-                     const AppConfig& cfg)
+                     AppConfig& cfg)
     : impl_(std::make_unique<Impl>(ctx, window, ui, text, launch, cfg)) {
     ready_ = impl_->build();
 }
@@ -630,10 +643,14 @@ SpResult SpSession::run_interactive() {
     const bool has_audio = s.audio->open_device();
     std::printf("audio: output device %s\n", has_audio ? "open" : "none");
 
+    const Player& initial_player = *s.world->player(0);
+    Vec3 previous_eye = initial_player.shaken_eye();
+    float previous_yaw = initial_player.yaw;
+    float previous_pitch = initial_player.view_pitch();
     bool running = true, captured = false;
     double accumulator = 0;
     Uint64 last = SDL_GetTicksNS();
-    constexpr double kStep = 1.0 / 30.0;
+    const double kStep = s.timing.REC_FRAME_RATE;
     SpResult done{SpExit::QuitToMenu};
     bool finished = false;
     while (running && !finished) {
@@ -653,6 +670,10 @@ SpResult SpSession::run_interactive() {
                     done = *r;
                     finished = true;
                 }
+                const Player& resumed_player = *s.world->player(0);
+                previous_eye = resumed_player.shaken_eye();
+                previous_yaw = resumed_player.yaw;
+                previous_pitch = resumed_player.view_pitch();
                 last = SDL_GetTicksNS();
             }
         }
@@ -668,13 +689,21 @@ SpResult SpSession::run_interactive() {
                 } else {
                     last = SDL_GetTicksNS();
                     accumulator = 0;
+                    const Player& resumed_player = *s.world->player(0);
+                    previous_eye = resumed_player.shaken_eye();
+                    previous_yaw = resumed_player.yaw;
+                    previous_pitch = resumed_player.view_pitch();
                 }
                 break;
             }
+            const Player& previous_player = *s.world->player(0);
+            previous_eye = previous_player.shaken_eye();
+            previous_yaw = previous_player.yaw;
+            previous_pitch = previous_player.view_pitch();
             s.tick_world(pad);
-            if (has_audio) s.audio_frame();
+            if (has_audio) s.audio_frame(s.timing);
             accumulator -= kStep;
-            if (s.death_frames > 90 && !s.end_shown) {
+            if (s.death_frames > 3 * s.timing.FRAME_RATE_INT && !s.end_shown) {
                 s.end_shown = true;
                 if (s.mission_won) {
                     // Mission complete -> results chain, then the next mission.
@@ -698,8 +727,8 @@ SpResult SpSession::run_interactive() {
         }
         if (finished) break;
         const Player& p = *s.world->player(0);
-        s.draw_frame(camera_for_eye_yaw_pitch(p.shaken_eye(), p.yaw, p.view_pitch()));
-        s.window.swap();
+        s.draw_frame(interpolate_camera(previous_eye, previous_yaw, previous_pitch, p,
+                                        float(accumulator / kStep)));
     }
     if (s.gamepad) SDL_CloseGamepad(s.gamepad);
     return done;

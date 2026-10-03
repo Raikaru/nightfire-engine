@@ -378,7 +378,7 @@ void BotBrain::process_goals() {
         const int result = g.complete ? moveres::kArrived : g.last_result;
         if (result != moveres::kArrived) continue;
         if (g.type == goaltype::kPlayer && g.target == v.friend_slot) {
-            const OtherInfo& o = v.other[std::size_t(g.target)];
+            const OtherInfo& o = v.other_info(g.target);
             if ((o.flags & 10) == 10 && o.sq_dist > kGuardRadiusSq) {
                 goto_goal(s, g.return_state);   // teammate walked off: keep following
                 continue;

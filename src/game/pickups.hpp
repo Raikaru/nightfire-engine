@@ -83,7 +83,7 @@ struct PickupEvent {
 
 // A participant the pickups test against each tick.
 struct PickupToucher {
-    int slot;                 // 0..3 humans, 4..7 bots
+    int slot;                 // MP participant slot (legacy humans 0..3, bots 4..7)
     bool bot;
     Vec3 pos;                 // obj+0x30
     ArenaBody* body;          // alive + give_* target
@@ -110,9 +110,9 @@ public:
 
     // Pickup_Update for every pickup: spin, respawn timers, then the touch test (humans in slot order, then bots; the
     // first toucher in range with a clear line of sight goes to Pickup_Handler and ends this pickup's tick).
-    // `frame` is GameState+0x34, `rate` FRAME_RATE_INT.
-    void update(const CollisionWorld& collision, const std::vector<PickupToucher>& touchers, std::uint64_t frame, float rate,
-                float dt, std::vector<PickupEvent>& events);
+    // Dynamic drop lifetime uses update ticks; map respawn uses GameState+0x34.
+    void update(const CollisionWorld& collision, const std::vector<PickupToucher>& touchers, std::uint64_t frame,
+                std::uint64_t timer_frame, float rate, float dt, std::vector<PickupEvent>& events);
 
     // Pickup_MakeRandomWeaponSet: fills `sets.matrix[10]` (slot 0 never the last UseableGuns entry).
     static void make_random_weapon_set(WeaponSets& sets);

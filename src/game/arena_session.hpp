@@ -1,8 +1,10 @@
 #pragma once
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "assets/strings.hpp"
@@ -18,8 +20,8 @@ struct MatchOptions {
     bool enabled = false;                       // --mp
     MpRuleSet rules = MpRuleSet::Ps2;           // --ruleset ps2|gc-xbox|extended
     std::uint32_t mode = mp_mode::kArena;       // --mode
-    int humans = 1;                             // --players 1..4
-    int bots = 0;                               // --bots 0..12, capped by ruleset capacity
+    int humans = 1;                             // --players 1..4 local humans
+    int bots = 0;                               // --bots 0..15 Extended; legacy rules reserve four human slots
     std::int32_t score_limit = 10;              // --frag-limit N (-1 unlimited)
     float time_limit = 600.0f;                  // --time-limit MINUTES (<= 0 disables the match timer)
     bool friendly_fire = false;                 // --friendly-fire
@@ -63,8 +65,8 @@ private:
 // MP_Start). The systems are owned by the World; the session keeps the handles and the bodies.
 class ArenaSession {
 public:
-    // `before_start` runs after the humans exist and before ArenaSystem::start(): the place to fill the bot slots
-    // (arena().mutable_settings()) and register their bodies (arena().register_body(4 + k, ...)).
+    // `before_start` runs after the humans exist and before ArenaSystem::start(): the place to fill bot slots and
+    // register their bodies.
     ArenaSession(World& world, WeaponTable table, const MatchOptions& options, const StringTable* strings,
                  std::string_view tuning_vars_txt, const std::function<void(ArenaSession&)>& before_start = {});
 
@@ -73,6 +75,10 @@ public:
     WeaponSystem& weapons() { return *weapons_; }
     const MatchOptions& options() const { return options_; }
     int humans() const { return options_.humans; }
+    // Activates a server human in an empty/released slot; existing human actors remain unchanged.
+    HumanBody& activate_human(int slot, std::string_view name);
+    // Idempotently provisions a client-side player/body for snapshots; by default preserves bot metadata.
+    HumanBody& ensure_human_actor(int slot, std::string_view name, bool preserve_bot = true);
 
     // One logic frame: World::tick, then MP weapon-view RNG after all bot systems, then event routing.
     void tick(const PadInputs& pads, FrameTiming timing = FrameTiming{World::kTickHz});
@@ -91,7 +97,7 @@ private:
     MatchOptions options_;
     WeaponSystem* weapons_ = nullptr;
     ArenaSystem* arena_ = nullptr;
-    std::vector<std::unique_ptr<HumanBody>> bodies_;
+    std::array<std::unique_ptr<HumanBody>, kMpSlots> bodies_{};
     std::vector<MatchMessage> messages_;
     std::vector<MatchSound> sounds_;
     MatchPhase last_phase_ = MatchPhase::Running;

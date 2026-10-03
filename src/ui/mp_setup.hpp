@@ -44,7 +44,7 @@ struct MpSettings {
     std::uint32_t mode = mp_mode::kArena;     // +0x1a4 scenario mode word
     std::uint32_t level_id = 0;               // +0x1a8 map (level id, 0 = none chosen yet)
     std::uint32_t human_count = 1;            // +0x1ac
-    std::uint32_t bot_count = 0;              // +0x1b0 (MP_Start clamps to 4)
+    std::uint32_t bot_count = 0;              // +0x1b0 (clamped to the remaining ruleset slots)
     std::int32_t weapon_set = 0;              // +0x1b4
     std::int32_t fixed_guns = 0;              // +0x1b8
     std::int32_t professional = 0;            // +0x1bc
@@ -55,12 +55,16 @@ struct MpSettings {
     std::int32_t grapple = 0;                 // +0x1d0
     std::int32_t explosive_scenery = 0;       // +0x1d4 (0x10 = the locked placeholder, masked to 0 by P_MPCONFIRM)
     std::array<MpPlayerSlot, kMpSlots> slots;
-    std::array<MpBot, kMpMaxBots> bots;          // Original first 10 mpbots rows plus extension rows 10..11.
+    std::array<MpBot, kMpMaxBots> bots;          // Original first 10 mpbots rows plus extension rows 10..15.
     bool bots_prepared = false;               // mpbots[0]: Menu_PrepareBots ran, MP_Start reads `bots` instead of the defaults
     std::uint32_t prepared_bot_count = 0;     // mpbots[1]
     MpRuleSet rules = MpRuleSet::Ps2;
     std::uint32_t slot_count = 8;
-    std::uint32_t bot_limit() const { return slot_count > kMpMaxHumans ? slot_count - kMpMaxHumans : 0; }
+    std::uint32_t bot_limit() const {
+        const std::uint32_t reserved_humans =
+            rules == MpRuleSet::Extended ? human_count : std::uint32_t(kMpMaxLocalHumans);
+        return slot_count > reserved_humans ? slot_count - reserved_humans : 0;
+    }
 
     bool team_game() const { return (mode & mp_mode::kTeamFlag) != 0; }            // MPSettings+0x18c
     bool objective_scored() const { return (mode & mp_mode::kObjectiveFlag) != 0; } // MPSettings+0x190
@@ -103,7 +107,7 @@ struct MpContinueResult {
 // One row of the P_MPCONFIRM summary panel / a participant of the match.
 struct MpParticipant {
     bool bot = false;
-    std::uint32_t slot = 0;      // MPSettings slot (0..3 humans, 4..7 bots)
+    std::uint32_t slot = 0;      // Local setup: human slots first; Extended bots follow present humans.
     std::uint8_t controller = 0; // humans: controller port (PlayerSetting+0x156)
     std::string name;            // the slot's name text: the codename / "Player n" / the bot character's name
     std::uint32_t character = 0;
@@ -132,7 +136,7 @@ public:
 
     const MpData& data() const { return data_; }
     const MpSettings& settings() const { return settings_; }
-    const std::array<MpJoinSlot, kMpMaxHumans>& join_slots() const { return join_; }
+    const std::array<MpJoinSlot, kMpMaxLocalHumans>& join_slots() const { return join_; }
 
     // ---- unlocks: Menu_SetBonus, Menu_UnlockMPSettings, Menu_UnlockMPSkins ----
     void set_bonus(std::size_t slot, std::uint64_t mask);       // Menu_SetBonus (per controller reward mask)
@@ -218,6 +222,7 @@ private:
     const MpMenuItem* character_item(std::uint32_t character) const;
     void refresh_unlocks();
     bool team_game() const { return settings_.team_game(); }
+    std::size_t bot_slot_base() const;
     void set_slot_name_from_character(std::size_t slot, std::uint32_t character);
     std::int32_t* rule_field(MpRule r);
     const std::int32_t* rule_field(MpRule r) const;
@@ -226,10 +231,10 @@ private:
     const StringTable& strings_;
     MpSettings settings_;
     MpSettings stored_settings_;
-    std::array<MpJoinSlot, kMpMaxHumans> join_{};
-    std::array<std::uint64_t, kMpMaxHumans> bonus_{};
+    std::array<MpJoinSlot, kMpMaxLocalHumans> join_{};
+    std::array<std::uint64_t, kMpMaxLocalHumans> bonus_{};
     bool unlock_everything_ = false;
-    std::array<bool, kMpMaxHumans> controller_absent_{};  // the "insert controller" prompt is up (gp+0x8be0)
+    std::array<bool, kMpMaxLocalHumans> controller_absent_{};  // the "insert controller" prompt is up (gp+0x8be0)
     std::uint8_t good_owner_ = 0;   // mp_stuff[0x378]: owner (human slot + 1 / bot + 10) of the one good agent of a non-team game
     std::uint8_t bond_owner_ = 0;   // mp_stuff[0x379]: owner of the Bond outfit
     std::size_t editing_bot_ = 0;   // mp_stuff[0x37a]

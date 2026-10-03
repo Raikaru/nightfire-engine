@@ -2,21 +2,22 @@
 
 Date: 2026-10-02. Question: which networking model should `nightfire-engine`
 use for online multiplayer (new feature; the original is split-screen only),
-given our assets: a **bit-exact deterministic 30 Hz sim** (`World::tick`,
-`ArenaSession::tick`), **tiny inputs** (one `PadState` = 6 bytes per tick per
-player), small arena maps, 4-human/4-bot slot layout (8 `kMpSlots` total),
-deterministic bots, and a re-simulation cost measured below.
+given our assets: a **deterministic fixed-step sim** (`World::tick`,
+`ArenaSession::tick`), now 60 Hz by default with a 30-Hz comparison option,
+tiny inputs (one `PadState` = 6 bytes per tick per player), small arena maps,
+a 16-participant extended roster, deterministic bots, and a re-simulation cost measured below.
 
 > The architecture in the work brief (server-authoritative snapshots +
 > prediction/interpolation + lag compensation over UDP) was treated as a
 > hypothesis. Verdict up front: **it is the right one**. Details and the
 > measured evidence follow.
 
-## 0. Measured facts about our sim (2026-10-02)
+## 0. Measured facts about the prior 30-Hz baseline (2026-10-02)
 
+The numbers below were measured before the logic-rate change, at 30 ticks/s;
+they remain useful as a historical CPU-cost baseline, not as current tick counts.
 Headless `nfgame` match on Skyrail (`07000024.bin`, 28 pickups), default
 `RelWithDebInfo` build, `SDL_VIDEODRIVER=dummy`:
-
 | Match | Ticks (5 min) | Wall time | Ticks/s | × realtime |
 |---|---|---|---|---|
 | 1 idle human + 4 bots | 9000 | 3.46 s | ~2600 | ~86× |
@@ -250,14 +251,12 @@ mechanisms while the rules stay bit-exact on the server.
 
 ### Scale
 
-- Hard slot ceiling from the original: **8 slots — humans 0–3, bots 4–7**
-  (`kMpSlots`, `src/assets/mp_data.hpp`; setup tables in
-  `src/ui/mp_setup.hpp`). The brief says "8+ humans"; going beyond 4 humans
-  means extending slot arrays the original sized at 8 (MPSettings/MPGame
-  records, HUD radar loops, spawn logic). Recommendation: **ship 4 humans +
-  up to 4 bots (faithful), design snapshots with a slot-count field so the
-  cap can be raised later** without protocol breakage. Document the
-  extension as non-original.
+- Original PS2/GC-Xbox rulesets retain the original **8 participant slots**
+  (four local humans plus four bots). The non-original Extended ruleset uses
+  all 16 `kMpSlots`: any human/bot mix up to 16, with bots placed after the
+  highest present human slot. Local split-screen setup and controller joins
+  remain capped at four; online participants use the remaining slot records.
+  Extended capacity is a project addition, not original-game behavior.
 - Bots cost server CPU only (~0.5 ms/tick total for 8 slots — a dedicated
   server uses ~2% of one core for the sim; snapshots × clients dominate).
 
@@ -460,6 +459,6 @@ prediction proven free by measurement; determinism retained and reused
    radar deviation note). This file (`docs/net-research.md`) is the design
    record.
 
-Slot honesty: ship 4 humans + 4 bots (original limits); snapshot format
-carries a slot count so raising the human cap later is a compatible change.
-Any extension beyond 4 humans is documented as non-original.
+Slot honesty: legacy rulesets ship 4 local humans + up to 4 bots. Extended
+snapshots carry the 16-slot roster and support up to 16 online humans/bots;
+this capacity is non-original behavior.

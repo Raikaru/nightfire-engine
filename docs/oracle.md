@@ -35,6 +35,7 @@ read its memory over PINE and drive it with a virtual pad.
 | `glb_players` | `0x2D88E0` | `obj_tag*[4]` |
 | `FileList` | `0x2446A0` | FILES.BIN index |
 | `GameState+0x3C` / `+0x30` | `0x2A37A4` / `0x2A3798` | logic frame counter, incremented at the START of an update / a second counter incremented at its END |
+| `GameState+0x34` | `0x2A379C` | independent gameplay timer read by `Player_Update` and pickup respawn logic; seedable recordings store it as `timer_frame` |
 | `tSlot[0]` | `0x245680` | pad slot 0: `+0x122` button word (Sony layout, active-high), `+0x128..0x12B` rx ry lx ly after `psiInput_PollDevices`' dead zone |
 | `PlayerSetting` | `0x2A38C8` | player 0: `+0x14` 40 action floats, `+0x104` 40 flag bytes (1 held, 4 pressed, 8 repeat) |
 | `FRAME_RATE` | `0x30D0D0` | float, 60 / vsyncs per logic frame (60 or 30 here); `FRAME_RATE_MUL` `0x30D0D8`, `REC_FRAME_RATE` `0x30D0DC` |
@@ -64,11 +65,14 @@ savestates written earlier were unaffected). Close it as soon as a recording ses
 Fresh memory card: Title -> Start boots straight into Paris Prelude. Pause -> Quit to main menu
 -> Multiplayer -> join (Cross x2) -> Arena -> map -> character -> handicap -> add 1 bot
 (AI Bots -> Setup Bot 1 -> Snow Guard -> Playing: Yes) -> Continue -> Start Game.
-PINE savestate slot 1 = main menu, slot 2 = Skyrail arena spawn.
+PINE savestate slot 50 is the live title/menu state used by `mp_scenario.py`; slot 1 in the
+current `PCSX2` directory restores only the static title artwork (no active MP menu). Slot 2
+is the Skyrail arena spawn.
 
-`tools/oracle/mp_scenario.py` automates this path; on a slow EE interpreter,
-use `--press-ms 2000 --nav-ms 800`, and allow `--live-timeout` (default 120 s)
-for the level load to produce a player object.
+`tools/oracle/mp_scenario.py` automates this path from slot 50 by default. For maps that are
+not committed by the wheel, `--direct-map-at-confirm` writes the selected map ID at
+`MPSettings+0x1A8` on Scenario Options/Confirm. On a slow EE interpreter, use
+`--press-ms 2000 --nav-ms 800`, and allow `--live-timeout` (default 120 s) for the level load.
 
 ### Unlocking all missions (PINE, at the main menu)
 
@@ -507,6 +511,15 @@ all 435 slot-4 rows in the v2 Skyrail capture agreed, but v5 CTF/Silo rows
 showed zero with `BOT_vars+0x768` values 6/44.
 `Drone+0xBBC/+0xBBE` clip/reserve mirrors restore into `BotArmoury`. The
 host's initialized start weapon and resource-loaded callback remain unchanged.
+Snapshot restore also rehydrates the active `BotBody` goal setup from the
+restored semantic goal (participant target or position) without invoking
+`goto_goal` or drawing RNG. The MP trace exposes active goal slot, type, kind
+and semantic target for frame-by-frame comparison when the recorder captured
+the corresponding goal bytes and target reference.
+Pickup bot visit locks are captured per `MPpickups[i]+0x80` bot slot, restored
+with the pickup snapshot, and emitted in MP traces. Legacy captures without
+`visit_until` cannot seed this decision state; new seedable recordings require
+all four PS2 bot-lock values per pickup.
 
 External nav/route and animation state, opaque `Drone+0x12C` state-machine
 arguments, runtime pointers/hooks, and character, weapon, and nav resources
@@ -535,6 +548,8 @@ cross (Start). After `MP_ACTIVE==1` and player object type 3 first appear, the
 driver waits `--spawn-stabilize` frames (default 60) for level initialization to
 settle, then saves only after `GS_DONE` and `GS_FRAME_START` remain stable
 within the bracketed read; the counters need not have a fixed relative offset.
+
+When `--bots 0`, the driver skips the AI Bots page and continues directly; no bot roster poke is needed.
 
 On a slow EE interpreter, `--page-settle` controls the wait after each menu
 page transition (default 10 s); raise it alongside `--press-ms 2000` if a tap
@@ -667,6 +682,10 @@ a weapon ID.
 | Skyrail Demolition seedable v5 | slot 14, idle human + 3 bots | 85 rows, 85 ready; frame 15290..15600 | `~/.cache/mp-oracle-tmp/mp-skyrail-demolition-seedable-v5.jsonl`; one live objective root; longest ready run 5 frames |
 | Skyrail Arena seedable v5 | slot 10, idle human + 3 bots | 83 rows, 74 ready; frame 34999..35302 | `~/.cache/mp-oracle-tmp/mp-skyrail-arena3bot-seedable-v5.jsonl`; longest ready run 6 frames; 8 rows have projectile-list gaps |
 | Missile Silo Arena seedable v5 | slot 11, idle human + 3 bots | 59 rows, 55 ready; frame 15275..15575 | `~/.cache/mp-oracle-tmp/mp-missilesilo-arena3bot-seedable-v5.jsonl`; longest ready run 4 frames; 4 rows have projectile-list gaps |
+| Skyrail Arena 3 bots, timed 180 s | slot 10, idle human; fresh pnach RNG-hooked start at 7.3 s elapsed | 4,307 accepted rows, frame 11527–16927 (5,400-frame span) | `~/.cache/mp-oracle-2-tmp/mp-skyrail-arena3bot-rng-checkpointed-20261003.jsonl`; 12,854 RNG events, zero new losses; human died twice; bots scored 1/1/3 kills and 2/1/0 deaths; results screenshot at `shots/skyrail-arena-3bot/results.png`; P2S checkpoints (17). |
+| Skyrail Team Arena, 3 bots | slot 53, idle human; teams configured | 3,133 accepted rows, frame 11970–15570 (3,600-frame span) | `~/.cache/mp-oracle-2-tmp/mp-skyrail-teamarena-rng-checkpointed-20261003.jsonl`; 7,207 RNG events, zero new losses; bots moved but no kills/deaths; P2S checkpoints (11). |
+| Skyrail CTF, 3 bots | slot 54, teams 0/0/1; 180 s time limit | 2,899 accepted rows, frame 11971–15571 (3,600-frame span) | `~/.cache/mp-oracle-2-tmp/mp-skyrail-ctf-rng-checkpointed-20261003.jsonl`; 7,210 RNG events, zero new losses; one objective blob sampled, no flag capture; P2S checkpoints (11). |
+| Skyrail Demolition, 3 bots | slot 55, teams 0/0/1; 180 s time limit | 2,566 accepted rows, frame 12087–15695 (3,600-frame span) | `~/.cache/mp-oracle-2-tmp/mp-skyrail-demolition-rng-checkpointed-20261003.jsonl`; 7,322 RNG events, zero new losses; one bot had 789 death-animation frames; P2S checkpoints (11). |
 
 ### Residuals / limits
 
@@ -676,10 +695,25 @@ a weapon ID.
   Spawn-frame list changes are explicitly marked unavailable; transient hit-zone
   feedback remains unmapped. `seed_ready` describes sampled schema coverage,
   not complete runtime state.
+- `GameFlow_Main` increments `GameState+0x34` on an unpaused update before
+  dispatching gameplay; `Player_Update` uses it for weapon recharge and
+  `Pickup_Update` uses it for map-pickup respawn. `BotSystem` clocks and
+  pickup-visit expiry plus `DroneSystem::now()` also use this timer. Seedable
+  recordings retain it separately as `timer_frame`; the comparator checks it
+  when both traces capture it. Dynamic drop lifetime remains counted in update
+  ticks.
 - Partial engine state import is available with `--mp-seed`; `--mp-seed-each`
   restores each accepted pre-tick row. It covers supported player, bot, pickup,
   objective and projectile fields without guaranteeing complete state or
   lockstep. Older seed captures that contain dynamic dropped pickups but omit
   their amount cannot restore those rows; re-record with the current schema.
   `mp_compare.py diff` aligns exact absolute frames and reports per-field
-  residuals; frame alignment alone does not establish behavioral parity.
+  residuals; static pickup amount/radar visibility are recorder placement metadata,
+  listed separately as recorder-only rather than runtime divergence. Frame alignment
+  alone does not establish behavioral parity.
+- The 2026-10-03 follow-up batch could not produce a valid Ravine spawn pose: after two setup attempts it never left Scenario Options/Confirm. The zero-bot and one-bot Skyrail MGL attempts were rejected by the game at the same minimum-participant check; the bot setup page did not add a bot. Only Pad1 is configured. No Ravine pose pair or MGL projectile/explosion frames were captured.
+- Seeded comparisons for Arena, Team Arena and CTF align 207, 233 and 297 post-seed frames respectively, but all aligned frames diverge; they are diagnostics, not parity. Demolition seeding fails closed: at frames 15591 and 15600 `BotSystem` rejects slot 4, blob 3 (`BotVars`) at offset `+0x8c` (`0x3178d0`), so no Demolition engine trace or comparison exists. Baseline reports are in `~/.cache/mp-oracle-2-tmp/*-lockstep-diff-20261003.txt` and `demolition-lockstep-failure-20261003.txt`.
+
+### Seeded frame-aligned comparisons
+
+Choose the first frame of a contiguous `seed_ready` run and execute the engine with `--mp-seed RECORDING:FRAME --mp-seed-each --frames N --mp-trace ENGINE.jsonl`, where `N` is the number of following logic ticks to replay. The engine trace then aligns from `FRAME+1` through `FRAME+N`; compare with `python3 tools/oracle/mp_compare.py diff RECORDING.jsonl ENGINE.jsonl`. This is a per-tick partial-state-seeded diagnostic, not a free-running lockstep or proof of behavioral parity. It can fail closed on unsupported bot snapshots; record the rejected slot/blob/offset rather than dropping that participant or claiming a match.

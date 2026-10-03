@@ -260,17 +260,26 @@ bool Frontend::Impl::c_lb_msg_options(ui::Control&, const ui::Msg& m) {
 // P_MPJOIN
 
 namespace {
-// Menu_UpdateMPControllers' "no controller" text: label 0x3c0 (or 0x10000ba past port 2) names the port.
-const char* const kPortNames[4] = {"1", "2", "3", "4"};
+// A join slot's text with every button glyph drawn for that slot's own device (`~X` -> `~<slot+1>X`, see
+// ui::PromptGlyphs): the application previews which device each open slot would take.
+std::string slot_glyphs(std::string text, std::size_t slot) {
+    for (std::size_t i = text.find('~'); i != std::string::npos; i = text.find('~', i + 3))
+        text.insert(i + 1, 1, char('1' + slot));
+    return text;
 }
+}  // namespace
 
+// Menu_UpdateMPControllers' "no controller" memo. The PS2 text named a controller port or the multitap
+// (labels 0x3c0 / 0x10000ba); a PC slot is open whenever another keyboard or gamepad can still join.
 void Frontend::Impl::update_join_slot(std::size_t slot) {
     const bool present = slot == 0 || controllers_present[slot];
     mp->set_controller_present(slot, present, true);
+    // A device became available: the slot's memo goes back to its "Press ~A to join" state.
+    if (present && !join_slot_present[slot]) mgr->send_manager(0x5A, kJoinMemo, std::uint32_t(slot));
+    join_slot_present[slot] = present;
     if (present) return;
-    const std::string text = slot < 2 ? replace_s(label(0x3C0), kPortNames[slot]) : label(0x10000BA);
     mgr->send_ex(kJoinMemo, std::uint32_t(slot), kLineHeight, 100, 0);
-    mgr->send_ex(kJoinMemo, std::uint32_t(slot), kSetText, text);
+    mgr->send_ex(kJoinMemo, std::uint32_t(slot), kSetText, std::string("Connect a controller to join"));
     send_ex(kJoinMemo, std::uint32_t(slot), kSetFlags, 2);
     send_ex(kSetupWheel, std::uint32_t(slot), kSetFlags, 1);
     send_ex(kCodenameRadio, std::uint32_t(slot), kSetFlags, 1);
@@ -320,8 +329,8 @@ bool Frontend::Impl::c_rb_mp_start(ui::Control& c, const ui::Msg& m) {
             send_ex(kJoinBanner, slot, kSetFlags, 1);
             send_ex(kCodenameRadio, slot, kSetFlags, 1);
             send_ex(kJoinPortrait, slot, kSetFlags, 1);
-            if (state == MpJoinState::Open) mgr->send_to(c, ui::Msg{kSetText, 1, 0, label(0x1E8)});
-            else if (state == MpJoinState::Ready) mgr->send_to(c, ui::Msg{kSetText, 1, 0, label(0x1E9)});
+            if (state == MpJoinState::Open) mgr->send_to(c, ui::Msg{kSetText, 1, 0, slot_glyphs(label(0x1E8), slot)});
+            else if (state == MpJoinState::Ready) mgr->send_to(c, ui::Msg{kSetText, 1, 0, slot_glyphs(label(0x1E9), slot)});
             break;
         case kAccept:
             if (state == MpJoinState::Open) {
@@ -338,7 +347,7 @@ bool Frontend::Impl::c_rb_mp_start(ui::Control& c, const ui::Msg& m) {
                 send_ex(kJoinPortrait, slot, kSetSprite, 0x30001A0);
                 send_ex(kJoinPortrait, slot, kSetUv, 0, 0x7F003F);
             } else if (state == MpJoinState::Ready) {
-                mgr->send_to(c, ui::Msg{kSetText, 1, 0, label(0x39C)});
+                mgr->send_to(c, ui::Msg{kSetText, 1, 0, slot_glyphs(label(0x39C), slot)});
                 mgr->fade(c, 0x60606080, 0x1E, false);
                 mp->join_ready(slot);
             }

@@ -16,6 +16,7 @@
 #include "assets/credit_data.hpp"
 #include "assets/ui_assets.hpp"
 #include "game/input.hpp"
+#include "ui/input_devices.hpp"
 #include "ui/menu.hpp"
 #include "ui/mp_setup.hpp"
 
@@ -43,6 +44,9 @@ struct FrontendResult {
     int difficulty = 0;            // 0 Agent, 1 Secret Agent, 2 00 Agent
     std::optional<MpLaunch> launch;  // multiplayer: mode, map, humans, bots and rules (MpSettings) + participants
     int end_choice = -1;           // P_ENDMISSION radio: 0 retry mission, 1 retry from the base map
+    // The devices that claimed the P_MPJOIN slots (filled by the application's pad feed; all empty when the
+    // join page was driven without device claims).
+    std::array<SlotDevice, 4> slot_devices{};
 };
 
 // Session options edited by the options pages (P_CNOPTIONS 0x2d, P_CNAVOPTIONS 0x31, P_CNCONTROLS 0x22,
@@ -112,15 +116,17 @@ struct DebriefRow {
     float points = 0;
     int score = 0;                 // Menu_GetMPScore
     bool is_bot = false;
+    int slot = -1;                 // participant slot (Extended per-player colour), -1 unknown
 };
 struct DebriefInfo {
-    std::vector<DebriefRow> rows;  // at most 4 shown
+    std::vector<DebriefRow> rows;  // ranked; up to 4 on the original page, more (Extended) in a table
     std::string banner;            // winner line, pre-formatted
+    std::size_t slot_count = 8;    // rule-set capacity: the PS2 page shows the top four, larger sets a full table
+    bool table() const { return slot_count > 8 && rows.size() > 4; }
 };
 
 enum class FrontendMode { MainMenu, Pause };
 
-// What the pause menu shows that only the running game knows.
 struct PauseObjective {
     std::uint32_t label = 0;   // label hash of the objective text
     bool complete = false;

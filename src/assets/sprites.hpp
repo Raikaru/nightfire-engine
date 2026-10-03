@@ -17,6 +17,8 @@ public:
     // Registers every hashed texture of `chunk`. A later registration of the same hash replaces the
     // earlier one (the level's own copy wins over the shared chunk, as with the runtime table).
     void add(const MapChunk& chunk);
+    // Registers a texture the engine itself provides (the original art sheets, src/ui/art_sheet.hpp).
+    void add(std::uint32_t hash, Texture texture) { textures_[hash] = std::move(texture); }
 
     const Texture* find(std::uint32_t hash) const;
     std::size_t size() const { return textures_.size(); }

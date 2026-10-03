@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <vector>
 
+#include "ui/accessibility.hpp"
+#include "ui/art_sheet.hpp"
 #include "ui/menu.hpp"
 
 namespace nf::ui {
@@ -79,25 +81,42 @@ void MenuChrome::logo() {
 }
 
 void MenuChrome::prompts(std::string_view text) {
-    label(authored(50, 419, 540, 21), text, 2, Align::Center, menu_style::kLabelColor);
+    const Rect box = authored(50, 419, 540, 21);
+    if (!accessibility().high_contrast) {
+        label(box, text, 2, Align::Center, menu_style::kLabelColor);
+        return;
+    }
+    // High contrast: near-white text on a solid dark plate.
+    const float w = text_width(text, 2) + 16.0f;
+    renderer_.fill({box.x + (box.w - w) * 0.5f, box.y - 2.0f, w, box.h + 4.0f}, {4, 2, 4, 0x78});
+    label(box, text, 2, Align::Center, menu_style::kHighContrastColor);
 }
 
 float MenuChrome::panel_header_height() { return kPanelHeader * kPanelScaleY; }
 
-void MenuChrome::panel(Rect box, std::string_view header) {
-    const float cw = kPanelCorner * kPanelScaleX, ch = kPanelCorner * kPanelScaleY;
-    const float src_x[3] = {0, kPanelCorner, kPanelTexW - kPanelCorner};
-    const float src_w[3] = {kPanelCorner, kPanelTexW - 2 * kPanelCorner, kPanelCorner};
-    const float src_y[3] = {0, kPanelCorner, kPanelTexH - kPanelCorner};
-    const float src_h[3] = {kPanelCorner, kPanelTexH - 2 * kPanelCorner, kPanelCorner};
-    const float dst_x[3] = {box.x, box.x + cw, box.x + box.w - cw};
-    const float dst_w[3] = {cw, box.w - 2 * cw, cw};
-    const float dst_y[3] = {box.y, box.y + ch, box.y + box.h - ch};
-    const float dst_h[3] = {ch, box.h - 2 * ch, ch};
+void draw_nine_slice(Renderer& renderer, std::uint32_t hash, Rect src, float corner, Rect dst, float corner_w,
+                     float corner_h, Color color) {
+    const float src_x[3] = {src.x, src.x + corner, src.x + src.w - corner};
+    const float src_w[3] = {corner, src.w - 2 * corner, corner};
+    const float src_y[3] = {src.y, src.y + corner, src.y + src.h - corner};
+    const float src_h[3] = {corner, src.h - 2 * corner, corner};
+    const float dst_x[3] = {dst.x, dst.x + corner_w, dst.x + dst.w - corner_w};
+    const float dst_w[3] = {corner_w, dst.w - 2 * corner_w, corner_w};
+    const float dst_y[3] = {dst.y, dst.y + corner_h, dst.y + dst.h - corner_h};
+    const float dst_h[3] = {corner_h, dst.h - 2 * corner_h, corner_h};
     for (int row = 0; row < 3; ++row)
         for (int column = 0; column < 3; ++column)
-            sprite(menu_style::kPanel, {dst_x[column], dst_y[row], dst_w[column], dst_h[row]},
-                   {src_x[column], src_y[row], src_w[column], src_h[row]});
+            renderer.draw(hash, {dst_x[column], dst_y[row], dst_w[column], dst_h[row]},
+                          {src_x[column], src_y[row], src_w[column], src_h[row]}, color);
+}
+
+void draw_agent_panel(Renderer& renderer, Rect dst) {
+    draw_nine_slice(renderer, menu_style::kPanel, {0, 0, kPanelTexW, kPanelTexH}, kPanelCorner, dst,
+                    kPanelCorner * kPanelScaleX, kPanelCorner * kPanelScaleY, Color::from_rgba(0x7F7F7FFF));
+}
+
+void MenuChrome::panel(Rect box, std::string_view header) {
+    draw_agent_panel(renderer_, box);
     // The header label: script box 70,105 226x16 inside the panel at 50,103.
     if (!header.empty())
         label({box.x + 20.0f, box.y + 2.0f, box.w - 40.0f, 14.0f}, header, 2, Align::Center, menu_style::kLabelColor);
@@ -120,6 +139,23 @@ void MenuChrome::selection(Rect box) {
 
 void MenuChrome::sprite(std::uint32_t hash, Rect dst, Rect src, std::uint32_t color) {
     renderer_.draw(hash, dst, src, Color::from_rgba(color));
+}
+
+Rect MenuChrome::art(std::string_view sheet, std::string_view name, float x, float y, std::uint32_t color) {
+    const ArtSprite* a = art_sprite(sheet, name);
+    if (!a) return {x, y, 0, 0};
+    // The renderer narrows canvas x by 7/7.5 (the PS2 512-to-640 stretch); widen so texels stay square.
+    const Rect dst{x, y, a->src.w * (7.5f / 7.0f), a->src.h};
+    renderer_.draw(a->hash, dst, a->src, Color::from_rgba(color));
+    return dst;
+}
+
+void MenuChrome::spinner(float x, float y, unsigned frame, float scale) {
+    // Twelve frames, one every two updates (0.8 s per turn at 30 Hz).
+    const ArtSprite* a = art_sprite("online", "spinner_" + std::to_string((frame / 2) % 12));
+    if (!a) return;
+    const float w = a->src.w * (7.5f / 7.0f) * scale, h = a->src.h * scale;
+    renderer_.draw(a->hash, {x - w * 0.5f, y - h * 0.5f, w, h}, a->src, Color::from_rgba(0x7F7F7FFF));
 }
 
 }  // namespace nf::ui

@@ -164,6 +164,8 @@ def flatten_fields(value, prefix="", fields=None):
 
 def diff_fields(record):
     fields = {}
+    if "timer_frame" in record:
+        fields["timer_frame"] = record["timer_frame"]
     players = record.get("pl", [])
     bots = record.get("bots", [])
     for slot in range(max(8, len(players))):
@@ -198,11 +200,42 @@ def diff_fields(record):
             player["weapon_timers"] = {k: v for k, v in player["weapon_timers"].items() if k != "weapon_anim"}
         if slot >= 4 and "substate" in player:
             player.setdefault("state", player["substate"])
+        if slot >= 4 and isinstance(player.get("goal"), str) and isinstance(player.get("stat"), dict):
+            goal_raw = bytes.fromhex(player["goal"])
+            active_goal = int(player["stat"].get("goalslot", 0xFF))
+            active_goal = -1 if active_goal == 0xFF else active_goal
+            player["active_goal"] = active_goal
+            player["goal_type"] = -1
+            player["goal_kind"] = -1
+            player["goal_target"] = -1
+            if 0 <= active_goal < 2 and len(goal_raw) >= (active_goal + 1) * 0x50:
+                offset = active_goal * 0x50
+                player["goal_type"] = goal_raw[offset + 0x45]
+                player["goal_kind"] = goal_raw[offset + 0x4A]
+                if player["goal_type"] != 0:
+                    target_ptr = struct.unpack_from("<I", goal_raw, offset + 0x3C)[0]
+                    if target_ptr == 0:
+                        player["goal_target"] = -1
+                    else:
+                        refs = record.get("bot_goal_targets", [])
+                        ref = next((r for r in refs if r.get("bot_slot") == slot
+                                    and r.get("goal_slot") == active_goal), None)
+                        if ref is not None:
+                            for field in ("pickup_index", "objective_index", "target_slot"):
+                                if field in ref:
+                                    player["goal_target"] = ref[field]
+                                    break
+                            else:
+                                player.pop("goal_target")
+                        else:
+                            player.pop("goal_target")
         common = {"pos", "yaw", "type", "state", "hp", "alive", "out", "mp_status"}
         if slot < 4:
             common |= {"arm", "dead", "vel", "fall_vel", "substate", "pitch", "foot", "zoom", "aim",
                        "lock_victim", "lock_yaw", "lock_pitch", "ammo_pool", "weapon_slots",
                        "weapon_timers"}
+        else:
+            common |= {"active_goal", "goal_type", "goal_kind", "goal_target"}
         player = {key: value for key, value in player.items() if key in common}
         flatten_fields(player, path, fields)
 
@@ -258,7 +291,7 @@ def diff_fields(record):
                 age = max(0.0, (int(record["frame"]) - int(pickup.get("stamp", record["frame"]))) / rate)
                 pickup["remaining_s"] = max(0.0, float(pickup["units"]) * 10.0 - age) if pickup.get("st") == 2 else 0.0
         for key in ("st", "cat", "item", "units", "remaining_s", "stamp", "lifetime_frames",
-                    "amount", "radar_hidden", "pos"):
+                    "amount", "radar_hidden", "pos", "visit_until"):
             if key in pickup:
                 flatten_fields(pickup[key], f"pk[{idx}].{key}", fields)
     objective_rows = record.get("objectives", record.get("objs", []))
@@ -464,6 +497,7 @@ def diff(oracle_path, engine_path, tolerance=0.001, verbose=False):
         return
 
     field_counts = {}
+    recorder_only_counts = {}
     field_max = {}
     first = None
     divergent_frames = 0
@@ -471,15 +505,37 @@ def diff(oracle_path, engine_path, tolerance=0.001, verbose=False):
         expected = diff_fields(oracle[frame])
         actual = diff_fields(engine[frame])
         source_pk = {int(p["idx"]): p for p in oracle[frame].get("pk", []) if "idx" in p}
+        recorder_only = set()
+        for index, pickup in source_pk.items():
+            # Static pickup amount/radar visibility are placement metadata from the
+            # recorder; the engine represents these through its loaded pickup table.
+            # They are not dynamic runtime state and have no serialized engine peer.
+            if "respawn_units" in pickup and int(pickup.get("lifetime_frames", 0)) == 0:
+                recorder_only.update(f"pk[{index}].{field}" for field in ("amount", "radar_hidden"))
         for path in tuple(actual):
             if not path.startswith("pk["):
                 continue
             close = path.find("]")
             field = path[close + 2:]
-            if field in ("amount", "radar_hidden"):
-                index = int(path[3:close])
-                if field not in source_pk.get(index, {}):
-                    del actual[path]
+            index = int(path[3:close])
+            if field in ("amount", "radar_hidden") and field not in source_pk.get(index, {}):
+                recorder_only.add(path)
+            elif field.startswith("visit_until[") and "visit_until" not in source_pk.get(index, {}):
+                recorder_only.add(path)
+        for path in tuple(actual):
+            if not path.startswith("pl["):
+                continue
+            close = path.find("]")
+            field = path[close + 2:]
+            if field in ("active_goal", "goal_type", "goal_kind", "goal_target") and path not in expected:
+                recorder_only.add(path)
+        if "timer_frame" in actual and "timer_frame" not in expected:
+            recorder_only.add("timer_frame")
+        for path in recorder_only:
+            if path in expected or path in actual:
+                recorder_only_counts[path] = recorder_only_counts.get(path, 0) + 1
+            expected.pop(path, None)
+            actual.pop(path, None)
         mismatches = []
         for path in sorted(expected.keys() | actual.keys()):
             if path not in expected:
@@ -515,6 +571,10 @@ def diff(oracle_path, engine_path, tolerance=0.001, verbose=False):
         maximum = field_max.get(path)
         residual_text = f", max residual {maximum:g}" if maximum is not None else ""
         print(f"  {path}: {field_counts[path]} frames{residual_text}")
+    if recorder_only_counts:
+        print("recorder-only fields (not compared):")
+        for path in sorted(recorder_only_counts, key=lambda key: (-recorder_only_counts[key], key)):
+            print(f"  {path}: {recorder_only_counts[path]} frames")
     if first is None:
         print("first divergence: none")
     else:

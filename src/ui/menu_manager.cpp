@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "ui/accessibility.hpp"
 #include "ui/layout.hpp"
 
 #include "ui/menu.hpp"
@@ -722,9 +723,20 @@ void MenuManager::draw(Renderer& renderer, TextRenderer& text) const {
         if (d.is_text) {
             TextStyle st = d.style;
             st.scale_x = kScaleX;
-            const float draw_x = d.x * kScaleX;
-            text.draw(top_chrome ? layout.x(draw_x, left_anchor ? HorizontalAnchor::Left : HorizontalAnchor::Right) : draw_x,
-                      d.y, d.text, st);
+            float draw_x = d.x * kScaleX;
+            if (top_chrome) draw_x = layout.x(draw_x, left_anchor ? HorizontalAnchor::Left : HorizontalAnchor::Right);
+            // Settings > Accessibility > High contrast: the button-prompt row (glyph escapes, script y 419) is drawn
+            // near-white on a dark plate.
+            if (accessibility().high_contrast && d.y >= 395.0f && d.text.find('~') != std::string::npos) {
+                const TextMetrics m = text.measure(d.text, st);
+                const float left = st.align == Align::Center ? draw_x - m.width * 0.5f
+                                   : st.align == Align::Right ? draw_x - m.width : draw_x;
+                renderer.fill({left - 8.0f, d.y - 16.0f, m.width + 16.0f, 22.0f}, {4, 2, 4, 0x78});
+                st.color = 0x80807CFF;
+                st.shadow_color = 0x00000080;
+                st.outline = true;
+            }
+            text.draw(draw_x, d.y, d.text, st);
         } else {
             Rect dst{d.dst.x * kScaleX, d.dst.y, d.dst.w * kScaleX, d.dst.h};
             if (top_chrome && dst.w <= 200.0f)

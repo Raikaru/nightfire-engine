@@ -308,6 +308,12 @@ drone.
 fitting the VU sine polynomial; note the endpoints overshoot (+-1.00000012),
 which an exact replica must reproduce.
 
+`nfmips <elf> diff-input` runs `psiInput_MapInputs` for all eight controller styles on every button word (random
+sticks) plus a stick-extreme grid, two players per call (`MapPlayerToSlot` hooked to slot = player,
+`sceMtapGetConnection` to 0), and compares the 40 action floats bit for bit against `nf::map_inputs`
+(`src/game/actions.cpp`): 65 680 pad pairs per style, 0 mismatches. A deliberately wrong port value is caught (a
+mutated Classic Bond fire mask gives 98 544 mismatches).
+
 `nfmips <elf> diff-refind` runs the EE side of the Bots mission-route
 differential (`NDrone2_ReFindMissionPath`, 8 640 rows): synthetic drone blob
 (mission u16 array, node table, flags), MoveTest/FindCel/MoveToGoal/

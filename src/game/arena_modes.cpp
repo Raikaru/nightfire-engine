@@ -25,13 +25,13 @@ constexpr std::uint32_t kLabelPhoenix = 0x1C7, kLabelMi6 = 0x1C8, kLabelProtect 
                         kLabelGeActivated = 0x2000042, kLabelGeKeyReturned = 0x2000043, kLabelGeCrystalReturned = 0x2000044,
                         kLabelBpPicked = 0x2000045, kLabelBpDropped = 0x2000046, kLabelBpTech = 0x2000047, kLabelBpReturned = 0x2000048;
 
-constexpr float kDroppedItemSeconds = 30.0f;    // 30 * FRAME_RATE_INT ticks before a dropped item goes home
+constexpr float kDroppedItemSeconds = 30.0f;    // multiplied by FRAME_RATE_INT for tick deadlines
 constexpr float kFlagCaptureDistance2 = 2.0f;   // Vec_SqDist3D(flag, base + (0,1,0)) < 2.0
 constexpr float kHillPointsPerSecond = 0.2f;    // REC_FRAME_RATE * 0.2 per tick (KOH and Uplink)
 constexpr float kTargetHitPoints = 2000.0f;
 // The GoldenEye strike effect (SP_Create fx 0x600003E) ends when its script stream ends. Every MP map's 0600003E
 // script runs 299 stream-frames (StreamEnd at t=299 on all 8 maps); Script_Update advances the stream clock by
-// FRAME_RATE_MUL per tick, so the strike resolves after 299 / mul ticks (150 ticks = 5.0 s at 30 Hz).
+// FRAME_RATE_MUL per tick, so the strike resolves in about five seconds at either supported fixed rate.
 constexpr float kGoldenStrikeStreamFrames = 299.0f;
 constexpr float kProtectThrottle = 1.5f;        // seconds between "protect the target" hints
 constexpr int kTouchSettleFrames = 4;           // MP_HitBy ignores touchers that respawned less than 4 ticks ago
@@ -200,7 +200,7 @@ void ArenaSystem::restart_scenario() {
         SlotState& s = slots_[std::size_t(i)];
         s.last_attacker = kAttackerNone;
         s.last_killer = -1;
-        if (i < 4 && s.body) {
+        if (!settings_.slots[std::size_t(i)].bot && s.body) {
             const bool was_out = s.out;
             s.out = false;
             s.dead = true;   // respawn() below stands everyone up again
@@ -209,7 +209,7 @@ void ArenaSystem::restart_scenario() {
             s.out = was_out;
         }
         // Bots respawn themselves (BOT_respawn); they are told through their body.
-        if (i >= 4 && s.body) {
+        if (settings_.slots[std::size_t(i)].bot && s.body) {
             const ArenaSpawn at = spawn_point(settings_.slots[std::size_t(i)].team, i);
             s.status = 0;
             s.streak = 0;
