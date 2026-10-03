@@ -744,12 +744,19 @@ a weapon ID.
   listed separately as recorder-only rather than runtime divergence. Frame alignment
   alone does not establish behavioral parity.
 - A valid 3-bot non-team Arena setup requires all bots on team 0. Weapon set 4
-  exposes Militek MGL (42). The controlled MGL run
-  `/run/user/1000/mp-oracle2-caps/skyrail-mp-effects/mgl-r1-record.jsonl`
-  includes a human-owned weapon-42 projectile from frame 11735; its projectile
-  object transitions to state 2 at frame 11773. The row data includes the
-  shooter pose/yaw and projectile path. First-person impact/fade screenshots
-  and the Frag grenade capture are still pending.
+  exposes Militek MGL (42). The controlled slot-78 MGL replay is a Skyrail FFA
+  match with three bots; the human was moved 25 units backward through PINE and
+  aimed into the open snow lane. Its state-2 impact is at frame 13580, position
+  `(12.697199, 1.384112, 41.554676)`, from player pose
+  `(13.777523, 7.423453, 51.968407)` (yaw `-3.035939`), 12.0866 units away.
+  HP stayed 100 and pain alpha stayed 0 at all sampled offsets. The frozen
+  screenshots `mgl-open-plus00/01/05/10/20/40.png` and PINE metadata
+  `mgl-open-snow.json` are under `~/.cache/MpOracle-2-tmp/mp-effects-20261003/`.
+  Each screenshot's pre-stop PINE frame equals its target offset, and the
+  post-resume frame is unchanged; no PINE reads are issued while AppRun is
+  stopped. +00/+01 precede visible flash; +05 shows the fireball in open snow,
+  +10 the bright fade/particles, and +20/+40 later fade. The Frag grenade
+  capture is still pending.
 - Updated `--mp-seed-each` replays of the longest ready windows align 207 Arena,
   234 Team Arena, 298 CTF and 81 Demolition frames. All four still diverge;
   per-call RNG totals are 413/414, 469/469, 596/598 and 161/163 source/engine
@@ -790,6 +797,27 @@ For v4 route snapshots, replay also restores the captured in-progress `Drone`
 movement continuation (destination, arrival radius, route distance/status,
 movement mode/speeds, and animation step) so the next tick resumes the pending
 move rather than rebuilding it from the bot goal.
+
+The per-drone AIPoint (`drone_raw+0x6f0`) and AITarget (`+0xa80`) caches are
+also restored from v4 snapshots. `BOTSTATE_gotoGoal` (ACTION.ELF `0x1278a8`)
+configures the point or object goal through different navigation setup paths;
+the captured AITarget object flag and AIPoint are therefore needed to recover
+the continuation. Reconstructing only the BotGoal target pointer can replace a
+still-valid route with a newly calculated one.
+
+The serialized `CelPos` stores a `vec4` followed by a PS2 `cel*`; those pointer
+bytes are not host `NavNetwork` cell indices. Restored route and goal positions
+resolve their cell from the coordinates with `NavNetwork::find_cel`.
+
+Seed restoration also reads the captured pose-derived collision segment from
+`drone_raw` offsets `+0x3f0`/`+0x400` and radius `+0x45c`. For the first
+seeded collision, these body-local endpoints are transformed at the current
+position/yaw, `Drone_FeetOnPoint` is evaluated before applying the collision
+push, and the one-tick override is then cleared.
+
+The original `Drone_CollisionHandler` applies the capsule/feet/push stage before
+`NDrone2_DoGravity`; `collision_step` now preserves that order. In the Team
+13519→13520 replay this removes slot 5's prior 1.5 mm position residual.
 
 Restoring an in-progress bot state clears the runtime fresh-drone flag so the
 next tick does not inject a Global `ENTER` and re-run `BotInit` over the

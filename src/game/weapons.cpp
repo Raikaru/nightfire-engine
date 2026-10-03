@@ -1209,11 +1209,10 @@ ViewModel WeaponSystem::viewmodel(int slot) const {
     const bool mp = tuning_.mode == GameMode::Multiplayer;
     const auto& hip = mp ? d.gun_offset_aim : d.gun_offset;
     const float ph = p->recoil_phase;
-    // Player_PositionGun adds this object-space offset after transforming the weapon-table root pose.
-    constexpr float kRenderOffsetUp = -0.2f;
-    constexpr float kRenderOffsetForward = 0.5f;
-    v.offset = {hip[0] + std::sin(ph) * 0.01f, hip[1] + kRenderOffsetUp + std::fabs(std::sin(ph + 1.0f)) * 0.01f,
-                hip[2] + kRenderOffsetForward + std::sin(ph * 0.84328997f) * 0.02f};
+    // WeaponDef's +224/+236 values match Player_PositionGun's final obj+0xC0 offset (after its local
+    // (0,-0.2,+0.5) adjustment); do not apply that internal transform a second time in the renderer.
+    v.offset = {hip[0] + std::sin(ph) * 0.01f, hip[1] + std::fabs(std::sin(ph + 1.0f)) * 0.01f,
+                hip[2] + std::sin(ph * 0.84328997f) * 0.02f};
     v.muzzle_flash = float(p->muzzle_frames);
     v.flash_color = {float(d.flash_r) / 255.0f, float(d.flash_g) / 255.0f, float(d.flash_b) / 255.0f};
     v.datum0_entity = p->datum0_entity;

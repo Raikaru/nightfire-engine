@@ -270,7 +270,20 @@ def main():
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
         os.makedirs(os.path.dirname(os.path.abspath(args.screenshot)), exist_ok=True)
         display = os.environ.get("DISPLAY", ":100")
-        subprocess.run(["import", "-display", display, "-window", "root", args.screenshot], check=True)
+        if os.environ.get("WAYLAND_DISPLAY"):
+            capture_env = os.environ.copy()
+            capture_env["QT_QPA_PLATFORM"] = "wayland"
+            subprocess.run(
+                ["spectacle", "-b", "-n", "-o", args.screenshot],
+                env=capture_env,
+                check=True,
+            )
+            display = f"WAYLAND_DISPLAY={os.environ['WAYLAND_DISPLAY']}"
+        else:
+            subprocess.run(
+                ["import", "-display", display, "-window", "root", args.screenshot],
+                check=True,
+            )
         if args.crop is not None:
             from PIL import Image
             image = Image.open(args.screenshot)

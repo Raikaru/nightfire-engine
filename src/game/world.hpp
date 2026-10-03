@@ -38,13 +38,14 @@ PlayerParams player_params_from_tuning(std::string_view tuning_vars_txt, std::st
 
 class World;
 
-// The pre-player hook is for source phases such as MP_ReSpawn, which runs before Player_Update.
-// `tick` is the post-player phase for systems like weapons, pickups and AI.
+// System phases mirror the source frame: MP_Update work runs after player motion, then object callbacks after all
+// multiplayer updates (Game_Run calls MP_Update before control_movement_object_handler).
 class System {
 public:
     virtual ~System() = default;
     virtual void before_player_update(World&, FrameTiming) {}
     virtual void tick(World& world, FrameTiming timing) = 0;
+    virtual void after_tick(World&, FrameTiming) {}
 };
 
 // The simulation supports up to sixteen combatants (Extended); the PS2 game uses only its first four controller slots.

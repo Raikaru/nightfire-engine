@@ -62,7 +62,7 @@ struct Pickup {
 
     State state = State::Active;
     std::uint64_t stamp = 0;            // obj+0xEC: frame the pickup was taken or dropped
-    std::uint32_t lifetime_total_frames = 0;  // dropped pickup removal interval; zero for map placements
+    std::uint16_t lifetime_frames = 0;   // PICKUPINFO+0x2E: live countdown for dropped pickups
     bool dynamic = false;               // no backing map placement; registered into MPpickups at runtime
     bool radar_hidden = false;          // obj+0xF0 bit 0x10: do not expose this special ammo drop on radar
     std::array<float, kMpMaxBots> visit_until{}; // Extended match: per-bot visit clocks (first four mirror PS2 data).
@@ -104,14 +104,13 @@ public:
     std::size_t static_count() const { return static_count_; }
     void ensure_dynamic_slots(std::size_t count);
     bool add_dynamic_weapon(const CollisionWorld& collision, const Vec3& pos, int weapon_id, int rounds,
-                            std::uint64_t stamp, std::uint32_t lifetime_frames, bool radar_hidden = false,
+                            std::uint64_t stamp, std::uint16_t lifetime_frames, bool radar_hidden = false,
                             std::size_t index = SIZE_MAX);
 
 
-    // Pickup_Update for every pickup: spin, respawn timers, then the touch test (humans in slot order, then bots; the
-    // first toucher in range with a clear line of sight goes to Pickup_Handler and ends this pickup's tick).
-    // Dynamic drop lifetime uses update ticks; map respawn uses GameState+0x34.
-    void update(const CollisionWorld& collision, const std::vector<PickupToucher>& touchers, std::uint64_t frame,
+    // Pickup_Update for every pickup. Dynamic life is PICKUPINFO+0x2E's countdown, decremented after touch tests;
+    // map respawn uses GameState+0x34. Arena's update runs before BotSystem/DroneSystem, matching MP_Update order.
+    void update(const CollisionWorld& collision, const std::vector<PickupToucher>& touchers,
                 std::uint64_t timer_frame, float rate, float dt, std::vector<PickupEvent>& events);
 
     // Pickup_MakeRandomWeaponSet: fills `sets.matrix[10]` (slot 0 never the last UseableGuns entry).

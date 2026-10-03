@@ -149,7 +149,7 @@ struct ArenaSeedSnapshot {
         std::uint64_t stamp = 0;
         Vec3 pos{};
         int item = 0, amount = 0;
-        std::uint32_t lifetime_total_frames = 0;
+        std::uint16_t lifetime_frames = 0;
         bool dynamic = false;
         bool radar_hidden = false;
         bool has_pos = false;
@@ -267,6 +267,7 @@ public:
     // ---- System ----
     void before_player_update(World&, FrameTiming timing) override;
     void tick(World& world, FrameTiming timing) override;
+    void after_tick(World& world, FrameTiming timing) override;
 
     // ---- read side ----
     const ArenaSettings& settings() const { return settings_; }

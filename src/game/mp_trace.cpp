@@ -207,14 +207,12 @@ void MpTraceSink::dump(const World& world, const ArenaSystem& arena, const Weapo
     for (std::size_t i = 0; i < all.size(); ++i) {
         const Pickup& pickup = all[i];
         if (pickup.state == Pickup::State::Gone) continue;
-        const std::uint64_t age = world.frame() >= pickup.stamp ? world.frame() - pickup.stamp : 0;
-        const std::uint32_t lifetime_left =
-            pickup.dynamic && age < pickup.lifetime_total_frames ? pickup.lifetime_total_frames - std::uint32_t(age) : 0;
+        const std::uint32_t lifetime_left = pickup.dynamic ? pickup.lifetime_frames : 0;
         std::fprintf(out_, "%s{\"idx\":%zu,\"st\":%d,\"cat\":%d,\"item\":%d,\"units\":%d,"
                            "\"remaining_s\":%.3f,\"stamp\":%llu,\"lifetime_frames\":%u,\"pos\":[%.2f,%.2f,%.2f]",
                      first ? "" : ",", i, int(pickup.state), pickup.category, pickup.item, pickup.respawn_units,
-                     arena.pickup_respawn_left(pickup), static_cast<unsigned long long>(pickup.stamp), lifetime_left,
-                     pickup.pos[0], pickup.pos[1], pickup.pos[2]);
+                     arena.pickup_respawn_left(pickup), static_cast<unsigned long long>(pickup.stamp),
+                     lifetime_left, pickup.pos[0], pickup.pos[1], pickup.pos[2]);
         if (pickup.dynamic)
             std::fprintf(out_, ",\"amount\":%d,\"radar_hidden\":%s", pickup.amount,
                          pickup.radar_hidden ? "true" : "false");

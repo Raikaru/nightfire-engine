@@ -141,7 +141,7 @@ void PickupField::ensure_dynamic_slots(std::size_t count) {
 }
 
 bool PickupField::add_dynamic_weapon(const CollisionWorld& collision, const Vec3& pos, int weapon_id, int rounds,
-                                    std::uint64_t stamp, std::uint32_t lifetime_frames, bool radar_hidden,
+                                    std::uint64_t stamp, std::uint16_t lifetime_frames, bool radar_hidden,
                                     std::size_t index) {
     if (rounds <= 0) return false;
     const PickupWeaponInfo info = weapon_(weapon_id);
@@ -182,7 +182,7 @@ bool PickupField::add_dynamic_weapon(const CollisionWorld& collision, const Vec3
     pickup.respawn_units = 0;
     pickup.state = Pickup::State::Active;
     pickup.stamp = stamp;
-    pickup.lifetime_total_frames = lifetime_frames;
+    pickup.lifetime_frames = lifetime_frames;
     pickup.radar_hidden = radar_hidden;
     pickup.dynamic = true;
     pickups_[index] = pickup;
@@ -228,15 +228,10 @@ bool PickupField::handle(Pickup& p, const PickupToucher& who, PickupEvent& event
     return true;
 }
 
-void PickupField::update(const CollisionWorld& collision, const std::vector<PickupToucher>& touchers, std::uint64_t frame,
+void PickupField::update(const CollisionWorld& collision, const std::vector<PickupToucher>& touchers,
                          std::uint64_t timer_frame, float rate, float dt, std::vector<PickupEvent>& events) {
     for (Pickup& p : pickups_) {
         if (p.state == Pickup::State::Gone) continue;
-        if (p.dynamic && p.lifetime_total_frames != 0 && frame >= p.stamp &&
-            frame - p.stamp >= p.lifetime_total_frames) {
-            p.state = Pickup::State::Gone;
-            continue;
-        }
         if (p.state == Pickup::State::Waiting) {
             if (std::uint64_t(10.0f * rate * float(p.respawn_units)) < timer_frame - p.stamp) p.state = Pickup::State::Active;
             continue;
@@ -244,10 +239,12 @@ void PickupField::update(const CollisionWorld& collision, const std::vector<Pick
         p.spin += dt;   // spin about Y by REC_FRAME_RATE radians per frame (MP: spin flag set on every pickup)
 
         const float reach = (p.radius + kTouchMargin) * (p.radius + kTouchMargin);
+        bool handler_called = false;
         for (const PickupToucher& who : touchers) {
             if (!who.body || !who.body->alive()) continue;
             if (sq_dist(p.centre, who.pos) >= reach) continue;
             if (!collision.line_of_sight(who.pos, p.centre, kTouchLosMask)) continue;
+            handler_called = true;
             PickupEvent ev;
             if (!handle(p, who, ev)) break;   // Pickup_Handler refused (full): the pickup stays, and nobody else is tried this tick
             events.push_back(ev);
@@ -260,6 +257,9 @@ void PickupField::update(const CollisionWorld& collision, const std::vector<Pick
             }
             break;
         }
+        // Pickup_Update returns through Pickup_Handler before reaching this countdown path.
+        if (p.dynamic && !handler_called && p.lifetime_frames != 0 && --p.lifetime_frames == 0)
+            p.state = Pickup::State::Gone;
     }
 }
 
