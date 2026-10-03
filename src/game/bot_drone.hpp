@@ -15,7 +15,9 @@ class DroneBotBody : public BotBody {
 public:
     // `slot_ref` maps an MP slot (0..3 players, 4..7 bots) to the core's target reference.
     using SlotRef = std::function<drone::TargetRef(int slot)>;
-    DroneBotBody(drone::DroneSystem& sys, SlotRef slot_ref) : sys_(sys), slot_ref_(std::move(slot_ref)) {}
+    using DropWeapon = std::function<void(drone::Drone&)>;
+    DroneBotBody(drone::DroneSystem& sys, SlotRef slot_ref, DropWeapon drop_weapon)
+        : sys_(sys), slot_ref_(std::move(slot_ref)), drop_weapon_(std::move(drop_weapon)) {}
     void attach(drone::Drone& d) { d_ = &d; }
 
     void setup_goal_position(const Vec3& pos, float speed_mul) override;
@@ -53,7 +55,7 @@ public:
     void impact_reaction(int msg_id) override;
     void location_death_anim(int end_state) override;
     void explosion_death_anim(int end_state, std::intptr_t hit) override;
-    void drop_weapon() override {}
+    void drop_weapon() override;
     void invalidate_nearest_node() override;
     void play_sfx(int sfx_id, bool replace) override;
     bool sfx_playing() override;
@@ -66,6 +68,7 @@ private:
     Vec3 goal_{};
     float goal_radius_ = 1.0f;
     int goal_slot_ = -1;                // >= 0: the goal follows this participant
+    DropWeapon drop_weapon_;
     audio::SfxHandle voice_ = 0;
 };
 

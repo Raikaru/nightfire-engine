@@ -1896,6 +1896,75 @@ int cmd_diff_bot(const std::string& elf_path) {
     }
     return 0;
 }
+// Run the original death-drop path against real bot object/animation state in a P2S match.
+int cmd_diff_botdrop(const std::string& elf_path, const std::string& state, int wanted_slot) {
+    Machine m(elf_path);
+    m.install_libc_hooks();
+    m.load_p2s(state);
+    hook_sp_copy(m);
+    // The saved live frame has its rendered palette cached. Skip its VU0 rebuild; AnimGetBoneWorldTrans still
+    // executes against the cached per-bot world matrices, which are the data this seeded probe needs.
+    if (!m.hook("psiBuildMatrixPalette__FP7obj_tagP15sAnimObject_tagSc", [](nf::ee::Cpu&) { return true; }))
+        throw std::runtime_error("ACTION.ELF lacks psiBuildMatrixPalette symbol");
+    struct Capture {
+        u32 item = 0, rounds = 0;
+        float pos[3]{};
+    };
+    std::vector<Capture> captures;
+    const u32 fake_pickup = m.alloc(0x200);
+    m.hook("Pickup_CreateSimple__FP6MATRIXsss", [&](nf::ee::Cpu& cpu) {
+        Capture c;
+        const u32 matrix = cpu.r[4].w[0];
+        c.item = cpu.r[5].w[0];
+        c.rounds = cpu.r[6].w[0];
+        for (u32 i = 0; i < 3; ++i) c.pos[i] = m.mem.read<float>(matrix + 48 + 4 * i);
+        captures.push_back(c);
+        cpu.r[2].d[0] = fake_pickup;
+        cpu.r[2].d[1] = 0;
+        return true;
+    });
+
+    std::printf("slot,weapon,type,item,rounds,x,y,z\n");
+    for (int slot = 4; slot < 8; ++slot) {
+        if (wanted_slot >= 0 && slot != wanted_slot) continue;
+        const u32 obj = m.mem.read<u32>(0x2A4980u + u32(slot) * 0x30u + 0x1Cu);
+        if (!obj) continue;
+        const u8 type = m.mem.read<u8>(obj + 0xFFu);
+        if (type != 2u && type != 0x11u) continue;
+        const u32 drone = m.mem.read<u32>(obj + 0xE0u);
+        const u32 weapon = m.mem.read<u32>(drone + 0xC58u);
+        const u32 dc = m.alloc(0x100);
+        CallArgs init;
+        init.i(obj);
+        init.i(dc);
+        const auto initialized = m.call_keep("Drone_DCVfromOBJ__FP7obj_tagP10DCVars_tag", init);
+        if (!initialized.v0) {
+            std::printf("# slot %d: Drone_DCVfromOBJ rejected object 0x%x\n", slot, obj);
+            continue;
+        }
+        captures.clear();
+        CallArgs drop;
+        drop.i(dc);
+        try {
+            m.call_keep("DroneWeap_DropWeapon__FP10DCVars_tag", drop, 50'000'000);
+        } catch (const nf::ee::Trap& e) {
+            const auto source = m.symbol_at(e.pc);
+            std::printf("# slot %d weapon %u: TRAP pc=0x%08x inst=0x%08x addr=0x%08x %s%s\n",
+                        slot, weapon, e.pc, e.inst, e.addr, e.what(),
+                        source ? (" in " + source->name).c_str() : "");
+            continue;
+        }
+        if (captures.empty()) {
+            std::printf("# slot %d weapon %u: no Pickup_CreateSimple call\n", slot, weapon);
+            continue;
+        }
+        for (const Capture& c : captures)
+            std::printf("%d,%u,0x%x,%u,%u,%.9g,%.9g,%.9g\n", slot, weapon, unsigned(type), c.item, c.rounds,
+                        double(c.pos[0]), double(c.pos[1]), double(c.pos[2]));
+    }
+    return 0;
+}
+
 // ---- Seeded MP-brain sweep --------------------------------------------------------------------------
 // EE truth tables that need a live match image (weapon_data, nav, pickups, participants): run with
 // `--state <match.p2s>` (slot 02 = Skyrail arena). Sections print CSV to stdout:
@@ -1903,9 +1972,9 @@ int cmd_diff_bot(const std::string& elf_path) {
 //                   BOTSTATE_isPreferredWeapon(pref x id) — pure tables over seeded weapon_data
 //   WK              weapon_data fields per id (class/minrange/clip/ammotype/flags) for checker defs
 //   F  NDrone2_FindOpponent over poked perception cache + moved human (seeded world for rays/sight globals)
-//   R  BOTSTATE_pickGoal slot 0/1 over poked prefs/trait (seeded pickups/nav; distances measured)
-//   S  BOTSTATE_processGoals over poked goals (seeded clock; SetState/Msg hooked)
-//   X  held-state weapon fns over transcribed loadouts (list/tooClose/explosive/combatChoice)
+//   G  BOTSTATE_pickGoal/processGoals on seeded MP slots (DistanceToEmitter stubbed to 1m; nav traps reported)
+//   X  held-state weapon fns over seeded loadouts (list/tooClose/explosive/combatChoice)
+//   PV BOTSTATE_setPickupVisitTime over synthetic pickup/clock/index cases
 int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
     Machine m(elf_path);
     m.install_libc_hooks();
@@ -1985,6 +2054,141 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
                         unsigned(clip), unsigned(at), flw);
         }
     }
+    {  // R/S: real goal selection + processing against the seeded MP pickup/objective state.
+        std::printf("G,slot,phase,goal_slot,ret,type,flags,max_range,target,kind,route\n");
+        m.hook("NDrone2_DistanceToEmitter__FP10CelPos_tagP10AIPath_tagPUsP13AIEmitter_tagP7obj_tagPf",
+               [&](nf::ee::Cpu& c) {
+                   const u32 out = c.r[29].w[0] + 20u;
+                   const u32 ptr = m.mem.read<u32>(out);
+                   m.mem.write<u32>(ptr, 0x3F800000u);
+                   c.r[2].d[0] = 1u;
+                   c.r[2].d[1] = 0;
+                   return true;
+               });
+        const u32 vars_base = 0x26D660u;
+        for (int slot = 4; slot < 8; ++slot) {
+            const u32 vars = vars_base + u32(slot - 4) * 0x780u;
+            const u32 obj = m.mem.read<u32>(0x2A4980u + u32(slot) * 0x30u + 0x1Cu);
+            const u32 drone = m.mem.read<u32>(vars + 0x754u);
+            if (!obj || !drone) continue;
+            const u32 ai_path = m.mem.read<u32>(drone + 2388u);
+            if ((ai_path & 3u) != 0 || ai_path >= 0x02000000u) {
+                std::printf("G,%d,skip,bad-ai-path,0,0,0,0,0,0,0\n", slot);
+                continue;
+            }
+            const u32 dc = m.alloc(0x100);
+            zero(dc, 0x100);
+            CallArgs dc_args;
+            dc_args.i(obj);
+            dc_args.i(dc);
+            if (m.call("Drone_DCVfromOBJ__FP7obj_tagP10DCVars_tag", dc_args).v0 == 0) {
+                std::printf("G,%d,skip,dcv-init-failed,0,0,0,0,0,0,0\n", slot);
+                continue;
+            }
+            for (int goal_slot = 0; goal_slot < 2; ++goal_slot) {
+                CallArgs a;
+                a.i(dc);
+                a.i(u32(goal_slot));
+                int ret = -999;
+                std::string trap;
+                try {
+                    ret = int(m.call_keep("BOTSTATE_pickGoal__FP10DCVars_tagUi", a, 10'000'000).v0);
+                } catch (const std::exception& e) {
+                    trap = e.what();
+                }
+                const u32 g = vars + u32(goal_slot) * 0x50u;
+                std::printf("G,%d,pick,%d,%d,%u,%u,%u,%u,%u,%u%s\n", slot, goal_slot, ret,
+                            unsigned(m.mem.read<u8>(g + 0x45)), unsigned(m.mem.read<u8>(g + 0x46)),
+                            unsigned(m.mem.read<u8>(g + 0x47)), unsigned(m.mem.read<u32>(g + 0x3C)),
+                            unsigned(m.mem.read<u8>(g + 0x4A)), unsigned(m.mem.read<u32>(g + 0x48)),
+                            trap.empty() ? "" : (" TRAP " + trap).c_str());
+            }
+            CallArgs a;
+            a.i(dc);
+            std::string trap;
+            try {
+                m.call_keep("BOTSTATE_processGoals__FP10DCVars_tag", a, 10'000'000);
+            } catch (const std::exception& e) {
+                trap = e.what();
+            }
+            for (int goal_slot = 0; goal_slot < 2; ++goal_slot) {
+                const u32 g = vars + u32(goal_slot) * 0x50u;
+                std::printf("G,%d,process,%d,0,%u,%u,%u,%u,%u,%u%s\n", slot, goal_slot,
+                            unsigned(m.mem.read<u8>(g + 0x45)), unsigned(m.mem.read<u8>(g + 0x46)),
+                            unsigned(m.mem.read<u8>(g + 0x47)), unsigned(m.mem.read<u32>(g + 0x3C)),
+                            unsigned(m.mem.read<u8>(g + 0x4A)), unsigned(m.mem.read<u32>(g + 0x48)),
+                            trap.empty() ? "" : (" TRAP " + trap).c_str());
+            }
+        }
+    }
+    {  // X: live held-weapon selection over its three one-byte policy flags.
+        std::printf("X,slot,arg1,arg2,arg3,opponent,ret\n");
+        const u32 vars_base = 0x26D660u;
+        for (int slot = 4; slot < 8; ++slot) {
+            const u32 vars = vars_base + u32(slot - 4) * 0x780u;
+            const u32 obj = m.mem.read<u32>(0x2A4980u + u32(slot) * 0x30u + 0x1Cu);
+            const u32 drone = m.mem.read<u32>(vars + 0x754u);
+            if (!obj || !drone) continue;
+            const u32 opponent = m.mem.read<u32>(drone + 368u);
+            const u32 target = opponent ? opponent : m.mem.read<u32>(0x2A4980u + 0x1Cu);
+            for (int check_same = 0; check_same < 2; ++check_same) {
+                for (int silent = 0; silent < 2; ++silent) {
+                    for (int arg3 = 0; arg3 < 2; ++arg3) {
+                        CallArgs a;
+                        a.i(drone);
+                        a.i(target);
+                        a.i(u32(check_same));
+                        a.i(u32(silent));
+                        a.i(u32(arg3));
+                        int ret = -999;
+                        std::string trap;
+                        try {
+                            ret = int(m.call("BOTSTATE_combatWeaponChangeChoice__FP9Drone_tagP7obj_tagScScSc",
+                                             a).v0);
+                        } catch (const std::exception& e) {
+                            trap = e.what();
+                        }
+                        std::printf("X,%d,%d,%d,%d,%u,%d%s\n", slot, check_same, silent, arg3, target, ret,
+                                    trap.empty() ? "" : (" TRAP " + trap).c_str());
+                    }
+                }
+            }
+        }
+    }
+    {  // PV: real pickup visit lockout write (clock + 45 seconds, per BOT_vars index).
+        std::printf("PV,obj_type,bot_index,clock,slot_value\n");
+        const u32 drone = m.alloc(0x1000), obj = m.alloc(0x300), botvars = m.alloc(0x800);
+        const u32 pickup = m.alloc(0x100);
+        m.mem.write<u32>(drone + 12u, obj);
+        m.mem.write<u32>(drone + 3356u, botvars);
+        for (int type : {2, 17}) {
+            for (float clock : {0.0f, 100.0f}) {
+                for (int bot_index = 0; bot_index < 4; ++bot_index) {
+                    zero(obj, 0x300);
+                    zero(botvars, 0x800);
+                    zero(pickup, 0x100);
+                    m.mem.write<u8>(obj + 255u, u8(type));
+                    m.mem.write<u16>(botvars + 1886u, u16(bot_index));
+                    u32 cw = 0, sentinel = 0xBF800000u;
+                    std::memcpy(&cw, &clock, 4);
+                    m.mem.write<u32>(0x2A4B1Cu, cw);
+                    for (int i = 0; i < 4; ++i) m.mem.write<u32>(pickup + 128u + 4u * u32(i), sentinel);
+                    CallArgs a;
+                    a.i(drone);
+                    a.i(pickup);
+                    try {
+                        m.call_keep("BOTSTATE_setPickupVisitTime__FP9Drone_tagP9MP_PICKUP", a, 10'000'000);
+                    } catch (const std::exception& e) {
+                        std::printf("PV,%d,%d,%.9g,TRAP %s\n", type, bot_index, double(clock), e.what());
+                        continue;
+                    }
+                    const u32 stored = m.mem.read<u32>(pickup + 128u + 4u * u32(bot_index));
+                    std::printf("PV,%d,%d,%.9g,%.9g\n", type, bot_index, double(clock),
+                                double(as_float(stored)));
+                }
+            }
+        }
+    }
     {  // F: NDrone2_FindOpponent over poked perception cache (seeded globals, synth structs).
         // MPGame slots: 0 = human obj (synth, poked pos/team/status), 4 = self obj (synth, skipped),
         // 5 = spare bot obj (synth, for bot-candidate + pile-on rows, with synth BOT_vars).
@@ -2009,8 +2213,6 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
         const u32 selfcell = m.alloc(0x600);   // self obj+224 struct (alive-test gate: +1272/+172)
         const u32 bot5cell = m.alloc(0x600);   // bot5's obj+224 struct (+368 opp, +1272 flags, +172 health)
         const u32 bot5vars = m.alloc(0x800);
-        std::fprintf(stderr, "FBLobs self=%x hum=%x b5=%x scell=%x b5cell=%x b5vars=%x\n", selfobj,
-                     humanobj, bot5obj, selfcell, bot5cell, bot5vars);
         auto wvec = [&](u32 va, float x, float y, float z) {
             u32 b[4] = {0, 0, 0, 0};
             std::memcpy(b, &x, 4);
@@ -2064,11 +2266,11 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
             int htype;        // human obj+0xff (3 human, 1 removed, 17/18 eliminated)
             int b5fe;         // bot5 obj+0xfe (1 = skip damage/targeting window)
             u32 b5cflags;     // bot5 cell +1272 state flags (needs 0x100, not 0x600)
-            float visang;     // drone+228 sight half-angle rad (0 = game default pi/2)
-            float visrange;   // drone+232 sight range m (0 = game default 24)
-            int f186;         // BOT_vars+1886 u16 (cached-facing index for bot candidates)
-            int kaw;          // extra Drone+0x4f8 kAware bit16 (history runs without aware-bit)
-            int b4opp;        // selfcell+368 b4 gate: 0 auto-mirror curropp, 1 human obj, 2 self obj, -1 none
+            float visang = 0;    // drone+228 sight half-angle rad (0 = game default pi/2)
+            float visrange = 0;  // drone+232 sight range m (0 = game default 24)
+            int f186 = 0;        // BOT_vars+1886 u16 (cached-facing index for bot candidates)
+            int kaw = 0;         // extra Drone+0x4f8 kAware bit16 (history runs without aware-bit)
+            int b4opp = 0;       // selfcell+368 b4 gate: 0 auto-mirror curropp, 1 human obj, 2 self obj, -1 none
         };
         const FRow rows[] = {
             // name, pers,aware,alerted,trait,curropp,oppdist,lost,aggr, teams,mteam,hteam,hstatus,
@@ -2302,6 +2504,7 @@ void usage() {
                  "       nfmips <elf> diff-mpweap (spread draws + spherical + HandlePain table, Combat diff)\n"
                  "       nfmips <elf> diff-bot (MP bot-brain truth tables: state/move/pain/goals, Bots diff)\n"
                  "       nfmips <elf> diff-botmp --state <match.p2s> (seeded MP-brain tables: weapons/find/goals, Bots diff)\n"
+                 "       nfmips <elf> diff-botdrop --state <match.p2s> [--slot 4..7] (real seeded bot death-drop origins)\n"
                  "       nfmips <elf> rand <fn> <i:int|f:float> [--count N] [--seed x,y] [--state p2s]\n"
                  "call/trace writes: --poke addr:hexbytes | --vf32 addr:v0,v1,.. (scratch: 0x1E00000)\n"
                  "call/trace files: --sym-file <linker-.SYM> [--fs-root <extracted-disc-dir>]\n"
@@ -2450,6 +2653,18 @@ int main(int argc, char** argv) {
         if (cmd == "diff-combat") return cmd_diff_combat(elf);
         if (cmd == "diff-mpweap") return cmd_diff_mpweap(elf);
         if (cmd == "diff-bot") return cmd_diff_bot(elf);
+        if (cmd == "diff-botdrop") {
+            std::string state;
+            int slot = -1;
+            for (size_t j = 2; j < av.size(); j++) {
+                if (av[j] == "--state" && j + 1 < av.size()) state = av[++j];
+                else if (av[j] == "--slot" && j + 1 < av.size()) slot = std::stoi(av[++j]);
+                else throw std::runtime_error("diff-botdrop wants --state <match.p2s> [--slot 4..7]");
+            }
+            if (state.empty() || (slot != -1 && (slot < 4 || slot > 7)))
+                throw std::runtime_error("diff-botdrop wants --state <match.p2s> [--slot 4..7]");
+            return cmd_diff_botdrop(elf, state, slot);
+        }
         if (cmd == "diff-botmp") {
             std::string state;
             for (size_t j = 2; j < av.size(); j++) {

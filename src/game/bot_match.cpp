@@ -48,6 +48,9 @@ void BotMatch::install(ArenaSession& session) {
     bc.bank = bank_.get();
     auto bots = std::make_unique<BotSystem>(bc);
     bots_ = bots.get();
+    drones_->callbacks().on_drop_weapon = [bots = bots_](drone::Drone& d) {
+        bots->drop_weapon(d);
+    };
     bots_->log_states = options_.log_states;
     // MP_PlayerKilled Vengeful (+2) bonus (spec Part 1 §1.6 step 4): killer bot slot >= 4 with personality
     // byte 7 whose designated victim (BOT_vars+0x76b) is the victim scores +2.0 instead of +1.0.

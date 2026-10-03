@@ -300,7 +300,7 @@ public:
     Vec3 eye() const;                   // head bone / eye position for LOS rays
 
     // ---- perception ---------------------------------------------------------------------------------------
-    TargetRef opponent;                 // Drone+0x174 slot -> target
+    TargetRef opponent;                 // Drone+0x170 obj_tag* target; Drone+0x174 target-slot ID
     Vec3 opp_pos{};                     // +0x1f0 aim position (target pos + per-type offset)
     Vec3 opp_last_known{};              // +0x250
     float opp_last_known_yaw = 0;       // +0x260
@@ -339,7 +339,7 @@ public:
     int alerting_drone = -1;            // +0x528 drone whose alert brought this one to Attack
 
     // ---- firing (DroneWeap_*) ------------------------------------------------------------------------------
-    int weapon = 0;                     // current weapon id (weapon_data index)
+    int weapon = 0;                     // current weapon id; Drone+0xc58 mirrors BOT_vars+0x768 for MP bots
     int burst_left = 0;                 // +0xbc0
     std::uint32_t next_bullet_time = 0; // +0xbc4
     std::uint32_t last_shot_time = 0;   // +0xbc8

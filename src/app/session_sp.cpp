@@ -223,7 +223,7 @@ struct SpSession::Impl {
         for (const BinEntry& e : parse_bin_archive(Bytes(bin_bytes))) {
             if (e.type != EntryType::Script || (e.hash != 0x06000052 && e.hash != 0x060007C4)) continue;
             try {
-                effects->set_explosion_script(std::uint32_t(e.hash), parse_cutscene_bin(e.data));
+                effects->set_explosion_script(std::uint32_t(e.hash), e.data);
             } catch (const std::exception& ex) {
                 std::fprintf(stderr, "nightfire: %s: effect script %08x skipped: %s\n", launch.bin.c_str(),
                              e.hash, ex.what());
@@ -429,7 +429,8 @@ struct SpSession::Impl {
         const ViewModel vm = weapons->viewmodel(0);
         if (vm.visible && vm.skin && vm.anim) {
             const WeaponDef& def = weapons->table().weapon(vm.weapon);
-            const Vec3 muzzle = weapon_view->draw(wc, aspect, vm, def, effects->lighting_at(wc.eye, 2.0f));
+            const Vec3 muzzle =
+                weapon_view->draw(wc, aspect, vm, def, effects->lighting_at(wc.eye, 2.0f), &world->collision());
             if (vm.muzzle_flash > 0.0f && muzzle != Vec3{0, 0, 0}) effects->muzzle_flash(muzzle, def);
         }
         glEnable(GL_DEPTH_TEST);

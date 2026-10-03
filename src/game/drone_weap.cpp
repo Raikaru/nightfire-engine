@@ -288,6 +288,22 @@ Vec3 muzzle_position(const Drone& d) {
     const Vec3 right{std::cos(d.yaw), 0.0f, -std::sin(d.yaw)};
     return torso + fwd * 0.45f + right * 0.12f + Vec3{0, 0.05f, 0};
 }
+Vec3 drop_position(const Drone& d, std::uint8_t bone) {
+    const Vec3 origin = d.pos;
+    Vec3 pos = origin;
+    if (d.character) {
+        const Palette& palette = d.character->palette();
+        const std::size_t index = bone == 0xFF ? 0 : bone;
+        if (index < palette.world.size()) {
+            const Mat4 m = d.character->bone_world(index);
+            const float s = std::sin(d.yaw), c = std::cos(d.yaw);
+            pos = origin + Vec3{m[12] * c + m[14] * s, m[13], -m[12] * s + m[14] * c};
+        }
+    }
+    if (d.sys && d.sys->collision().ray(origin, pos, 0x125)) return origin;
+    return pos;
+}
+
 
 float bullet_damage_scale(const Drone& d) {
     // Drone_ModBulletDamage 0x139f50 (SP drones; bots use Drone::hooks.damage_mul)

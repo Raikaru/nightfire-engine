@@ -15,7 +15,8 @@ constexpr std::uint32_t kPageMain = 0x40000002, kPageStart = 0x40000009, kPageIn
                         kPageLanguage = 0x40000034, kPageParisEnum = 0x4000004a, kPageEstHero = 0x40000043,
                         kPageMemCardInit = 0x40000048, kPagePause = 0x4000004b, kPageMpJoin = 0x40000019,
                         kPageNfSelect = 0x40000025, kPageCnSelect = 0x4000001b;
-constexpr std::uint32_t kFader = 0x100000ED;      // full-screen fade label of the main menu pages
+constexpr std::uint32_t kFader = 0x100000ED;
+constexpr unsigned kOnlineChoiceBox = 0x4F4E4C;
 
 }  // namespace
 
@@ -102,6 +103,34 @@ bool Frontend::Impl::p_main(ui::Control&, const ui::Msg& m) {
         mgr->input_reset_idle();
         fade_in_from_black(kFader);
         send(0x10000225, kLineHeight, 0x57);
+    } else if (m.type == kIdle && online_choice_pending) {
+        unsigned type = 0;
+        const unsigned answer = take_box_answer(&type);
+        if (type == kOnlineChoiceBox && answer != 0) {
+            online_choice_pending = false;
+            if (online_choice_stage == 0 && answer == 1) {
+                online_choice_stage = 0;
+                listen_host = false;
+                fade_to_page(kPageMpJoin);
+            } else if (online_choice_stage == 0) {
+                online_choice_stage = 1;
+                online_choice_pending = true;
+                option_box("Online multiplayer?\nYES: Host using the multiplayer setup\nNO: Join a network server",
+                           false, kOnlineChoiceBox);
+            } else {
+                online_choice_stage = 0;
+                if (answer == 1) {
+                    listen_host = true;
+                    fade_to_page(kPageMpJoin);
+                } else {
+                    result.action = FrontendResult::Action::StartOnlineJoin;
+                    closed = true;
+                }
+            }
+        } else if (type == kOnlineChoiceBox) {
+            online_choice_pending = false;
+            online_choice_stage = 0;
+        }
     }
     return true;
 }
@@ -135,7 +164,17 @@ bool Frontend::Impl::c_go_nightfire(ui::Control&, const ui::Msg& m) {
 }
 
 bool Frontend::Impl::c_go_multiplayer(ui::Control&, const ui::Msg& m) {
-    if (m.type == kAccept) fade_to_page(kPageMpJoin);
+    if (m.type == kAccept) {
+        online_choice_pending = true;
+        online_choice_stage = 0;
+        option_box("Choose multiplayer:\nYES: Local split-screen\nNO: Online host or join",
+                   false, kOnlineChoiceBox);
+    } else if (m.type == kAlt) {
+        online_choice_pending = true;
+        online_choice_stage = 1;
+        option_box("Online multiplayer?\nYES: Host using the multiplayer setup\nNO: Join a network server",
+                   false, kOnlineChoiceBox);
+    }
     return true;
 }
 
@@ -159,6 +198,9 @@ void Frontend::open(FrontendMode mode, std::optional<std::uint32_t> page) {
     s.result = {};
     s.closed = false;
     s.start_hint_shown = false;
+    s.online_choice_pending = false;
+    s.online_choice_stage = 0;
+    s.listen_host = false;
     std::uint32_t menu_id = 0x80000002;
     if (!s.menu.pages.empty()) menu_id = s.menu.pages.front().menu;
     const std::uint32_t first = page ? *page : mode == FrontendMode::Pause ? kPagePause : kPageStart;

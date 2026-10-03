@@ -84,22 +84,46 @@ std::vector<WeaponSystem::Victim> WeaponSystem::collect_victims(const World& wor
     for (int slot = 0; slot < World::kMaxPlayers; ++slot) {
         const PlayerWeapons* p = players_[std::size_t(slot)].get();
         const Player* pl = world.player(slot);
-        if (!p || !pl || !pl->alive()) continue;
-        Victim v{slot, {}, {}, 0.55f, nullptr, pl->eye()};
+        if (!p || !pl) continue;
+        const LagCompVolume* historical = nullptr;
+        for (std::size_t i = 0; i < active_lag_comp_.count; ++i) {
+            if (active_lag_comp_.values[i].id == slot) {
+                historical = &active_lag_comp_.values[i];
+                break;
+            }
+        }
+        if (historical ? !historical->alive : !pl->alive()) continue;
+        Victim v{slot, {}, {}, 0.55f, nullptr, historical ? historical->blast_ref : pl->eye()};
         if (pl->substate == SubState::Crouch) {
             v.a = pl->capsule_a, v.b = pl->capsule_b, v.radius = pl->capsule_radius;
-        } else {   // Player_Collision's standing capsule
+        } else {
             v.a = pl->pos + Vec3{0, 0.275f, 0};
             v.b = pl->pos + Vec3{0, 0.55f - pl->stand_height, 0};
+        }
+        if (historical) {
+            v.a = historical->a;
+            v.b = historical->b;
+            v.radius = historical->radius;
         }
         out.push_back(v);
     }
     for (std::size_t i = 0; i < targets_.size(); ++i) {
         DamageTarget* t = targets_[i];
-        if (!t->alive()) continue;
-        const Vec3 c = t->center();
+        const int id = target_ids_[i];
+        const LagCompVolume* historical = nullptr;
+        for (std::size_t j = 0; j < active_lag_comp_.count; ++j) {
+            if (active_lag_comp_.values[j].id == id) {
+                historical = &active_lag_comp_.values[j];
+                break;
+            }
+        }
+        if (historical ? !historical->alive : !t->alive()) continue;
+        const Vec3 c = historical ? historical->blast_ref : t->center();
         const float h = t->half_height();
-        out.push_back({target_ids_[i], c + Vec3{0, h, 0}, c - Vec3{0, h, 0}, t->radius(), t, c});
+        const Vec3 a = historical ? historical->a : c + Vec3{0, h, 0};
+        const Vec3 b = historical ? historical->b : c - Vec3{0, h, 0};
+        const float radius = historical ? historical->radius : t->radius();
+        out.push_back({id, a, b, radius, t, c});
     }
     return out;
 }

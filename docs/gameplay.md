@@ -172,8 +172,15 @@ ammo, armour (to 50), health and bonus items, bobbing/spinning as the original, 
 match on an arena map with 1..4 local players in split screen (Camera_CreateCameras layouts: top/bottom for 2,
 2+1 and 2x2; `--split-vertical` puts 2 players side by side) on additional gamepads, plus MP-drone bots via
 `BotMatch` (the Bots slice; bots are drones, not Players). `--frames N` + `--inputs*` + `--shot` work as in
-single-player for scripted verification. Humans are `HumanBody`s (Player movement + WeaponSystem combat);
+single-player for scripted verification. The interactive `nightfire --mp` capture path also applies an optional
+`start x y z yaw [pitch [ground_normal_y]]` record before simulation, allowing pose-matched full-render shots.
+Humans are `HumanBody`s (Player movement + WeaponSystem combat);
 `ArenaSession` owns World + WeaponSystem + ArenaSystem and routes each frame's messages/sounds.
+The playable MP renderer advances level texture animation from its 30 Hz logic frame and `WeatherRenderer`
+(rain/snow and placed class-0xF2 emitters), passing world switch-channel state to gated emitters. The
+`nfgame --mp` preview uses the same weather path; scripted `--shot` captures create the render context before
+simulation so weather is aged through the replay.
+
 
 The HUD feed is `ArenaSystem::hud(viewer, eye, yaw)` (`ArenaHud`: scores, clock, flags, uplink states, radar blips
 with world positions/names) plus `take_messages()` / `take_sounds()` / `result()`, converted by `src/ui/mp_feed.hpp`

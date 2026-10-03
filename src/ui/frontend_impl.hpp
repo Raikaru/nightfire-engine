@@ -38,6 +38,9 @@ struct Frontend::Impl : ui::MenuHost {
     std::unordered_map<std::uint32_t, Handler> handlers;
     bool closed = false;
     bool start_hint_shown = false;   // cGpffff8cf9
+    bool online_choice_pending = false;  // pending Local/Online or Online Host/Join chooser
+    std::uint8_t online_choice_stage = 0;  // 0: local/online; 1: host/join
+    bool listen_host = false;            // route the original MP setup into the listen-server path
     std::array<bool, 4> controllers_present{true, false, false, false};   // PlayerSetting+0x155 per controller
     std::uint32_t rand_state = 0x1234567;   // Rand_Random for Quick Game
     PauseInfo pause_info;

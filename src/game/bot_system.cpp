@@ -5,6 +5,11 @@
 #include <cstdarg>
 #include <cstdio>
 #include <stdexcept>
+#include <bit>
+#include <cstddef>
+#include <cstdint>
+
+#include "core/rng.hpp"
 
 #include "game/bot_drone.hpp"
 #include "game/drone_anim.hpp"
@@ -28,6 +33,30 @@ std::string fmt(const char* f, ...) {
     std::vsnprintf(buf, sizeof buf, f, ap);
     va_end(ap);
     return buf;
+}
+
+std::uint8_t raw_u8(std::span<const std::byte> raw, std::size_t offset) {
+    return std::to_integer<std::uint8_t>(raw[offset]);
+}
+
+std::uint16_t raw_u16(std::span<const std::byte> raw, std::size_t offset) {
+    return std::uint16_t(raw_u8(raw, offset)) | (std::uint16_t(raw_u8(raw, offset + 1)) << 8);
+}
+
+std::uint32_t raw_u32(std::span<const std::byte> raw, std::size_t offset) {
+    return std::uint32_t(raw_u16(raw, offset)) | (std::uint32_t(raw_u16(raw, offset + 2)) << 16);
+}
+
+std::int16_t raw_i16(std::span<const std::byte> raw, std::size_t offset) {
+    return std::bit_cast<std::int16_t>(raw_u16(raw, offset));
+}
+
+std::int32_t raw_i32(std::span<const std::byte> raw, std::size_t offset) {
+    return std::bit_cast<std::int32_t>(raw_u32(raw, offset));
+}
+
+float raw_f32(std::span<const std::byte> raw, std::size_t offset) {
+    return std::bit_cast<float>(raw_u32(raw, offset));
 }
 
 std::string vec_str(const Vec3& v) { return fmt("(%.1f,%.1f,%.1f)", double(v[0]), double(v[1]), double(v[2])); }
@@ -120,6 +149,7 @@ public:
         p.obj_flags = arena.status(slot);
         p.last_killer = arena.last_killer(slot);
         const bool eliminated = arena.participant_out(slot);
+        p.object_type = static_cast<std::uint8_t>(sl.bot ? (eliminated ? 0x11 : 2) : (eliminated ? 0x12 : 3));
         if (sl.bot) {
             Bot* b = sys_.bot_at_slot(slot);
             if (!b || !b->drone) {
@@ -284,7 +314,9 @@ public:
         }
         return false;
     }
-    std::uint32_t rand(std::uint32_t n) override { return drones().rand_int(n); }
+    std::uint32_t rand(std::uint32_t n, const std::source_location& loc) override {
+        return drones().rand_int(n, loc);
+    }
 
 private:
     World& world() const { return *sys_.impl_->cfg.world; }
@@ -373,6 +405,249 @@ BotSystem::Bot* BotSystem::bot_at_slot(int slot) {
         if (b->spec.slot == slot) return b.get();
     return nullptr;
 }
+BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
+    int slot, std::span<const std::byte> drone_raw, std::span<const std::byte> bv_raw,
+    std::span<const std::byte> obj_raw, const std::array<std::uint32_t, 8>& participant_addresses,
+    const std::array<std::optional<int>, 2>& resolved_goal_targets) {
+    using Result = SnapshotRestoreResult;
+    using Code = Result::Code;
+    using Blob = SnapshotBlob;
+    const auto fail = [](Code code, Blob blob = Blob::None, std::uint16_t offset = 0) {
+        return Result{code, blob, offset};
+    };
+    if (slot < 4 || slot > 7) return fail(Code::InvalidSlot);
+    if (drone_raw.size() != 0xd20) return fail(Code::WrongSize, Blob::Drone);
+    if (bv_raw.size() != 0x780) return fail(Code::WrongSize, Blob::BotVars);
+    if (obj_raw.size() != 0x100) return fail(Code::WrongSize, Blob::Object);
+    Bot* bot = bot_at_slot(slot);
+    if (!bot || !bot->drone || !bot->brain) return fail(Code::MissingBot);
+
+    const std::uint32_t drone_address = raw_u32(bv_raw, 0x754);
+    if (!drone_address || raw_u32(obj_raw, 0xe0) != drone_address)
+        return fail(Code::UnsupportedPointer, Blob::Object, 0xe0);
+    const int current_weapon = raw_u8(bv_raw, 0x768);
+    if (!BotArmoury::is_valid_weapon(current_weapon))
+        return fail(Code::UnsupportedState, Blob::BotVars, 0x768);
+    if (raw_i16(bv_raw, 0x75c) != slot) return fail(Code::UnsupportedState, Blob::BotVars, 0x75c);
+    const std::int32_t snapshot_state = raw_i32(drone_raw, 0x10c);
+    if (raw_u16(obj_raw, 0xf4) != std::uint16_t(snapshot_state))
+        return fail(Code::UnsupportedState, Blob::Object, 0xf4);
+    if (raw_u8(obj_raw, 0xff) != 2 && raw_u8(obj_raw, 0xff) != 0x11)
+        return fail(Code::UnsupportedState, Blob::Object, 0xff);
+    const std::uint32_t active_behaviour = raw_u32(drone_raw, 0x4d8);
+    const auto supported_state = [](std::int32_t state) { return state <= 0 || state_type(state) != 0; };
+    if (state_type(snapshot_state) == 0) return fail(Code::UnsupportedState, Blob::Drone, 0x10c);
+    for (const std::size_t offset : std::array<std::size_t, 3>{0x110, 0x114, 0x118})
+        if (!supported_state(raw_i32(drone_raw, offset)))
+            return fail(Code::UnsupportedState, Blob::Drone, static_cast<std::uint16_t>(offset));
+    if (!supported_state(raw_i32(bv_raw, 0x72c)))
+        return fail(Code::UnsupportedState, Blob::BotVars, 0x72c);
+    for (std::size_t i = 0; i < 2; ++i)
+        if (!supported_state(raw_i32(bv_raw, i * 0x50 + 0x40)))
+            return fail(Code::UnsupportedState, Blob::BotVars, static_cast<std::uint16_t>(i * 0x50 + 0x40));
+    for (const std::size_t offset : std::array<std::size_t, 3>{0x5a0, 0x5a2, 0x5a4})
+        if (!supported_state(raw_i16(drone_raw, offset)))
+            return fail(Code::UnsupportedState, Blob::Drone, static_cast<std::uint16_t>(offset));
+    if (!supported_state(raw_i16(bv_raw, 0x762)))
+        return fail(Code::UnsupportedState, Blob::BotVars, 0x762);
+    const std::int8_t active_goal = std::bit_cast<std::int8_t>(raw_u8(bv_raw, 0x765));
+    if (active_goal < -1 || active_goal > 1) return fail(Code::UnsupportedState, Blob::BotVars, 0x765);
+    const int behaviour_index = active_behaviour == drone_address + 0x4dc ? 0 :
+                                active_behaviour == drone_address + 0x4e8 ? 1 : -1;
+    if (behaviour_index < 0) return fail(Code::UnsupportedPointer, Blob::Drone, 0x4d8);
+
+    const auto participant_slot = [&](std::uint32_t address) {
+        if (!address || address == 0xff) return -1;
+        for (std::size_t i = 0; i < participant_addresses.size(); ++i)
+            if (participant_addresses[i] && participant_addresses[i] == address) return int(i);
+        return -1;
+    };
+    const auto validate_pointer = [&](std::uint32_t address, Blob blob, std::uint16_t offset,
+                                      int& resolved) -> Result {
+        resolved = participant_slot(address);
+        if (address && address != 0xff && resolved < 0) return fail(Code::UnsupportedPointer, blob, offset);
+        if (resolved >= 4 && !bot_at_slot(resolved)) return fail(Code::UnsupportedPointer, blob, offset);
+        return {};
+    };
+
+    int opponent_slot = -1;
+    if (Result r = validate_pointer(raw_u32(drone_raw, 0x170), Blob::Drone, 0x170, opponent_slot); !r)
+        return r;
+    int friend_slot = -1;
+    if (Result r = validate_pointer(raw_u32(bv_raw, 0x758), Blob::BotVars, 0x758, friend_slot); !r)
+        return r;
+    std::array<int, 16> history{};
+    for (std::size_t i = 0; i < history.size(); ++i) {
+        const std::size_t offset = 0x6dc + i * 4;
+        const int history_slot = participant_slot(raw_u32(bv_raw, offset));
+        // History is only used to bias against current participant candidates. A pointer
+        // absent from MPGame's current participant table is a stale, non-matchable entry.
+        history[i] = history_slot >= 4 && !bot_at_slot(history_slot) ? -1 : history_slot;
+    }
+    std::array<int, 2> goal_targets{};
+    for (std::size_t i = 0; i < goal_targets.size(); ++i) {
+        const std::size_t offset = i * 0x50 + 0x3c;
+        if (resolved_goal_targets[i]) {
+            goal_targets[i] = *resolved_goal_targets[i];
+            if (goal_targets[i] < -1)
+                return fail(Code::UnsupportedState, Blob::BotVars, static_cast<std::uint16_t>(offset));
+        } else {
+            if (Result r = validate_pointer(raw_u32(bv_raw, offset), Blob::BotVars,
+                                            static_cast<std::uint16_t>(offset), goal_targets[i]); !r)
+                return r;
+            if (!raw_u32(bv_raw, offset)) goal_targets[i] = -1;
+        }
+    }
+
+    std::array<std::uint16_t, weap::kSlots> weapon_rounds{};
+    std::array<std::uint8_t, weap::kSlots> weapon_has{};
+    std::array<std::uint16_t, weap::kAmmoTypes> ammo_reserves{};
+    for (std::size_t i = 0; i < weapon_rounds.size(); ++i) {
+        const std::size_t offset = 0x140 + i * 0xc;
+        weapon_rounds[i] = raw_u16(bv_raw, offset + 4);
+        weapon_has[i] = raw_u8(bv_raw, offset + 6);
+    }
+    for (std::size_t i = 0; i < ammo_reserves.size(); ++i)
+        ammo_reserves[i] = raw_u16(bv_raw, 0x698 + i * 2);
+    // All failure paths are validated above; apply supported value fields in place without copying BotVars.
+    BotVars& restored = bot->brain->v;
+    for (std::size_t i = 0; i < restored.goal.size(); ++i) {
+        const std::size_t offset = i * 0x50;
+        BotGoal& goal = restored.goal[i];
+        for (int axis = 0; axis < 3; ++axis)
+            goal.pos[std::size_t(axis)] = raw_f32(bv_raw, offset + std::size_t(axis) * 4);
+        goal.has_pos = raw_u32(bv_raw, offset + 0x10) != 0;
+        goal.distraction_limit = raw_f32(bv_raw, offset + 0x20);
+        goal.set_time = raw_f32(bv_raw, offset + 0x24);
+        goal.timeout = raw_f32(bv_raw, offset + 0x28);
+        goal.w_armour = raw_f32(bv_raw, offset + 0x2c);
+        goal.w_ammo = raw_f32(bv_raw, offset + 0x30);
+        goal.w_weapon = raw_f32(bv_raw, offset + 0x34);
+        goal.w_objective = raw_f32(bv_raw, offset + 0x38);
+        goal.target = goal_targets[i];
+        goal.return_state = raw_i32(bv_raw, offset + 0x40);
+        goal.complete = (raw_u8(bv_raw, offset + 0x44) & 1) != 0;
+        goal.type = raw_u8(bv_raw, offset + 0x45);
+        goal.flags = raw_u8(bv_raw, offset + 0x46);
+        goal.max_range = raw_u8(bv_raw, offset + 0x47);
+        goal.last_result = raw_i32(bv_raw, offset + 0x48);
+        goal.slot = raw_u8(bv_raw, offset + 0x49);
+        goal.kind = raw_u8(bv_raw, offset + 0x4a);
+    }
+    restored.stats.accuracy = raw_u8(bv_raw, 0xa0);
+    restored.stats.aggression = raw_u16(bv_raw, 0xa2);
+    restored.stats.health = raw_u16(bv_raw, 0xa4);
+    restored.stats.move_speed = raw_u8(bv_raw, 0xa6);
+    restored.stats.reaction_time = raw_u8(bv_raw, 0xa7);
+    restored.stats.recovery_rate = raw_u8(bv_raw, 0xa8);
+    restored.stats.evil = raw_u8(bv_raw, 0xa9);
+    restored.stats.raw_a = raw_u8(bv_raw, 0xaa);
+    restored.stats.personality = raw_u8(bv_raw, 0xab);
+    restored.stats.ability_flags = raw_u8(bv_raw, 0xac);
+    restored.stats.raw_b = raw_u8(bv_raw, 0xad);
+    restored.max_health = raw_u16(bv_raw, 0xa4);
+    for (std::size_t i = 0; i < restored.other.size(); ++i) {
+        const std::size_t offset = 0xb0 + i * 0x10;
+        restored.other[i] = {raw_f32(bv_raw, offset), raw_f32(bv_raw, offset + 4),
+                             raw_f32(bv_raw, offset + 8), raw_u32(bv_raw, offset + 0xc)};
+    }
+    for (int axis = 0; axis < 3; ++axis)
+        restored.prev_opponent_pos[std::size_t(axis)] = raw_f32(bv_raw, 0x130 + std::size_t(axis) * 4);
+    restored.history = history;
+    restored.history_head = raw_u8(bv_raw, 0x76c);
+    for (int i = 0; i < 3; ++i) restored.combat_range[i] = raw_f32(bv_raw, 0x71c + std::size_t(i) * 4);
+    restored.distraction = raw_f32(bv_raw, 0x728);
+    restored.pending_state = raw_i32(bv_raw, 0x72c);
+    restored.goto_stamp = raw_u32(bv_raw, 0x730);
+    restored.bits = raw_u32(bv_raw, 0x734);
+    restored.next_regen = raw_u32(bv_raw, 0x738);
+    restored.last_hit_tick = raw_u32(bv_raw, 0x740);
+    restored.last_route_fail_tick = raw_u32(bv_raw, 0x744);
+    restored.recovery_end = raw_u32(bv_raw, 0x748);
+    restored.hat_tick = raw_u32(bv_raw, 0x74c);
+    restored.friend_slot = friend_slot;
+    restored.slot = raw_i16(bv_raw, 0x75c);
+    restored.bot_index = raw_i16(bv_raw, 0x75e);
+    restored.state_override = raw_i16(bv_raw, 0x762);
+    restored.character = raw_u8(bv_raw, 0x764);
+    restored.active_goal = std::bit_cast<std::int8_t>(raw_u8(bv_raw, 0x765));
+    restored.state_type = raw_u8(bv_raw, 0x766);
+    restored.rr_index = raw_u8(bv_raw, 0x767);
+    restored.desired_weapon = raw_u8(bv_raw, 0x76a);
+    restored.trait_opponent = std::bit_cast<std::int8_t>(raw_u8(bv_raw, 0x76b));
+    restored.route_fail_count = raw_u8(bv_raw, 0x76d);
+    restored.last_pickup = std::bit_cast<std::int8_t>(raw_u8(bv_raw, 0x76e));
+    restored.alerted = raw_u8(bv_raw, 0x76f) != 0;
+    restored.targeted_by_bot = raw_u8(bv_raw, 0x770) != 0;
+    restored.in_zone = raw_u8(bv_raw, 0x771) != 0;
+    restored.armour = raw_u8(bv_raw, 0x769);
+
+    Drone& d = *bot->drone;
+    d.pos = {raw_f32(obj_raw, 0x30), raw_f32(obj_raw, 0x34), raw_f32(obj_raw, 0x38)};
+    d.yaw = raw_f32(obj_raw, 0x54);
+    d.obj_type = raw_u8(obj_raw, 0xff);
+    d.smi.cur = raw_i32(drone_raw, 0x10c);
+    d.smi.prev = raw_i32(drone_raw, 0x110);
+    d.smi.next = raw_i32(drone_raw, 0x114);
+    d.smi.saved = raw_i32(drone_raw, 0x118);
+    d.smi.entry_time = raw_u32(drone_raw, 0x11c);
+    d.smi.pending = raw_u8(drone_raw, 0x120) != 0;
+    d.smi.result = raw_i32(drone_raw, 0x124);
+    d.health = raw_f32(drone_raw, 0xac);
+    d.max_health = raw_f32(drone_raw, 0xb0);
+    d.last_damage = raw_f32(drone_raw, 0x150);
+    d.bullet_damage_mod = raw_f32(drone_raw, 0x100);
+    d.accuracy_class = raw_u8(drone_raw, 0xb4);
+    d.aggression = raw_u8(drone_raw, 0xb5);
+    d.armour = raw_u8(drone_raw, 0xbb);
+    d.hit_count = raw_i32(drone_raw, 0x1d8);
+    d.last_shooter = raw_i32(drone_raw, 0x2b4);
+    d.start_channel = raw_u8(drone_raw, 0x134);
+    d.alt_channel = raw_u8(drone_raw, 0x135);
+    d.start_channel_snapshot = raw_u8(drone_raw, 0x136) != 0;
+    d.alt_channel_snapshot = raw_u8(drone_raw, 0x137) != 0;
+    d.dtype_base = raw_u8(drone_raw, 0xc4);
+    d.dtype = raw_u8(drone_raw, 0xc5);
+    d.dtype_alt = raw_u8(drone_raw, 0xc6);
+    d.dmode = raw_i16(drone_raw, 0x138);
+    d.alt_dmode = raw_i16(drone_raw, 0x13a);
+    d.side = raw_u8(drone_raw, 0x44);
+    d.char_class = raw_u16(drone_raw, 0xd8);
+    d.sub_class = raw_u16(drone_raw, 0xda);
+    d.initial_state = raw_i16(drone_raw, 0x5a2);
+    d.pre_state = raw_i16(drone_raw, 0x5a0);
+    d.alt_state = raw_i16(drone_raw, 0x5a4);
+    d.script_id = raw_u32(drone_raw, 0x554);
+    for (int i = 0; i < 2; ++i)
+        for (int word = 0; word < 3; ++word)
+            d.behaviour[i].word[std::size_t(word)] =
+                raw_u32(drone_raw, 0x4dc + std::size_t(i) * 0xc + std::size_t(word) * 4);
+    d.active_behaviour = behaviour_index;
+    d.flags = raw_u32(drone_raw, 0x4f8);
+    d.alert_flags = raw_u32(drone_raw, 0x4fc);
+    d.sight_flags = raw_u32(drone_raw, 0x228);
+    d.weapon_ready = raw_u8(drone_raw, 0x20) != 0;
+    d.fire_window = raw_u8(drone_raw, 0x21) != 0;
+    d.fire_requested = raw_u8(drone_raw, 0x3b) != 0;
+    d.burst_done = raw_u8(drone_raw, 0x3c) != 0;
+    d.one_shot = raw_u8(drone_raw, 0x3d) != 0;
+    d.fire_lock = raw_u8(drone_raw, 0x3e) != 0;
+    d.firing_now = raw_u8(drone_raw, 0x3f) != 0;
+    d.fired_flag = raw_u8(drone_raw, 0x40) != 0;
+    d.lost_since_shot = raw_u8(drone_raw, 0x41) != 0;
+    d.first_seen_logged = raw_u8(drone_raw, 0x42) != 0;
+    d.seen_frames = raw_u32(drone_raw, 0x270);
+    d.lost_frames = raw_u32(drone_raw, 0x274);
+    d.opponent = opponent_slot < 0 ? TargetRef{} :
+                 (opponent_slot < 4 ? TargetRef::player(opponent_slot) :
+                  TargetRef::drone(bot_at_slot(opponent_slot)->drone->id));
+    bot->brain->opponent_slot_ = opponent_slot;
+    d.weapon = current_weapon;
+    bot->brain->arm.restore_snapshot(weapon_rounds, weapon_has, ammo_reserves, current_weapon,
+                                     raw_u16(drone_raw, 0xbbc), raw_u16(drone_raw, 0xbbe));
+    return {};
+}
+
 
 const BotBrain& BotSystem::brain(const Bot& b) const { return *b.brain; }
 
@@ -390,7 +665,7 @@ BotSystem::Bot& BotSystem::add_bot(const BotSpec& spec) {
         Bot* other = bot_at_slot(slot);
         return other && other->drone ? TargetRef::drone(other->drone->id) : TargetRef{};
     };
-    b.body = std::make_unique<DroneBotBody>(*c.drones, slot_ref);
+    b.body = std::make_unique<DroneBotBody>(*c.drones, slot_ref, [this](drone::Drone& d) { drop_weapon(d); });
     auto brain = std::make_unique<BotBrain>(spec, *impl_->env, *b.body, c.weapons->table());
     BotBrain* bp = brain.get();
     b.brain = bp;
@@ -486,6 +761,7 @@ void BotSystem::respawn_bot(Bot& b, const Vec3& pos, float yaw) {
     d.burst_left = 0;
     d.fire_requested = false;
     d.burst_done = false;
+    d.weapon_dropped = false;
     b.brain->reset_for_respawn();
     drone::place_on_floor(d);
     d.call_anim(0, drone::kStandIdle1);
@@ -507,6 +783,54 @@ void BotSystem::start() {
     };
     for (const Pickup& p : c.arena->pickups().all()) impl_->pickup_emitters.push_back(make(p.pos));
     for (const MpObjective& o : c.arena->objectives()) impl_->objective_emitters.push_back(make(o.home));
+}
+
+void BotSystem::drop_weapon(drone::Drone& d) {
+    d.weapon_dropped = true;
+    Bot* bot = bot_at_slot(d.player_slot);
+    if (bot && bot->brain && impl_->cfg.arena) {
+        const WeaponTable& table = bot->brain->arm.table();
+        const int weapon_id = d.weapon;
+        if (weapon_id >= 0 && weapon_id < WeaponTable::kWeaponCount) {
+            const WeaponDef& weapon = table.weapon(weapon_id);
+            if (weapon.pickup_celglist != 0) {
+                const Vec3 pos = drone::weap::drop_position(d, weapon.drop_bone);
+                const float scale = game_rng().frand(0.5f) + (weapon.clip_size >= 10 ? 0.25f : 0.5f);
+                const int rounds = int(std::lrintf(float(weapon.clip_size) * scale));
+                bool added = impl_->cfg.arena->drop_weapon(pos, weapon_id, rounds);
+
+                // DroneWeap_DropWeapon also drops hidden item 27 for a weapon with base id 0x1A.
+                if (weapon.base == 0x1A) {
+                    const WeaponDef& ammo = table.weapon(27);
+                    const float ammo_scale = game_rng().frand(0.5f) + 0.25f;
+                    const int ammo_rounds = int(std::lrintf(float(ammo.clip_size) * ammo_scale));
+                    added = impl_->cfg.arena->drop_weapon(pos, 27, ammo_rounds, true) || added;
+                }
+                if (added) sync_dynamic_pickup_emitters();
+            }
+        }
+    }
+    d.weapon = 0;   // DroneWeap_DropWeapon clears DCVars+0x62 even when no pickup was created.
+}
+
+void BotSystem::sync_dynamic_pickup_emitters() {
+    Config& c = impl_->cfg;
+    if (!c.nav || c.nav->empty()) return;
+    const std::vector<Pickup>& pickups = c.arena->pickups().all();
+    if (impl_->pickup_emitters.size() < pickups.size()) impl_->pickup_emitters.resize(pickups.size());
+    for (std::size_t i = 0; i < pickups.size(); ++i) {
+        const Pickup& pickup = pickups[i];
+        if (!pickup.dynamic || pickup.state == Pickup::State::Gone) continue;
+        NavEmitter& emitter = impl_->pickup_emitters[i];
+        if (emitter.allocated && emitter.pos[0] == pickup.pos[0] && emitter.pos[1] == pickup.pos[1] &&
+            emitter.pos[2] == pickup.pos[2])
+            continue;
+        if (!c.nav->init_emitter(emitter, pickup.pos) || !c.nav->emit_path(emitter)) {
+            emitter.path = -1;
+            emitter.allocated = false;
+            emitter.table.clear();
+        }
+    }
 }
 
 void BotSystem::tick(World&, FrameTiming timing) {

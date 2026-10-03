@@ -1,27 +1,30 @@
 """MP match recorder: per-logic-frame PINE batch reads of full match state to JSONL.
 
 Usage: python3 mp_record.py out.jsonl [--load-slot N] [--frames N] [--script s.txt]
-         [--full-every 30] [--timeout S]
+         [--seedable] [--rng-calls] [--weapon-anim-raw] [--checkpoint-dir DIR]
+         [--checkpoint-every N] [--checkpoint-slot N] [--full-every 30] [--timeout S]
 
 Superset of tools/oracle/trace.py (single-player movement columns kept where
 they overlap: frame/pos/yaw/rate/pad/act/flg) plus, per frame: RNG words,
 MPSettings slice, MPGame slots + globals, per-participant pos/yaw/pitch/state/
 health/armour/weapon/aim/foot, per-bot drone health + BOT_vars goals/caches/
-clips/reserves, pickups, switch channels; objective ext blobs every --full-every
-frames.
+clips/reserves, pickups, switch channels, and live type-5 projectile objects
+with their BU_tag payloads; objective ext blobs at `--full-every` intervals or
+every accepted frame in `--seedable` mode.
 
-Speed design: ONE PINE transaction per frame attempt, with the torn-sample
-counters (GS_DONE == GS_FRAME-1) at both ends of the same batch, exactly like
-trace.py. Pointer-dependent addresses (BLData/collbody/Drone/PICKUPINFO) come
-from the previous frame's cache; when an obj pointer or the pickup count
-changes the frame is recorded core-only with "resync":1 and the caches are
-re-resolved (respawns reallocate objects). Scenario script lines:
-"<frame offset> <vpad command...>" (see trace.py).
+Speed design: batched PINE snapshots duplicate `GS_DONE` and `GS_FRAME_START`
+at both ends and accept only unchanged pairs; no fixed relationship between
+the counters is assumed. Pointer-dependent caches refresh on resync frames;
+dynamic-list walks are incremental and retried after a torn or invalid link.
+"<frame offset> <vpad command...>".
 """
 
 import argparse
+import atexit
 import json
 import os
+import pathlib
+import shutil
 import socket
 import struct
 import sys
@@ -29,7 +32,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mp_addrs as A
-from pine import Pine
+import mp_rng_trace as R
+from pine import Pine, WRITE32
 
 
 def vpad(*words):
@@ -49,6 +53,111 @@ def load_script(path):
             steps.append((int(line[0]), line[1:]))
     return sorted(steps, key=lambda s: s[0])
 
+def save_checkpoint(pine, output_dir, slot, requested_frame, sample_frame):
+    state_dir = pathlib.Path.home() / ".config" / "PCSX2" / "sstates"
+    state_pattern = f"{pine.game_id()}*.{slot}.p2s"
+    states = list(state_dir.glob(state_pattern))
+    if len(states) > 1:
+        raise RuntimeError(f"expected at most one PCSX2 savestate for slot {slot}, found {len(states)}")
+    state_path = states[0] if states else None
+    previous = state_path.stat() if state_path else None
+
+    boundary_deadline = time.monotonic() + 10.0
+    while time.monotonic() < boundary_deadline:
+        counters = pine.read_ranges([
+            (A.GS_DONE, 4), (A.GS_FRAME_START, 4),
+            (A.GS_DONE, 4), (A.GS_FRAME_START, 4),
+        ])
+        done_before, frame_before, done_check, frame_check = (
+            struct.unpack("<I", raw)[0] for raw in counters)
+        if done_before == done_check and frame_before == frame_check:
+            break
+        time.sleep(0.002)
+    else:
+        raise RuntimeError(f"could not reach a coherent logic-frame boundary near frame {sample_frame}")
+
+    pine.save_state(slot)
+    if state_path is None:
+        states = list(state_dir.glob(state_pattern))
+        if len(states) != 1:
+            raise RuntimeError(f"expected one PCSX2 savestate for slot {slot}, found {len(states)}")
+        state_path = states[0]
+    deadline = time.monotonic() + 10.0
+    stable = 0
+    last_stat = None
+    while time.monotonic() < deadline:
+        try:
+            current = state_path.stat()
+        except FileNotFoundError:
+            time.sleep(0.05)
+            continue
+        signature = (current.st_size, current.st_mtime_ns)
+        changed = previous is None or signature != (previous.st_size, previous.st_mtime_ns)
+        stable = stable + 1 if changed and signature == last_stat else 0
+        if stable >= 2:
+            break
+        last_stat = signature
+        time.sleep(0.05)
+    else:
+        raise RuntimeError(f"PCSX2 did not finish writing savestate slot {slot}")
+
+    after = pine.read_ranges([(A.GS_DONE, 4), (A.GS_FRAME_START, 4)])
+    done_after, frame_after = (struct.unpack("<I", raw)[0] for raw in after)
+    os.makedirs(output_dir, exist_ok=True)
+    name = f"frame-{sample_frame:08d}.p2s"
+    checkpoint = pathlib.Path(output_dir) / name
+    shutil.copyfile(state_path, checkpoint)
+    metadata = {
+        "protocol": "mp-checkpoint-v1",
+        "requested_frame": requested_frame,
+        "sample_frame": sample_frame,
+        "frame_before_save": frame_before,
+        "done_before_save": done_before,
+        "frame_after_save": frame_after,
+        "done_after_save": done_after,
+        "pcsx2_slot": slot,
+        "savestate": name,
+        "size_bytes": checkpoint.stat().st_size,
+    }
+    with open(checkpoint.with_suffix(".json"), "w", encoding="utf-8") as stream:
+        json.dump(metadata, stream, separators=(",", ":"))
+        stream.write("\n")
+    return metadata
+
+
+def valid_checkpoint_args(ap, args):
+    if args.checkpoint_every <= 0:
+        ap.error("--checkpoint-every must be positive")
+    if not 0 <= args.checkpoint_slot <= 255:
+        ap.error("--checkpoint-slot must be in 0..255")
+    if args.checkpoint_dir:
+        args.checkpoint_dir = os.path.abspath(os.path.expanduser(args.checkpoint_dir))
+ 
+def freeze_object_pose(pine, obj, pose):
+    values = [*pose[0], pose[1]]
+    body = b"".join(
+        struct.pack("<BI", WRITE32, obj + addr) + struct.pack("<f", value)
+        for addr, value in zip((A.OBJ_POS, A.OBJ_POS + 4, A.OBJ_POS + 8, A.OBJ_YAW), values)
+    )
+    pine._transact(body)
+
+
+def read_ranges_batched(pine, ranges):
+    """Keep large oracle snapshots under PINE's 4000-op transaction limit."""
+    chunks, batch, words = [], [], 0
+    for addr, size in ranges:
+        count = ((addr & 7) + size + 7) // 8
+        if count > 4000:
+            raise ValueError(f"PINE range too large: {addr:#x}+{size:#x}")
+        if batch and words + count > 4000:
+            chunks.extend(pine.read_ranges(batch))
+            batch, words = [], 0
+        batch.append((addr, size))
+        words += count
+    if batch:
+        chunks.extend(pine.read_ranges(batch))
+    return chunks
+
 
 FULL_BLOBS = [
     ("flags", A.FLAGS, 0x120), ("bases", A.BASES, 0x120),
@@ -58,6 +167,41 @@ FULL_BLOBS = [
     ("hill", A.HILL, 0x90),
 ]
 
+MAX_DYNAMIC_OBJECTS = 4096
+
+
+def refresh_projectile_cache(pine, cache, head, initial=False):
+    """Walk only newly prepended DynamicObjList nodes; return new type-5 objects."""
+    if initial or not cache["dynamic_scan_ok"]:
+        # Retry from the current head after a torn/bogus link rather than
+        # permanently poisoning every later projectile sample.
+        cache["dynamic_members"].clear()
+        cache["projectiles"].clear()
+        cache["dynamic_scan_ok"] = True
+    cursor = head
+    walked = set()
+    added = []
+    while cursor and cursor not in cache["dynamic_members"]:
+        if cursor in walked or len(walked) >= MAX_DYNAMIC_OBJECTS:
+            cache["dynamic_scan_ok"] = False
+            break
+        if cursor < 0x00100000 or cursor >= 0x02000000 or cursor & 0xF:
+            cache["dynamic_scan_ok"] = False
+            break
+        walked.add(cursor)
+        raw = pine.read_block(cursor, 0x100)
+        cache["dynamic_members"].add(cursor)
+        if raw[A.OBJ_TYPE] == 5:
+            data = struct.unpack_from("<I", raw, A.OBJ_CUSTOM_DATA)[0]
+            if data:
+                cache["projectiles"][cursor] = data
+                added.append(cursor)
+            else:
+                cache["dynamic_scan_ok"] = False
+        cursor = struct.unpack_from("<I", raw, A.OBJ_LIST_NEXT)[0]
+    cache["dynamic_head"] = head
+    return added
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -66,26 +210,75 @@ def main():
     ap.add_argument("--load-slot", type=int)
     ap.add_argument("--script")
     ap.add_argument("--full-every", type=int, default=30)
+    ap.add_argument("--seedable", action="store_true",
+                    help="emit v2 seed fields and objective blobs each frame")
+    ap.add_argument("--weapon-anim-raw", action="store_true",
+                    help="capture coherent 0x100-byte human BLData+0x7e8 objects (requires --seedable)")
+    ap.add_argument("--rng-calls", action="store_true",
+                    help="temporarily instrument four ACTION.ELF RNG entries and record caller/result events")
+    ap.add_argument("--freeze-bot", type=int, choices=range(4, 8),
+                    help="hold this MP bot's initial position and yaw while recording")
+    ap.add_argument("--face-bot", type=int, choices=range(4, 8),
+                    help="place the human 8 units behind this frozen bot, facing it")
     ap.add_argument("--timeout", type=float, default=1200.0)
+    ap.add_argument("--checkpoint-dir", help="copy periodic PINE savestates into this frame-keyed directory")
+    ap.add_argument("--checkpoint-every", type=int, default=60,
+                    help="logic-frame interval between savestates (default: 60)")
+    ap.add_argument("--checkpoint-slot", type=int, default=250,
+                    help="temporary PCSX2 savestate slot copied into checkpoint-dir")
     args = ap.parse_args()
+    valid_checkpoint_args(ap, args)
+    if args.face_bot is not None and args.freeze_bot != args.face_bot:
+        ap.error("--face-bot must name the same slot as --freeze-bot")
+    if args.weapon_anim_raw and not args.seedable:
+        ap.error("--weapon-anim-raw requires --seedable")
 
     pine = Pine()
     steps = load_script(args.script) if args.script else []
     vpad("release")
+    freeze_pose = None
+    freeze_obj = 0
+    face_pose = None
+    face_obj = 0
     if args.load_slot is not None:
         before = pine.read32(A.GS_FRAME_START)
         pine.load_state(args.load_slot)
         start = time.monotonic()
         while abs(pine.read32(A.GS_FRAME_START) - before) <= 20 and time.monotonic() - start < 4.0:
             time.sleep(0.05)
-        time.sleep(2.0)
-
+        if args.freeze_bot is not None:
+            freeze_obj = pine.read32(
+                A.MPGAME + args.freeze_bot * A.MP_SLOT_STRIDE + A.MPG_OBJ)
+            if not freeze_obj or pine.read_block(freeze_obj + A.OBJ_TYPE, 1)[0] != 2:
+                raise RuntimeError(f"slot {args.freeze_bot} does not contain a live bot")
+            freeze_pose = (
+                struct.unpack("<3f", pine.read_block(freeze_obj + A.OBJ_POS, 12)),
+                struct.unpack("<f", pine.read_block(freeze_obj + A.OBJ_YAW, 4))[0],
+            )
+            freeze_object_pose(pine, freeze_obj, freeze_pose)
+            if args.face_bot is not None:
+                face_obj = pine.read32(A.MPGAME + A.MPG_OBJ)
+                if not face_obj or pine.read_block(face_obj + A.OBJ_TYPE, 1)[0] != 3:
+                    raise RuntimeError("slot 0 does not contain a live human player")
+                face_pose = ((freeze_pose[0][0], freeze_pose[0][1],
+                              freeze_pose[0][2] - 8.0), 0.0)
+                freeze_object_pose(pine, face_obj, face_pose)
+                bl = pine.read32(face_obj + A.OBJ_BL)
+                if bl:
+                    pine.write(WRITE32, bl + A.BL_PITCH, 0)
     n_humans = struct.unpack("<I", pine.read_block(A.MPSETTINGS + A.MPS_HUMANS, 4))[0]
+    rng_trace = None
+    if args.rng_calls:
+        rng_trace = R.install(pine)
+        atexit.register(R.uninstall, pine, rng_trace)
     out = open(args.out, "w", buffering=1)
-    cache = {"objs": [0] * 8, "bl": {}, "cb": {}, "drone": {}, "pinfo": {}, "pkcount": -1}
-
+    cache = {"objs": [0] * 8, "bl": {}, "cb": {}, "drone": {}, "pinfo": {}, "pkcount": -1,
+             "ports": [], "dynamic_head": 0, "dynamic_members": set(),
+             "dynamic_scan_ok": True, "projectiles": {}, "goal_refs": {}}
     def resolve(pine):
         """(Re)resolve all pointer caches with unguarded reads; caller retries."""
+        settings = pine.read_block(A.PLAYER_SETTING, A.PLAYER_SETTING_STRIDE * 4)
+        cache["ports"] = [settings[i * A.PLAYER_SETTING_STRIDE + 0x156] for i in range(4)]
         mg = pine.read_block(A.MPGAME, 0x1D0)
         objs = [struct.unpack_from("<I", mg, s * A.MP_SLOT_STRIDE + A.MPG_OBJ)[0] for s in range(8)]
         cache["objs"] = objs
@@ -107,15 +300,40 @@ def main():
                 info = struct.unpack("<I", pine.read_block(obj + A.PICKUPINFO_OFF, 4))[0]
                 pinfo[obj] = (info, [round(v, 2) for v in pos[:3]])
         cache["pinfo"] = pinfo
+        goal_refs = {}
+        for k in cache["drone"]:
+            bv = A.BOT_VARS + k * A.BOT_VARS_STRIDE
+            raw = pine.read_block(bv, 0x90)
+            goal_refs[k] = [
+                struct.unpack_from("<I", raw, goal * 0x50 + A.GOAL_TARGET)[0]
+                for goal in range(2)
+            ]
+        cache["goal_refs"] = goal_refs
         cache["pkcount"] = struct.unpack("<H", pine.read_block(A.MPSETTINGS + A.MPS_PICKUP_COUNT, 2))[0]
         return objs
 
     resolve(pine)
+    if args.freeze_bot is not None:
+        bot_obj = cache["objs"][args.freeze_bot]
+        if not freeze_pose:
+            if not bot_obj or pine.read_block(bot_obj + A.OBJ_TYPE, 1)[0] != 2:
+                raise RuntimeError(f"slot {args.freeze_bot} does not contain a live bot")
+            freeze_obj = bot_obj
+            freeze_pose = (
+                struct.unpack("<3f", pine.read_block(bot_obj + A.OBJ_POS, 12)),
+                struct.unpack("<f", pine.read_block(bot_obj + A.OBJ_YAW, 4))[0],
+            )
+        elif bot_obj != freeze_obj:
+            raise RuntimeError(f"bot slot {args.freeze_bot} changed object during recorder setup")
+ 
+    refresh_projectile_cache(
+        pine, cache, pine.read32(A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT), initial=True)
     first = last = None
     last_new = time.monotonic()
     records, missed, resyncs = [], 0, 0
     deadline = time.monotonic() + args.timeout
     stalled_warned = False
+    checkpoint_next = None
 
     while time.monotonic() < deadline:
         if time.monotonic() - last_new > 45.0 and not stalled_warned:
@@ -127,23 +345,59 @@ def main():
                 break
             print("  ... stalled 45 s, still waiting", flush=True)
             stalled_warned = True
+        if freeze_pose is not None:
+            freeze_object_pose(pine, cache["objs"][args.freeze_bot], freeze_pose)
+        projectile_old_head = cache["dynamic_head"]
         ranges, tags = [], []
-        ranges += [(A.GS_DONE, 4), (A.GS_FRAME, 4)]
+        ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4)]
         tags += [("done", 0), ("frame", 0)]
         ranges += [(A.MPGAME, 0x1D0), (A.MPSETTINGS + A.MPS_MP_ACTIVE, 0x60),
                    (A.RNG_WORDS, 16), (A.SWITCH_FD - 1, 4), (A.FRAME_RATE, 4),
-                   (A.TSLOT0 + 0x120, 0x30),
-                   (A.PLAYER_SETTING + 0x14, 0xA0), (A.PLAYER_SETTING + 0x104, 0x28)]
+                   (A.FRAME_RATE_INT, 4), (A.MP_ASSASSINATION_TARGET, 4),
+                   (A.MP_ASSASSIN, 4), (A.GOLDENEYE_EFFECT, 4),
+                   (A.GOLDENEYE_TARGET, 4)]
         tags += [("mpg", 0), ("mps", 0), ("rng", 0), ("sw", 0), ("rate", 0),
-                 ("pad", 0), ("act", 0), ("flg", 0)]
+                 ("rate_int", 0), ("assassination_target", 0), ("assassin", 0),
+                 ("golden_effect", 0), ("golden_target", 0)]
+        for s in range(4):
+            setting = A.PLAYER_SETTING + s * A.PLAYER_SETTING_STRIDE
+            port = cache["ports"][s]
+            tags += [("pad", s), ("setting", s)]
+            ranges += [(A.TSLOT0 + port * A.TSLOT_STRIDE + 0x120, 0x30),
+                       (setting, A.PLAYER_SETTING_STRIDE)]
+        if args.seedable:
+            tags.append(("mp_roster", 0))
+            ranges.append((A.MPSETTINGS, A.MP_SLOT_STRIDE * A.MP_NSLOTS))
+            for s in range(n_humans):
+                if cache["bl"].get(s):
+                    tags.append(("bl_raw", s))
+                    ranges.append((cache["bl"][s], A.BL_RAW_SIZE))
+                if cache["cb"].get(s):
+                    tags.append(("cb_raw", s))
+                    ranges.append((cache["cb"][s], A.CB_RAW_SIZE))
+            for k, d in cache["drone"].items():
+                bv = A.BOT_VARS + k * A.BOT_VARS_STRIDE
+                tags += [("dr_raw", k), ("bv_raw", k)]
+                ranges += [(d, A.DRONE_RAW_SIZE), (bv, A.BOT_VARS_STRIDE)]
         for s, o in enumerate(cache["objs"]):
             if o:
                 tags.append(("obj", s))
                 ranges.append((o, 0x100))
+        for obj, data in cache["projectiles"].items():
+            tags += [("projectile_obj", obj), ("projectile_data", obj)]
+            ranges += [(obj, 0x100), (data, A.BULLET_RAW_SIZE)]
+        tags.append(("projectile_head0", 0))
+        ranges.append((A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT, 4))
         for s in range(n_humans):
             if s in cache["bl"] and cache["bl"][s]:
                 tags.append(("bl", s))
                 ranges.append((cache["bl"][s] + A.BL_HEALTH - 4, 0x40))
+                tags.append(("feedback", s))
+                ranges.append((cache["bl"][s] + A.BL_FADE_COLOUR, A.BL_PAIN_ALPHA - A.BL_FADE_COLOUR + 1))
+                tags.append(("fade", s))
+                ranges.append((cache["bl"][s] + A.BL_FADE_TOTAL, A.BL_FADE_TIMER - A.BL_FADE_TOTAL + 4))
+                tags.append(("autotarget", s))
+                ranges.append((cache["bl"][s] + A.BL_AUTOTARGET, 4))
             if s in cache["cb"] and cache["cb"][s]:
                 tags.append(("cb", s))
                 ranges.append((cache["cb"][s] + 0x90, 0x50))
@@ -165,15 +419,41 @@ def main():
                 ranges.append((bv + A.BOT_RESERVE, 0x80))
                 tags.append(("bs", k))
                 ranges.append((bv + A.BOT_DISTRACT, 0x4C))
+                for target in cache["goal_refs"].get(k, []):
+                    offset = target - A.MPPICKUPS
+                    if (0 <= offset < 64 * A.MPPICKUP_STRIDE
+                            and offset % A.MPPICKUP_STRIDE == 0):
+                        tags.append(("goal_target_raw", target))
+                        ranges.append((target, A.MPPICKUP_STRIDE))
         for obj, (info, pos) in cache["pinfo"].items():
+            tags.append(("pkstamp", obj))
+            ranges.append((obj + A.OBJ_STAMP, 4))
             if info:
                 tags.append(("pi", obj))
-                ranges.append((info + A.PI_STATE, 0x14))
+                ranges.append((info + A.PI_STATE, 0x18))
+            tags.append(("pkflags", obj))
+            ranges.append((obj + A.OBJ_FLAGS, 1))
+        if args.seedable:
+            for name, addr, size in FULL_BLOBS:
+                tags.append(("objx", name))
+                ranges.append((addr, size))
+        tags.append(("projectile_head1", 0))
+        ranges.append((A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT, 4))
         # tentatively assume this frame number for the full blobs
-        ranges += [(A.GS_DONE, 4), (A.GS_FRAME, 4)]
+        ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4)]
         tags += [("done1", 0), ("frame1", 0)]
 
-        chunks = pine.read_ranges(ranges)
+        if any(addr < 0x00100000 or addr + size > 0x02000000
+               for addr, size in ranges):
+            # A cached dynamic pointer went stale between resolution and batch
+            # assembly; do not send a malformed EE address to PINE.
+            resyncs += 1
+            time.sleep(0.005)
+            resolve(pine)
+            refresh_projectile_cache(
+                pine, cache, pine.read32(A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT))
+            continue
+        chunks = read_ranges_batched(pine, ranges)
         bytag = {}
         for (kind, s), ch in zip(tags, chunks):
             bytag.setdefault((kind, s), ch)
@@ -181,12 +461,63 @@ def main():
         frame0 = struct.unpack("<I", bytag[("frame", 0)])[0]
         done1 = struct.unpack("<I", bytag[("done1", 0)])[0]
         frame1 = struct.unpack("<I", bytag[("frame1", 0)])[0]
-        if frame0 != frame1 or done0 != done1 or done0 != frame0 - 1:
+        if frame0 != frame1 or done0 != done1:
             time.sleep(0.005)
             continue
+        objective_ptrs = []
+        if args.seedable:
+            object_set = set()
+            for name, _, _ in FULL_BLOBS:
+                ext = bytag[("objx", name)]
+                for offset in range(0, len(ext), 0x90):
+                    back_pointer = struct.unpack_from("<I", ext, offset + 0x84)[0]
+                    if back_pointer >= 0xE0:
+                        object_set.add(back_pointer - 0xE0)
+            objective_ptrs = sorted(object_set)
+            object_ranges = [(obj, 0x138) for obj in objective_ptrs]
+            object_ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4)]
+            object_chunks = read_ranges_batched(pine, object_ranges)
+            for obj, raw in zip(objective_ptrs, object_chunks):
+                bytag[("mp_object_raw", obj)] = raw
+            object_done, object_frame = (
+                struct.unpack("<I", raw)[0] for raw in object_chunks[-2:])
+            if object_frame != frame0 or object_done != done0:
+                time.sleep(0.005)
+                continue
+        if args.weapon_anim_raw:
+            anim_targets = []
+            for slot in range(n_humans):
+                bl_raw = bytag.get(("bl_raw", slot))
+                if bl_raw is None:
+                    continue
+                target = struct.unpack_from("<I", bl_raw, 0x7E8)[0]
+                if (0x00100000 <= target and target + 0x100 <= 0x02000000
+                        and not target & 0xF):
+                    anim_targets.append((slot, target))
+            if anim_targets:
+                anim_ranges = [(target, 0x100) for _, target in anim_targets]
+                anim_ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4)]
+                anim_chunks = read_ranges_batched(pine, anim_ranges)
+                anim_done, anim_frame = (
+                    struct.unpack("<I", raw)[0] for raw in anim_chunks[-2:])
+                if anim_frame == frame0 and anim_done == done0:
+                    for (slot, _), raw in zip(anim_targets, anim_chunks[:-2]):
+                        bytag[("weapon_anim_raw", slot)] = raw
+ 
         if last is not None and frame0 == last:
             time.sleep(0.005)
             continue
+
+        checkpoint_meta = None
+        if args.checkpoint_dir:
+            if checkpoint_next is None:
+                checkpoint_next = frame0
+            if frame0 >= checkpoint_next:
+                checkpoint_meta = save_checkpoint(
+                    pine, args.checkpoint_dir, args.checkpoint_slot, checkpoint_next, frame0)
+                checkpoint_next = max(
+                    checkpoint_meta["frame_before_save"], checkpoint_meta["frame_after_save"]
+                ) + args.checkpoint_every
 
         mpg = bytag[("mpg", 0)]
         objs = [struct.unpack_from("<I", mpg, s * A.MP_SLOT_STRIDE + A.MPG_OBJ)[0] for s in range(8)]
@@ -195,7 +526,11 @@ def main():
             # Object set changed (respawn/re-register): core-only frame, re-resolve.
             resyncs += 1
             rec = {"frame": frame0, "resync": 1, "mpg": mpg.hex(),
-                   "mps": bytag[("mps", 0)].hex(), "rng": bytag[("rng", 0)].hex()}
+                   "mps": bytag[("mps", 0)].hex(), "rng": bytag[("rng", 0)].hex(),
+                   "projectiles": [], "projectiles_available": False,
+                   "state_missing": ["projectiles"]}
+            if rng_trace is not None:
+                rec["rng_calls"], rec["rng_trace"] = R.read_events(pine, rng_trace)
             if first is None:
                 first = frame0
             elif frame0 != last + 1:
@@ -203,21 +538,122 @@ def main():
             last = frame0
             last_new = time.monotonic()
             stalled_warned = False
+            if checkpoint_meta:
+                rec["checkpoint"] = checkpoint_meta
             records.append(rec)
             out.write(json.dumps(rec) + "\n")
+            refresh_projectile_cache(
+                pine, cache, pine.read32(A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT))
             resolve(pine)
             continue
         rec = {"frame": frame0}
+        if rng_trace is not None:
+            rec["rng_calls"], rec["rng_trace"] = R.read_events(pine, rng_trace)
         rec["rate"] = struct.unpack("<f", bytag[("rate", 0)])[0]
-        pad = bytag[("pad", 0)]
-        rec["pad"] = {"w": struct.unpack_from("<H", pad, 2)[0], "s": list(pad[8:12])}
-        rec["act"] = struct.unpack("<40f", bytag[("act", 0)])
-        rec["flg"] = bytag[("flg", 0)].hex()
+        rec["frame_rate_int"] = struct.unpack("<I", bytag[("rate_int", 0)])[0]
+        rec["pad_all"] = []
+        for s in range(4):
+            pad = bytag[("pad", s)]
+            settings = bytag[("setting", s)]
+            entry = {
+                "port": cache["ports"][s],
+                "w": struct.unpack_from("<H", pad, 2)[0],
+                "s": list(pad[8:12]),
+                "act": struct.unpack_from("<40f", settings, 0x14),
+                "flg": list(settings[0x104:0x104 + 40]),
+                "settings_raw": settings.hex(),
+            }
+            rec["pad_all"].append(entry)
+        rec["pad"] = {"w": rec["pad_all"][0]["w"], "s": rec["pad_all"][0]["s"]}
+        rec["act"] = rec["pad_all"][0]["act"]
+        rec["flg"] = bytes(rec["pad_all"][0]["flg"]).hex()
         rec["rng"] = bytag[("rng", 0)].hex()
+        rec["rng_words"] = list(struct.unpack("<4I", bytag[("rng", 0)]))
         sw = bytag[("sw", 0)]
         rec["sw"] = {"fd": sw[1], "fe": sw[2]}
         rec["mps"] = bytag[("mps", 0)].hex()
+        if args.seedable:
+            roster = bytag[("mp_roster", 0)]
+            rec["mp_roster"] = []
+            for slot in range(A.MP_NSLOTS):
+                raw = roster[slot * A.MP_SLOT_STRIDE:(slot + 1) * A.MP_SLOT_STRIDE]
+                name_raw = raw[:0x20]
+                rec["mp_roster"].append({
+                    "slot": slot,
+                    "name": name_raw.split(b"\0", 1)[0].decode("ascii", "replace"),
+                    "name_raw": name_raw.hex(),
+                    "team": struct.unpack_from("<I", raw, 0x20)[0],
+                    "character": struct.unpack_from("<I", raw, 0x24)[0],
+                    "hud": raw[0x28],
+                    "handicap": struct.unpack_from("<i", raw, 0x2C)[0],
+                })
         rec["mpg"] = mpg.hex()
+        for field, tag in (("assassin", "assassin"),
+                           ("target", "assassination_target"),
+                           ("golden_target", "golden_target")):
+            pointer = struct.unpack("<I", bytag[(tag, 0)])[0]
+            rec[field] = objs.index(pointer) if pointer and pointer in objs else -1
+            rec[field + "_ptr"] = pointer
+        rec["golden_effect_handle"] = struct.unpack(
+            "<I", bytag[("golden_effect", 0)])[0]
+        rec["golden_effect_active"] = rec["golden_effect_handle"] != 0
+        rec["state_missing"] = ["transient_hit_zone"]
+        rec["projectiles_available"] = True
+        if args.seedable:
+            changed_goal_targets = []
+            for k, refs in cache["goal_refs"].items():
+                bv_raw = bytag[("bv_raw", k)]
+                for goal, cached_target in enumerate(refs):
+                    target = struct.unpack_from(
+                        "<I", bv_raw, goal * 0x50 + A.GOAL_TARGET)[0]
+                    offset = target - A.MPPICKUPS
+                    if (target != cached_target and
+                            0 <= offset < 64 * A.MPPICKUP_STRIDE and
+                            offset % A.MPPICKUP_STRIDE == 0):
+                        changed_goal_targets.append(target)
+            goal_target_stable = True
+            if changed_goal_targets:
+                unique_targets = sorted(set(changed_goal_targets))
+                goal_ranges = [(target, A.MPPICKUP_STRIDE)
+                               for target in unique_targets]
+                goal_ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4)]
+                goal_chunks = read_ranges_batched(pine, goal_ranges)
+                goal_done, goal_frame = (
+                    struct.unpack("<I", raw)[0] for raw in goal_chunks[-2:])
+                if goal_frame == frame0 and goal_done == done0:
+                    for target, raw in zip(unique_targets, goal_chunks[:-2]):
+                        bytag[("goal_target_raw", target)] = raw
+                else:
+                    goal_target_stable = False
+            goal_targets = []
+            for k, refs in cache["goal_refs"].items():
+                bv_raw = bytag[("bv_raw", k)]
+                for goal, cached_target in enumerate(refs):
+                    target = struct.unpack_from(
+                        "<I", bv_raw, goal * 0x50 + A.GOAL_TARGET)[0]
+                    ref = {"bot_slot": k + 4, "goal_slot": goal, "target_ptr": target}
+                    offset = target - A.MPPICKUPS
+                    if (0 <= offset < 64 * A.MPPICKUP_STRIDE
+                            and offset % A.MPPICKUP_STRIDE == 0):
+                        ref["pickup_index"] = offset // A.MPPICKUP_STRIDE
+                        target_raw = bytag.get(("goal_target_raw", target))
+                        if target_raw is not None:
+                            ref["target_record_raw"] = target_raw.hex()
+                    elif target == 0:
+                        pass
+                    elif target in objs:
+                        ref["target_slot"] = objs.index(target)
+                    elif target in objective_ptrs:
+                        ref["objective_index"] = objective_ptrs.index(target)
+                    elif target != cached_target:
+                        goal_target_stable = False
+                    cache["goal_refs"].setdefault(k, [0, 0])[goal] = target
+                    goal_targets.append(ref)
+            rec["bot_goal_targets"] = goal_targets
+            if not goal_target_stable:
+                rec["state_missing"].append("bot_goal_target_changed")
+            rec["seed_version"] = 2
+            rec["state_complete"] = False
 
         parts = []
         for s, o in enumerate(objs):
@@ -233,18 +669,77 @@ def main():
                 "state": struct.unpack_from("<H", och, A.OBJ_STATE)[0],
                 "stamp": struct.unpack_from("<i", och, A.OBJ_STAMP)[0],
             }
+            if args.seedable:
+                entry["obj_raw"] = och.hex()
+                entry["substate"] = struct.unpack_from("<H", och, A.OBJ_SUBSTATE)[0]
+                entry["eye"] = list(struct.unpack_from("<3f", och, 0x70))
             if ("bl", s) in bytag:
                 bd = bytag[("bl", s)]
                 entry["hp"] = round(struct.unpack_from("<f", bd, 4)[0], 3)
                 entry["pitch"] = round(struct.unpack_from("<f", bd, A.BL_PITCH - (A.BL_HEALTH - 4))[0], 5)
                 entry["arm"] = round(struct.unpack_from("<f", bd, A.BL_ARMOUR - (A.BL_HEALTH - 4))[0], 3)
+                entry["damage_flash"] = round(
+                    struct.unpack_from("<f", bd, A.BL_DAMAGE_FLASH - (A.BL_HEALTH - 4))[0], 3)
+            if ("autotarget", s) in bytag:
+                target = struct.unpack("<I", bytag[("autotarget", s)])[0]
+                entry["autolock_target_ptr"] = target
+                entry["autolock_target_slot"] = next(
+                    (slot for slot, ptr in enumerate(objs) if target and ptr == target), None)
+            if ("feedback", s) in bytag:
+                fb = bytag[("feedback", s)]
+                entry["fade_colour"] = fb[0]
+                entry["pain_dir"] = fb[A.BL_PAIN_DIR - A.BL_FADE_COLOUR]
+                entry["pain_alpha"] = fb[A.BL_PAIN_ALPHA - A.BL_FADE_COLOUR]
+            if ("fade", s) in bytag:
+                fade = bytag[("fade", s)]
+                entry["fade_total"] = round(struct.unpack_from("<f", fade, 0)[0], 3)
+                entry["fade_timer"] = round(struct.unpack_from("<f", fade, 4)[0], 3)
             if ("cb", s) in bytag:
                 cd = bytag[("cb", s)]
                 entry["aim"] = cd[0x06]
-                entry["weap"] = struct.unpack("b", cd[0x08:0x09])[0]
+                weapon_ptr = struct.unpack_from("<I", cd, 0x08)[0]
+                entry["weapon_ptr"] = weapon_ptr
+                if A.WEAPON_DATA <= weapon_ptr < A.WEAPON_DATA + 115 * A.WEAPON_DEF_STRIDE:
+                    weapon_offset = weapon_ptr - A.WEAPON_DATA
+                    if weapon_offset % A.WEAPON_DEF_STRIDE == 0:
+                        entry["weapon_ptr_weapon_def_id"] = weapon_offset // A.WEAPON_DEF_STRIDE
                 entry["foot"] = round(struct.unpack("<f", cd[0x3C:0x40])[0], 4)
+            if args.seedable and ("bl_raw", s) in bytag:
+                blr = bytag[("bl_raw", s)]
+                entry["bl_raw"] = blr.hex()
+                anim_raw = bytag.get(("weapon_anim_raw", s))
+                if anim_raw is not None:
+                    entry["weapon_anim_raw"] = anim_raw.hex()
+                entry["vel"] = list(struct.unpack_from("<3f", blr, 0x10))
+                entry["fall_vel"] = list(struct.unpack_from("<3f", blr, 0x50))
+                entry["ammo_pool"] = list(struct.unpack_from("<33H", blr, 368))
+                entry["weapon_slots"] = [
+                    {"zoom": struct.unpack_from("<f", blr, 436 + i * 12)[0],
+                     "clip": struct.unpack_from("<h", blr, 440 + i * 12)[0],
+                     "owned": blr[442 + i * 12], "mode": blr[443 + i * 12],
+                     "upgrade": struct.unpack_from("b", blr, 444 + i * 12)[0]}
+                    for i in range(0x55)
+                ]
+                entry["weapon_timers"] = {
+                    "fire_cooldown": struct.unpack_from("<f", blr, 2348)[0],
+                    "last_gun": struct.unpack_from("<h", blr, 2352)[0],
+                    "last_gadget": struct.unpack_from("<h", blr, 2354)[0],
+                    "trigger_remaining": struct.unpack_from("<H", blr, 2358)[0],
+                    "muzzle_timer": struct.unpack_from("<H", blr, 2360)[0],
+                    "weapon_anim": struct.unpack_from("<I", blr, 2024)[0],
+                }
+            if args.seedable and ("cb_raw", s) in bytag:
+                cbr = bytag[("cb_raw", s)]
+                entry["cb_raw"] = cbr.hex()
+                entry["aim_flags"] = struct.unpack_from("<H", cbr, 0x60)[0]
+                if "hp" in entry:
+                    entry["alive"] = entry["hp"] > 0.0 and entry["type"] == 3
             if s >= 4 and ("drone", s - 4) in bytag:
                 k = s - 4
+                if args.seedable:
+                    entry["drone_raw"] = bytag[("dr_raw", k)].hex()
+                    entry["bv_raw"] = bytag[("bv_raw", k)].hex()
+                    entry["alive"] = struct.unpack_from("<f", bytag[("dr_raw", k)], A.DRONE_HEALTH)[0] > 0.0
                 dd = bytag[("drone", k)]
                 entry["bhp"] = round(struct.unpack_from("<f", dd, 4)[0], 3)
                 entry["dmg"] = round(struct.unpack("<f", bytag[("dmg", k)])[0], 3)
@@ -281,23 +776,189 @@ def main():
             parts.append(entry)
         rec["pl"] = parts
 
+        projectile_gap = not cache["dynamic_scan_ok"]
+        projectiles = []
+        retired_projectiles = []
+        head0 = struct.unpack("<I", bytag[("projectile_head0", 0)])[0]
+        head1 = struct.unpack("<I", bytag[("projectile_head1", 0)])[0]
+        if head0 != head1:
+            projectile_gap = True
+        added_projectiles = []
+        if head0 != projectile_old_head or head1 != projectile_old_head:
+            added_projectiles = refresh_projectile_cache(pine, cache, head1)
+        if added_projectiles:
+            valid_added = []
+            for obj in added_projectiles:
+                data = cache["projectiles"][obj]
+                if data < 0x00100000 or data + A.BULLET_RAW_SIZE > 0x02000000:
+                    projectile_gap = True
+                else:
+                    valid_added.append(obj)
+            extra_ranges = []
+            extra_tags = []
+            for obj in valid_added:
+                data = cache["projectiles"][obj]
+                extra_tags += [("projectile_obj", obj), ("projectile_data", obj)]
+                extra_ranges += [(obj, 0x100), (data, A.BULLET_RAW_SIZE)]
+            if valid_added:
+                extra_ranges += [
+                    (A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT, 4),
+                    (A.GS_DONE, 4), (A.GS_FRAME, 4)]
+                extra_chunks = read_ranges_batched(pine, extra_ranges)
+                for tag, raw in zip(extra_tags, extra_chunks[:-3]):
+                    bytag[tag] = raw
+                extra_head, extra_done, extra_frame = (
+                    struct.unpack("<I", raw)[0] for raw in extra_chunks[-3:])
+                if (extra_head != head1 or extra_done != done0 or
+                        extra_frame != frame0):
+                    projectile_gap = True
+                for obj in valid_added:
+                    raw = bytag[("projectile_obj", obj)]
+                    if (raw[A.OBJ_TYPE] != 5 or
+                            struct.unpack_from("<I", raw, A.OBJ_CUSTOM_DATA)[0] !=
+                            cache["projectiles"][obj]):
+                        projectile_gap = True
+        for obj, expected_data in cache["projectiles"].items():
+            obj_raw = bytag.get(("projectile_obj", obj))
+            data_raw = bytag.get(("projectile_data", obj))
+            if obj_raw is None or data_raw is None or obj_raw[A.OBJ_TYPE] != 5:
+                projectile_gap = True
+                retired_projectiles.append(obj)
+                continue
+            data = struct.unpack_from("<I", obj_raw, A.OBJ_CUSTOM_DATA)[0]
+            if data != expected_data:
+                projectile_gap = True
+                retired_projectiles.append(obj)
+                continue
+            owner = struct.unpack_from("<I", data_raw, A.BULLET_OWNER)[0]
+            target = struct.unpack_from("<I", data_raw, A.BULLET_TARGET)[0]
+            weapon_def = struct.unpack_from("<I", data_raw, A.BULLET_WEAPON_DEF)[0]
+            weapon_id = None
+            if A.WEAPON_DATA <= weapon_def < A.WEAPON_DATA + 115 * A.WEAPON_DEF_STRIDE:
+                offset = weapon_def - A.WEAPON_DATA
+                if offset % A.WEAPON_DEF_STRIDE == 0:
+                    weapon_id = offset // A.WEAPON_DEF_STRIDE
+            projectiles.append({
+                "obj": obj,
+                "data": data,
+                "pos": list(struct.unpack_from("<3f", obj_raw, A.OBJ_POS)),
+                "yaw": struct.unpack_from("<f", obj_raw, A.OBJ_YAW)[0],
+                "state": struct.unpack_from("<H", obj_raw, A.OBJ_STATE)[0],
+                "owner": owner,
+                "owner_slot": next((slot for slot, ptr in enumerate(objs) if owner and ptr == owner), None),
+                "target": target,
+                "weapon_def": weapon_def,
+                "weapon_id": weapon_id,
+                "dir": list(struct.unpack_from("<3f", data_raw, A.BULLET_DIR)),
+                "travelled": struct.unpack_from("<f", data_raw, A.BULLET_TRAVELLED)[0],
+                "speed": struct.unpack_from("<f", data_raw, A.BULLET_SPEED)[0],
+                "timer": struct.unpack_from("<f", data_raw, A.BULLET_TIMER)[0],
+                "bounces": struct.unpack_from("<H", data_raw, A.BULLET_BOUNCES)[0],
+                "in_air": data_raw[A.BULLET_IN_AIR],
+                "obj_raw": obj_raw.hex(),
+                "data_raw": data_raw.hex(),
+            })
+            state = struct.unpack_from("<H", obj_raw, A.OBJ_STATE)[0]
+            if obj_raw[0xFE] & 1 or state in (2, 4):
+                retired_projectiles.append(obj)
+        for obj in retired_projectiles:
+            cache["projectiles"].pop(obj, None)
+        rec["projectiles"] = projectiles
+        rec["projectiles_available"] = not projectile_gap
+        if projectile_gap:
+            rec["state_missing"].append("projectiles")
+
         pks = []
         for obj, (info, pos) in cache["pinfo"].items():
-            p = {"obj": obj, "pos": pos}
+            p = {"obj": obj, "pos": pos,
+                 "stamp": struct.unpack("<i", bytag[("pkstamp", obj)])[0]}
             if ("pi", obj) in bytag:
                 ch = bytag[("pi", obj)]
                 p["st"] = struct.unpack_from("<h", ch, 0)[0]
                 p["cat"] = struct.unpack_from("<H", ch, 2)[0]
                 p["item"] = struct.unpack_from("<H", ch, 4)[0]
-                p["rsp"] = struct.unpack_from("<H", ch, 14)[0]
+                p["respawn_units"] = struct.unpack_from(
+                    "<H", ch, A.PI_RESPAWN_UNITS - A.PI_STATE)[0]
+                p["lifetime_frames"] = struct.unpack_from(
+                    "<H", ch, A.PI_LIFETIME_FRAMES - A.PI_STATE)[0]
+                p["amount"] = struct.unpack_from(
+                    "<H", ch, A.PI_AMOUNT - A.PI_STATE)[0]
+                p["radar_hidden"] = bool(bytag[("pkflags", obj)][0] & 0x10)
                 p["idx"] = struct.unpack_from("<h", ch, 16)[0]
             pks.append(p)
         rec["pk"] = pks
 
-        if frame0 % args.full_every == 0:
-            blobs = pine.read_ranges([(a, n) for _, a, n in FULL_BLOBS])
-            if pine.read32(A.GS_FRAME) == frame0 and pine.read32(A.GS_DONE) == frame0 - 1:
-                rec["objx"] = {name: b.hex() for (name, _, _), b in zip(FULL_BLOBS, blobs)}
+        if args.seedable:
+            rec["objx"] = {name: bytag[("objx", name)].hex() for name, _, _ in FULL_BLOBS}
+            rec["objectives"] = []
+            for obj in objective_ptrs:
+                raw = bytag[("mp_object_raw", obj)]
+                kind = struct.unpack_from("<H", raw, 0xE0)[0]
+                carrier = struct.unpack_from("<I", raw, 0xE8)[0]
+                objective = {
+                    "obj": obj,
+                    "kind": kind,
+                    "team": struct.unpack_from("<H", raw, 0xE2)[0],
+                    "timer": struct.unpack_from("<H", raw, 0xE4)[0],
+                    "carrier_slot": next((slot for slot, ptr in enumerate(objs)
+                                          if carrier and ptr == carrier), None),
+                    "state": struct.unpack_from("<h", raw, 0xF4)[0],
+                    "substate": struct.unpack_from("<h", raw, 0xF6)[0],
+                    "flags": raw[0xF0],
+                    "radar_hidden": bool(raw[0xF0] & 0x10),
+                    "pos_0x30": list(struct.unpack_from("<3f", raw, 0x30)),
+                    "pos_0x40": list(struct.unpack_from("<3f", raw, 0x40)),
+                    "yaw": struct.unpack_from("<f", raw, A.OBJ_YAW)[0],
+                    "last_damager": struct.unpack_from("<h", raw, 0x130)[0],
+                    "capturer": struct.unpack_from("<h", raw, 0x132)[0],
+                    "draw_view_mask": raw[0x106],
+                    "obj_raw": raw.hex(),
+                }
+                if kind in (3, 8):
+                    objective["hit_points_candidate_0xF4"] = struct.unpack_from(
+                        "<h", raw, 0xF4)[0]
+                rec["objectives"].append(objective)
+        elif frame0 % args.full_every == 0:
+            blobs = read_ranges_batched(pine, [(addr, size) for _, addr, size in FULL_BLOBS])
+            after_done, after_frame = (
+                struct.unpack("<I", raw)[0]
+                for raw in pine.read_ranges([(A.GS_DONE, 4), (A.GS_FRAME_START, 4)]))
+            if after_frame == frame0 and after_done == done0:
+                rec["objx"] = {
+                    name: blob.hex()
+                    for (name, _, _), blob in zip(FULL_BLOBS, blobs)
+                }
+        if args.seedable:
+            pickup_fields_ready = all(
+                isinstance(p, dict)
+                and all(field in p for field in
+                        ("idx", "st", "cat", "item", "stamp", "amount", "lifetime_frames"))
+                for p in rec["pk"])
+            pickup_identity_ready = pickup_fields_ready and (
+                len({p["idx"] for p in rec["pk"]}) == len(rec["pk"])
+                and all(0 <= p["idx"] < 64 and 0 <= p["stamp"] <= frame0 for p in rec["pk"]))
+            pickup_seed_ready = pickup_fields_ready and pickup_identity_ready
+            if not pickup_fields_ready:
+                rec["state_missing"].append("pickup_seed_fields")
+            elif not pickup_identity_ready:
+                rec["state_missing"].append("pickup_seed_identity")
+            projectile_refs_ready = rec["projectiles_available"] and all(
+                p.get("owner_slot") is not None and p.get("weapon_id") is not None
+                for p in rec["projectiles"])
+            if rec["projectiles_available"] and not projectile_refs_ready:
+                rec["state_missing"].append("projectile_seed_reference")
+            rec["seed_ready"] = (
+                "objx" in rec and len(rec["rng_words"]) == 4 and len(rec["pad_all"]) == 4
+                and all(p is None or "obj_raw" in p for p in rec["pl"])
+                and all(p is None or "autolock_target_ptr" in p for p in rec["pl"][:n_humans])
+                and pickup_seed_ready
+                and len(rec.get("mp_roster", [])) == A.MP_NSLOTS
+                and all("obj_raw" in objective for objective in rec.get("objectives", []))
+                and "bot_goal_target_changed" not in rec["state_missing"]
+                and projectile_refs_ready
+            )
+            if "objx" not in rec:
+                rec["state_missing"].append("objective_blobs")
         if first is None:
             first = frame0
         elif frame0 != last + 1:
@@ -305,6 +966,8 @@ def main():
         last = frame0
         last_new = time.monotonic()
         stalled_warned = False
+        if checkpoint_meta:
+            rec["checkpoint"] = checkpoint_meta
         records.append(rec)
         out.write(json.dumps(rec) + "\n")
         if len(records) % 200 == 0:

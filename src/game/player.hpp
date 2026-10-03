@@ -63,6 +63,27 @@ enum class SubState : std::int16_t {
     Walk = 0, Climb = 1, Grapple = 2, Swim = 3, Crouch = 4, Scan = 5, Wire = 6, Creep = 7, ZeroG = 8, ZeroGWalk = 9,
     SpawnWait = 10, Car = 11, Gun = 12, Dead = 13, DeadInWater = 14, Zipline = 15, Driven = 16
 };
+// The movement state needed to resume one Player at an authoritative tick. Static parameters,
+// level references, object bindings and render-only camera state remain owned by their World.
+struct PlayerPredictionState {
+    Vec3 pos{}, velocity{}, fall_velocity{}, prev_pos{}, prev_velocity{}, settled_pos{};
+    Vec3 capsule_a{}, capsule_b{}, cylinder_push_out{}, cylinder_a{}, cylinder_b{};
+    float capsule_radius = 0.55f;
+    std::uint32_t cylinder_contact = 0, cylinder_hit_count = 0;
+    float yaw = 0.0f, pitch = 0.0f;
+    float ground_normal_y = 1.0f, stand_height = 1.0327658653f, applied_height = 1.0327658653f;
+    float yaw_step = 0.0f, turn_speed = 0.0f, pitch_speed = 0.0f, pitch_target = 0.0f, aim_yaw = 0.0f, fall_timer = 0.0f;
+    std::uint16_t body_flags = 0, ground_history = 0xF, anim_random_timer = 0;
+    std::uint8_t jump_state = 0, jump_delay = 0, crouch_timer = 0, look_state = 0, walk_class = 1, enabled = 1;
+    bool input_frozen = false, movement_frozen = false, scope_aiming = false;
+    float zoom = 1.0f;
+    WaterState water{};
+    SubState substate = SubState::Walk;
+    AimState aim{};
+    FrameTiming timing{};
+    std::array<float, 9> body_basis{};
+};
+
 
 // collbody+0x60 status bits the player code communicates through.
 namespace body {
@@ -85,6 +106,10 @@ public:
 
     // Collide_Update + Player_CollisionHandler.
     void resolve_collisions(const CollisionWorld& world);
+
+    // Capture/restore movement state for owner prediction rollback and offline differential tests.
+    PlayerPredictionState prediction_state() const;
+    void restore_prediction_state(const PlayerPredictionState& state);
 
     // Player_PositionCamera + Camera_SetToPlayer (first person): eye and orientation.
     void update_camera(FrameTiming timing);
@@ -237,6 +262,7 @@ public:
     float ground_normal_y = 1.0f;   // BL+0x110
     std::uint8_t jump_state = 0;    // BL+0x94C: 0 grounded, 1 rising, 2 falling
     std::uint16_t ground_history = 0xF;  // BL+0x940: one bit per recent frame with ground contact
+    std::uint16_t anim_random_timer = 0;   // BLData+0x93C: Player_Update's Rand_Random timer
 
     // Last capsule handed to the collision pass (BL+0x760/0x770, radius BL+0x7CC).
     Vec3 capsule_a{}, capsule_b{};
@@ -280,6 +306,7 @@ public:
     ScanState scan;                   // viewer+0x118
 
 private:
+    friend class MpSeedImporter;
     void move(const ActionInput& input, FrameTiming timing, float speed_scale);   // Player_Move
     void handle_jump(const ActionInput& input, const CollisionWorld& world, FrameTiming timing);                                          // Player_HandleJump
     void aim(const ActionInput& input, FrameTiming timing);                       // Player_Aiming

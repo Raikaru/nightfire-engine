@@ -78,6 +78,7 @@ struct HudMp {
     std::array<int, 2> team_score{};     // MPGame+0x180
     float points = 0;                    // MPGame slot+0x18 (assassination / top agent score)
     int kills = 0, deaths = 0;           // MPGame slot+4 / +8
+    std::string match_clock;            // ArenaHud::time_left, M:SS or "Time Up!"
     bool has_flag = false;               // MP_HasTeamFlag
     bool has_espionage = false;          // MP_HasEsponage
     bool is_assassin = false, is_target = false;

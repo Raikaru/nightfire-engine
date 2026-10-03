@@ -64,6 +64,10 @@ public:
     void tick(const PadInputs& pads) { tick(pads, FrameTiming{kTickHz}); }
     void tick(const PadInputs& pads, FrameTiming timing);
 
+    // Replays one already-mapped input for a single predicted player. Does not advance the world frame,
+    // camera or other players/systems, which are not rewound with the authoritative player snapshot.
+    void replay_player(int index, const ActionInput& input, FrameTiming timing = FrameTiming{kTickHz});
+
     std::uint64_t frame() const { return frame_; }
     Level& level() { return level_; }
     const CollisionWorld& collision() const { return collision_; }
@@ -85,6 +89,7 @@ public:
     const RoomMap& rooms() const { return rooms_; }
 
 private:
+    friend class MpSeedImporter;
     Level& level_;
     CollisionWorld collision_;
     RopeWorld rope_world_;

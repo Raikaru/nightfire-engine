@@ -83,7 +83,8 @@ ArenaSettings MatchOptions::settings() const {
     s.time_limit = time_limit;
     s.friendly_fire = friendly_fire;
     s.weapon_set = weapon_set;
-    s.spawn_selection = spawn;
+    s.grapple = grapple;
+    s.radar_names = radar_names;
     const bool teams = (mode & mp_mode::kTeamFlag) != 0;
     int n = 0;
     for (int i = 0; i < humans; ++i, ++n) {
@@ -102,6 +103,7 @@ ArenaSettings MatchOptions::settings() const {
         slot.team = teams ? n % 2 : (mode == mp_mode::kAssassination ? 0 : kTeamNone);   // BOT_init: 2 without teams
         slot.character = i + 1;
     }
+    if (roster_override) s.slots = roster;
     return s;
 }
 
@@ -186,6 +188,7 @@ ArenaSession::ArenaSession(World& world, WeaponTable table, const MatchOptions& 
 
 void ArenaSession::tick(const PadInputs& pads, FrameTiming timing) {
     world_.tick(pads, timing);
+    weapons_->post_tick_rng();   // MP Player_LaserPointer / muzzle draws follow all bot systems.
     // A death the movement half decided on its own (fall damage, hurt volume) is the combat half's too.
     for (int i = 0; i < options_.humans; ++i) {
         const Player* p = world_.player(i);

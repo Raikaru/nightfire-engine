@@ -12,6 +12,8 @@
 #include "render/level_renderer.hpp"   // Camera
 
 namespace nf {
+class CollisionWorld;
+
 
 class WeaponView {
 public:
@@ -23,7 +25,7 @@ public:
     // (scoped). Returns the world-space muzzle position when the flash is showing, else {0,0,0}, so the
     // caller can hang the muzzle light (Player_MuzzleFlash's Light_Create) off it.
     Vec3 draw(const Camera& cam, float aspect, const ViewModel& vm, const WeaponDef& def,
-              const CharacterLighting& light);
+              const CharacterLighting& light, const CollisionWorld* collision = nullptr);
 
 private:
     CharacterBank& bank_;

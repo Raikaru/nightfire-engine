@@ -3,7 +3,6 @@
 #include "game/weapons.hpp"
 
 #include <algorithm>
-#include <cmath>
 
 namespace nf {
 
@@ -48,7 +47,7 @@ WeaponSystem::WeaponSystem(WeaponTable table, DamageTuning tuning)
 
 WeaponSystem::~WeaponSystem() = default;
 
-float WeaponSystem::frand() { return game_rng().frand(1.0f); }
+float WeaponSystem::frand(const std::source_location& loc) { return game_rng().frand(1.0f, loc); }
 
 void WeaponSystem::sound(int id, const Vec3& pos, bool positional, int listener, int exclude) {
     events_.sounds.push_back({id, pos, positional, listener, exclude});
@@ -1068,11 +1067,33 @@ void WeaponSystem::init_bullet(int slot, PlayerWeapons& p, World& world) {
 // tick
 
 void WeaponSystem::tick_player(int slot, World& world, FrameTiming timing) {
+    active_lag_comp_ = lag_comp_provider_ ? lag_comp_provider_(slot) : LagCompVolumes{};
     PlayerWeapons& p = *players_[std::size_t(slot)];
     Player& pl = *world.player(slot);
     // Health events (Player_CheckForDeath ran in the collision pass): sounds pass on to the frontend, a death puts the gun away.
     const HealthEvents health_events = pl.take_events();
     for (const SoundCue& c : health_events.sounds) sound(c.id, c.position, true);
+    if (health_events.died && !p.dead && tuning_.mode == GameMode::Multiplayer && rules_) {
+        const WeaponDef& held = table_.weapon(p.current);
+        if (held.pickup_celglist != 0) {
+            const int base = held.base;
+            const int rounds = p.weapon[std::size_t(ammo_index(p.current))].clip;
+            const auto axes = pl.view_axes();
+            Vec3 gun_root{};
+            if (p.anim && !p.anim->skin().parent.empty()) {
+                const Mat4 root = p.anim->bone_world(0);
+                gun_root = {root[12], root[13], root[14]};
+            }
+            // Player_PositionGun uses this head/camera offset. The available skin root-bone translation
+            // approximates the AnimObject root position; its exact mapping to the source +0x30/+0x50 pose
+            // remains unverified.
+            const Vec3 drop_pos = pl.head_position() + axes[1] * -0.2f + axes[2] * 0.5f +
+                                  axes[0] * gun_root[0] + axes[1] * gun_root[1] + axes[2] * gun_root[2];
+            const bool dropped = rules_->drop_weapon(drop_pos, base, rounds);
+            if (dropped && base == 26)
+                rules_->drop_weapon(drop_pos, 27, p.weapon[std::size_t(ammo_index(27))].clip, true);
+        }
+    }
     if (!pl.alive() && !p.dead) {
         p.dead = true;
         weapon_none(p);
@@ -1083,7 +1104,32 @@ void WeaponSystem::tick_player(int slot, World& world, FrameTiming timing) {
         if (pl.last_hit.attacker < 0) rules_->environment_kill(slot);
         else rules_->player_killed(slot, pl.last_hit.attacker, pl.last_hit.weapon);
     }
-    if (p.dead) return;
+    if (p.dead) {
+        active_lag_comp_ = {};
+        return;
+    }
+    // Player_Update slowly refills clips unless its weapon animation object is in firing state 9.
+    if (p.anim_state != WeaponAnim::Firing) {
+        const std::uint64_t game_frame = world.frame();
+        const auto recharge_clip = [this, &p, timing](int weapon_id) {
+            auto& clip = p.weapon[std::size_t(weapon_id)].clip;
+            const int clip_size = table_.weapon(weapon_id).clip_size;
+            if (clip < clip_size)
+                clip = std::int16_t(float(clip) + timing.mul());
+        };
+        if (game_frame % 4 == 0) {
+            recharge_clip(74);
+            recharge_clip(78);
+        }
+        if (game_frame % 2 == 0) {
+            recharge_clip(76);
+            recharge_clip(79);
+        }
+        if (game_frame % 6 == 0)
+            recharge_clip(69);
+        if (game_frame % 4 == 0)
+            recharge_clip(51);
+    }
     // Bob phase of the gun (BLData+40 accumulates the walk speed): only the view model uses it.
     {
         const float speed = std::sqrt(pl.velocity[0] * pl.velocity[0] + pl.velocity[2] * pl.velocity[2]);
@@ -1097,25 +1143,42 @@ void WeaponSystem::tick_player(int slot, World& world, FrameTiming timing) {
     // Player_Weapon's aim state as the player code sees it: no walking while aiming, look speed divided by the zoom.
     pl.zoom = p.zoom;
     pl.body_flags = std::uint16_t(p.aim ? (pl.body_flags | body::kZoomed) : (pl.body_flags & ~body::kZoomed));
-    // Player_LaserPointer (CollisionHandler phase, after firing): a sighted gun draws once per frame. The
-    // branch (FRand vs Rand(9)) advances the shared stream identically either way, so one draw replicates it.
-    // No dot is rendered yet; only the stream position matters.
-    {
+    // SP keeps the sight and muzzle flicker RNG in this local weapon pass. MP view draws are deferred until
+    // after BotSystem so their order matches the original collision-handler path.
+    if (tuning_.mode != GameMode::Multiplayer) {
         const WeaponDef& d = table_.weapon(p.current);
         const int pair = p.current + d.alt;
         const bool sighted = d.has(wf1::kLaserSight) ||
                              (d.alt != 0 && pair > 0 && pair < WeaponTable::kWeaponCount &&
                               table_.weapon(pair).has(wf1::kLaserSight));
-        if (sighted) game_rng().frand(1.0f);
-    }
-    // Draw_MuzzleFlash (same phase, after the laser): while the muzzle timer is live the flicker quad draws
-    // 3 shared-stream values per frame (only when the row has a muzzle script; the timer implies it).
-    if (p.muzzle_frames > 0) {
-        game_rng().frand(1.0f);
-        game_rng().frand(1.0f);
-        game_rng().frand(1.0f);
+        if (sighted) (void)game_rng().frand(1.0f);
+        if (p.muzzle_frames > 0) {
+            (void)game_rng().frand(1.0f);
+            (void)game_rng().frand(1.0f);
+            (void)game_rng().frand(1.0f);
+        }
     }
     update_target(slot, p, world);   // Check_Target runs every 6th frame internally
+    active_lag_comp_ = {};
+}
+
+void WeaponSystem::post_tick_rng() {
+    if (tuning_.mode != GameMode::Multiplayer) return;
+    for (int slot = 0; slot < World::kMaxPlayers; ++slot) {
+        PlayerWeapons* p = players_[std::size_t(slot)].get();
+        if (!p || p->dead) continue;
+        const WeaponDef& d = table_.weapon(p->current);
+        const int pair = p->current + d.alt;
+        const bool sighted = d.has(wf1::kLaserSight) ||
+                             (d.alt != 0 && pair > 0 && pair < WeaponTable::kWeaponCount &&
+                              table_.weapon(pair).has(wf1::kLaserSight));
+        if (sighted) (void)game_rng().rand_int(9);
+        if (p->muzzle_frames > 0) {
+            (void)game_rng().frand(1.0f);
+            (void)game_rng().frand(1.0f);
+            (void)game_rng().frand(1.0f);
+        }
+    }
 }
 
 void WeaponSystem::tick(World& world, FrameTiming timing) {
@@ -1146,13 +1209,11 @@ ViewModel WeaponSystem::viewmodel(int slot) const {
     const bool mp = tuning_.mode == GameMode::Multiplayer;
     const auto& hip = mp ? d.gun_offset_aim : d.gun_offset;
     const float ph = p->recoil_phase;
-    // Player_WeaponRecoil sway plus the gun offsets, in camera space (+x right, +y UP, -z forward).
-    // NOTE: this is the RENDERED position, not the object position: Player_SetWeaponAnimObj stores obj
-    // pos WITH +0.2/-0.5 (matches live w+0x30), but Player_PositionGun nets them back out via M*(0,-0.2,+0.5)
-    // for the world position (matches live w+0xC0), so they must NOT appear here. ViewModel uses +y up,
-    // +z forward, hence only z is negated.
-    v.offset = {hip[0] + std::sin(ph) * 0.01f, hip[1] + std::fabs(std::sin(ph + 1.0f)) * 0.01f,
-                -(hip[2] + std::sin(ph * 0.84328997f) * 0.02f)};
+    // Player_PositionGun adds this object-space offset after transforming the weapon-table root pose.
+    constexpr float kRenderOffsetUp = -0.2f;
+    constexpr float kRenderOffsetForward = 0.5f;
+    v.offset = {hip[0] + std::sin(ph) * 0.01f, hip[1] + kRenderOffsetUp + std::fabs(std::sin(ph + 1.0f)) * 0.01f,
+                hip[2] + kRenderOffsetForward + std::sin(ph * 0.84328997f) * 0.02f};
     v.muzzle_flash = float(p->muzzle_frames);
     v.flash_color = {float(d.flash_r) / 255.0f, float(d.flash_g) / 255.0f, float(d.flash_b) / 255.0f};
     v.datum0_entity = p->datum0_entity;

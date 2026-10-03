@@ -296,7 +296,7 @@ Camera camera_for(const View& prev, const View& cur, float alpha) {
 int run(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr,
-                     "usage: %s <gamedir> [level.bin] [--coll] [--shot out.bmp] [--frames N] [--inputs file [--sync]] [--trace out.jsonl] [--no-mission] [--channel CH=VAL]\n",
+                     "usage: %s <gamedir> [level.bin] [--coll] [--shot out.bmp] [--frames N] [--inputs file [--sync]] [--trace out.jsonl] [--no-mission] [--channel CH=VAL] [--mp-seed recording.jsonl:frame [--mp-seed-each]]\n",
                      argv[0]);
         return 2;
     }
@@ -305,7 +305,7 @@ int run(int argc, char** argv) {
     {
         const std::vector<std::string> args(argv + 2, argv + argc);
         const auto has = [&](const char* flag) { return std::find(args.begin(), args.end(), flag) != args.end(); };
-        if (has("--mp") || has("--mode") || has("--bots")) {
+        if (has("--mp") || has("--mode") || has("--bots") || has("--mp-seed") || has("--mp-seed-each")) {
             MatchLaunch launch;
             launch.gamedir = argv[1];
             for (std::size_t i = 0; i < args.size(); ++i) {
@@ -324,6 +324,8 @@ int run(int argc, char** argv) {
                 }
                 else if ((a == "--inputs" || a == "--inputs2" || a == "--inputs3" || a == "--inputs4") && i + 1 < args.size())
                     launch.inputs[a == "--inputs" ? 0 : std::size_t(a.back() - '1')] = args[++i];
+                else if (a == "--mp-seed" && i + 1 < args.size()) launch.mp_seed = args[++i];
+                else if (a == "--mp-seed-each") launch.mp_seed_each = true;
                 else if (a == "--mp-trace" && i + 1 < args.size()) launch.mp_trace = args[++i];
                 else if (a.rfind("--", 0) != 0) launch.level_bin = a;
             }
@@ -372,9 +374,11 @@ int run(int argc, char** argv) {
     }
     // Cutscene scripts (type-7 entries) for the mission system, parsed before the move below.
     std::vector<std::pair<std::uint32_t, CutsceneBin>> level_scripts;
+    std::vector<std::pair<std::uint32_t, Bytes>> effect_script_data;
     try {
         for (const BinEntry& e : parse_bin_archive(Bytes(bin))) {
             if (e.type != EntryType::Script) continue;
+            if (e.hash == 0x06000052 || e.hash == 0x060007C4) effect_script_data.emplace_back(e.hash, e.data);
             level_scripts.emplace_back(e.hash, parse_cutscene_bin(e.data));
         }
     } catch (const std::exception& e) {
@@ -450,8 +454,7 @@ int run(int argc, char** argv) {
     effects.set_map_lights(weapon_bank->lights());
     effects.set_level(&level);
     effects.set_multiplayer(multiplayer);
-    for (const auto& [hash, cb] : level_scripts)
-        if (hash == 0x06000052 || hash == 0x060007C4) effects.set_explosion_script(hash, cb);
+    for (const auto& [hash, data] : effect_script_data) effects.set_explosion_script(hash, data);
     for (int i = 1; i < player_count; ++i) world.spawn_player(i, spawns[std::min<std::size_t>(std::size_t(i) * 3, spawns.size() - 1)]);
     // Cross/use on doors and switches (Scripting): every player probes SpObjects; without a mission
     // (arenas, --no-mission) the handler stays empty and only creep walls consume the press.
@@ -577,7 +580,8 @@ int run(int argc, char** argv) {
         const ViewModel vm = weapons.viewmodel(0);
         if (vm.visible && vm.skin && vm.anim) {
             const Vec3 muzzle =
-                weapon_view.draw(wc, aspect, vm, weapons.table().weapon(vm.weapon), effects.lighting_at(wc.eye, 2.0f));
+                weapon_view.draw(wc, aspect, vm, weapons.table().weapon(vm.weapon), effects.lighting_at(wc.eye, 2.0f),
+                                 &world.collision());
             if (vm.muzzle_flash > 0.0f && muzzle != Vec3{0, 0, 0})
                 effects.muzzle_flash(muzzle, weapons.table().weapon(vm.weapon));
         }

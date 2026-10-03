@@ -35,6 +35,8 @@ bool player_ok(const DroneSystem& sys, int slot) {
 // ---- positions ----------------------------------------------------------------------------------------------------
 Vec3 drone_bone_pos(const Drone& d, int bone) {
     const Vec3 feet = d.feet();
+    if (bone == 5 && d.is_bot())
+        return {d.pos[0], d.pos[1] + 0.6f, d.pos[2]};  // NDrone2_GetHeadPos: generic MP-bot body path
     if (d.character && bone >= 0 && std::size_t(bone) < d.character->skin().parent.size()) {
         const Mat4 m = d.character->bone_world(std::size_t(bone));
         return feet + rotate_y({m[12], m[13], m[14]}, d.yaw);
@@ -195,7 +197,7 @@ bool can_see_position(Drone& d, const Vec3& pos) {
 }
 
 bool can_see_object(Drone& d, const TargetRef& t, int bone) {
-    // NDrone2_CanSeeObject -> DroneVision_CanSeeObjectFrom 0x176f18
+    // NDrone2_CanSeeObject -> DroneVision_CanSeeObjectFrom 0x176f18.
     if (!t.valid()) return false;
     return can_see_position(d, target_bone_pos(*d.sys, t, bone));
 }

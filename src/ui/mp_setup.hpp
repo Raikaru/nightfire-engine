@@ -40,7 +40,7 @@ struct MpSettings {
     bool active = false;                      // +0x180 a match is configured (MP_Start returns without it; +0x184/+0x188 mirror it)
     std::int32_t friendly_fire = 0;           // +0x198 P_MPPLAYERMODS
     std::int32_t score_limit = 10;            // +0x19c P_MPRULES points (lives in Top Agent, minutes of hill time in KOTH), -1 unlimited
-    std::int32_t duration = 10;               // +0x1a0 minutes on the pages; seconds once P_MPCONFIRM started the match; -1 unlimited
+    std::int32_t duration = 10;                 // +0x1a0 minutes in setup, seconds once the match starts; <= 0 disables timer
     std::uint32_t mode = mp_mode::kArena;     // +0x1a4 scenario mode word
     std::uint32_t level_id = 0;               // +0x1a8 map (level id, 0 = none chosen yet)
     std::uint32_t human_count = 1;            // +0x1ac
@@ -158,6 +158,7 @@ public:
     // Ravine). Returns false when the scenario is locked (MpRefusal in `refusal()`).
     bool select_scenario(std::size_t index, std::uint32_t random);
     bool quick_game() const { return quick_game_; }             // the last select_scenario was Quick Game (page goes straight to P_MPCONFIRM)
+    std::uint32_t scenario_selection() const { return scenario_selection_; }
     bool select_map(std::size_t index);                         // C_SBMPMAP 0x4b
     const MpRefusal& refusal() const { return refusal_; }
 
@@ -229,6 +230,7 @@ private:
     std::uint8_t bond_owner_ = 0;   // mp_stuff[0x379]: owner of the Bond outfit
     std::size_t editing_bot_ = 0;   // mp_stuff[0x37a]
     bool quick_game_ = false;
+    std::uint32_t scenario_selection_ = 0; // initial wheel row is Quick Game
     bool bots_defaulted_ = false;   // cGpffff8d5d: the six default bot characters were assigned
     MpRefusal refusal_;
 };
@@ -261,7 +263,7 @@ public:
     std::array<MpPlayerRuntime, kMpSlots> players;
     std::array<float, 2> team_score{};                          // MPGame+0x180/+0x184
     float elapsed = 0;                                          // MPGame+0x190 seconds of un-paused play
-    float time_limit;                                           // MPGame+0x194 seconds, < 0 unlimited
+    float time_limit;                                           // MPGame+0x194 seconds, <= 0 disables the match timer
     std::int32_t best_score = 0;                                // MPGame+0x18c highest score/team score so far
     MpEnd state = MpEnd::Running;                               // MPGame+0x188
     bool score_reached = false, time_reached = false;           // switch_channels[0xfd] / [0xfe]

@@ -66,7 +66,7 @@ public:
     const std::array<float, kActionCount>& values() const { return value_; }
     const std::array<std::uint8_t, kActionCount>& flags() const { return flags_; }
 
-private:
+    friend class MpSeedImporter;
     std::array<float, kActionCount> value_{};
     std::array<std::uint8_t, kActionCount> flags_{};
     std::array<std::uint16_t, kActionCount> hold_{};

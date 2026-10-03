@@ -353,9 +353,11 @@ bool DroneSystem::target_alive(const TargetRef& t) const {
     return false;
 }
 
-std::uint32_t DroneSystem::rand_int(std::uint32_t n) { return game_rng().rand_int(n); }
+std::uint32_t DroneSystem::rand_int(std::uint32_t n, const std::source_location& loc) {
+    return game_rng().rand_int(n, loc);
+}
 
-float DroneSystem::frand(float range) { return game_rng().frand(range); }
+float DroneSystem::frand(float range, const std::source_location& loc) { return game_rng().frand(range, loc); }
 
 void DroneSystem::emit_noise(const Vec3& pos, float loudness, int source) {
     // DroneFunc_HandleSoundAlerts 0x148a30 + Sound_Alertness: every drone that hears (behaviour 0x1f) within 50 m gets

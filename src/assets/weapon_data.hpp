@@ -34,6 +34,7 @@ struct WeaponDef {
     std::uint32_t fire_interval = 0;   // +64 frames
     std::uint16_t fire_delay = 0;      // +68 frames after the fire anim starts before the bullet spawns
     std::uint32_t muzzle_script = 0;   // +72
+    std::uint8_t drop_bone = 0xFF;     // +80 animation bone used by AnimDatumGetWeaponInfo/AnimGetBoneWorldTrans
     std::uint8_t flash_b = 0, flash_g = 0, flash_r = 0;   // +84,+85,+86 muzzle light colour
     std::uint32_t projectile_gfx = 0;  // +92
     std::uint32_t fire_sound = 0;      // +96 SFX id of the shot as heard by other players / from drones (SFX_WEAPON_DRONE_*_SHOT)

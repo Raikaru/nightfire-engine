@@ -14,6 +14,7 @@
 #include "ui/hud.hpp"
 
 namespace nf {
+inline std::string format_match_clock(const ArenaHud& hud);
 
 // ArenaSystem::hud(viewer, eye, yaw) -> HudState::mp. Field-for-field copy (ArenaHud documents the HudMp field
 // each value mirrors); the HUD shows at most three uplink flags (the score pane has three sprites), so the first
@@ -27,6 +28,7 @@ inline void apply_arena_hud(const ArenaHud& src, HudMp& dst) {
     dst.points = src.points;
     dst.kills = src.kills;
     dst.deaths = src.deaths;
+    dst.match_clock = format_match_clock(src);
     dst.has_flag = src.has_flag;
     dst.has_espionage = src.has_espionage;
     dst.is_assassin = src.is_assassin;
@@ -62,14 +64,14 @@ inline HudConfig make_mp_config(int viewers, int player, bool side_by_side) {
     return config;
 }
 
-// The match clock for the score pane: "M:SS" while time is left, "Time Up!" once it expires, "" when the match has
+// The match clock for the score pane: "MM:SS" while time is left, "Time Up!" once it expires, "" when the match has
 // no time limit (ArenaHud::time_left < 0).
 inline std::string format_match_clock(const ArenaHud& hud) {
     if (hud.time_left < 0) return {};
     const int left = int(std::ceil(hud.time_left));
     if (left <= 0) return "Time Up!";
     char buf[16];
-    std::snprintf(buf, sizeof(buf), "%d:%02d", left / 60, left % 60);
+    std::snprintf(buf, sizeof(buf), "%02d:%02d", left / 60, left % 60);
     return buf;
 }
 

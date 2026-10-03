@@ -6,8 +6,12 @@
 // emitters used for goal scoring (MP_Pickup_PostLoadInit, MP_OBJ_EXT). Design and evidence: docs/ai-bots.md.
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -66,10 +70,30 @@ public:
     // (BOT_validateStateChange, FindOpponent, BOT_handlePain, ammo, damage mods) and registers the body with the arena.
     // Call before ArenaSystem::start(), in slot order 4, 5, 6, 7 (the weapon system hands out shooter ids in order).
     Bot& add_bot(const BotSpec& spec);
+    enum class SnapshotBlob : std::uint8_t { None, Object, Drone, BotVars };
+    struct SnapshotRestoreResult {
+        enum class Code : std::uint8_t { Ok, InvalidSlot, WrongSize, MissingBot, UnsupportedPointer, UnsupportedState };
+        Code code = Code::Ok;
+        SnapshotBlob blob = SnapshotBlob::None;
+        std::uint16_t offset = 0;
+        explicit operator bool() const { return code == Code::Ok; }
+    };
+    // Restores supported values from recorded obj/Drone/BOT_vars blobs. Runtime pointers/hooks, nav resources,
+    // and the armoury's initialized start weapon/resource callback remain owned by the engine. Unsupported raw
+    // references and bot states fail closed with their source blob/offset. The optional goal targets supply already
+    // resolved semantic IDs (pickup index, objective ID, or participant slot) for recorder pointers not represented
+    // by participant addresses; absent entries retain strict participant-pointer resolution.
+    SnapshotRestoreResult restore_snapshot(int slot, std::span<const std::byte> drone_raw,
+                                           std::span<const std::byte> bv_raw, std::span<const std::byte> obj_raw,
+                                           const std::array<std::uint32_t, 8>& participant_addresses,
+                                           const std::array<std::optional<int>, 2>& resolved_goal_targets = {});
+
     // After ArenaSystem::start(): nav emitters for every pickup / objective (MP_Pickup_PostLoadInit).
     void start();
 
     void tick(World& world, FrameTiming timing) override;
+    // DroneWeap_DropWeapon: create the death drop without changing the bot armoury's current weapon or ammo.
+    void drop_weapon(drone::Drone& drone);
 
     std::vector<std::unique_ptr<Bot>>& bots() { return bots_; }
     Bot* bot_at_slot(int slot);
@@ -86,6 +110,7 @@ public:
 private:
     friend class Env;
     void respawn_bot(Bot& bot, const Vec3& pos, float yaw);   // BOT_respawn
+    void sync_dynamic_pickup_emitters();
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::vector<std::unique_ptr<Bot>> bots_;

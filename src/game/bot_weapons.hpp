@@ -86,6 +86,12 @@ public:
     // without touching the reserve: it is infinite).
     int clip_mirror() const { return clip_mirror_; }
     int reserve_mirror() const { return reserve_mirror_; }
+    // Restore the pointer-free BOT_vars inventory arrays and the firing-code mirrors from a recorder snapshot.
+    void restore_snapshot(const std::array<std::uint16_t, weap::kSlots>& rounds,
+                          const std::array<std::uint8_t, weap::kSlots>& has_weapon,
+                          const std::array<std::uint16_t, weap::kAmmoTypes>& ammo, int current, int clip_mirror,
+                          int reserve_mirror);
+
 
     // ---- selection ----
     std::vector<WeaponScore> list_held_loaded(std::uint8_t weapon_preference, bool preferred_only,

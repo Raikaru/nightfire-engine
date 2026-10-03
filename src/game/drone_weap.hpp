@@ -33,6 +33,8 @@ bool do_bullet_accuracy(Drone& d, float rand_draw);
 void fire_weapon(Drone& d);
 // Where bullets leave the drone (weapon datum, else the right hand height on the torso).
 Vec3 muzzle_position(const Drone& d);
+// DroneWeap_DropWeapon: selected weapon bone transformed to world space, or obj+0x30 if ray-blocked.
+Vec3 drop_position(const Drone& d, std::uint8_t bone);
 // Drone_ModBulletDamage: multiplier on the damage of this drone's bullets.
 float bullet_damage_scale(const Drone& d);
 // DroneWeap_DropWeapon on death: content-layer hook only (DroneCallbacks::on_drop_weapon).

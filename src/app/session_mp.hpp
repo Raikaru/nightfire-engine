@@ -3,6 +3,7 @@
 // pause and the P_MPDEBRIEFING results page back to the frontend.
 #pragma once
 
+#include <cstdint>
 #include <array>
 #include <memory>
 #include <optional>
@@ -16,7 +17,9 @@
 #include "ui/renderer.hpp"
 #include "ui/text.hpp"
 
+
 namespace nf::app {
+class NetworkSession;
 
 enum class MpExit {
     QuitToMenu,  // debriefing Continue, pause quit, or window close
@@ -25,7 +28,9 @@ enum class MpExit {
 
 struct MpResult {
     MpExit exit = MpExit::QuitToMenu;
-    bool played = false;  // the match ran (phase left Running)
+    bool played = false;      // the match ran (phase left Running)
+    bool match_over = false;  // the authoritative server completed a network match
+    std::uint64_t match_revision = 0;  // server-advertised match generation from the latest snapshot
 };
 
 // Direct launch (headless / debug): the nfgame --mp option set. The frontend
@@ -54,6 +59,7 @@ public:
     bool ready() const { return ready_; }
 
     MpResult run_interactive();
+    MpResult run_network_interactive(NetworkSession& network, long frames = -1, const std::string& shot = {});
     MpResult run_headless();
 
 private:
