@@ -1,7 +1,10 @@
 // Routes, link creep and per-drone navigation state of the original's AINetwork / LinkCreep / NDrone2 nav
 // helpers (docs/spec-arena-ai.md Part 2B sections 6 and 9, docs/ai-nav.md).
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstdint>
+#include <utility>
 
 #include "game/nav.hpp"
 
@@ -19,6 +22,102 @@ float sqdist2d(const Vec3& a, const Vec3& b) {
 float dist2d(const Vec3& a, const Vec3& b) { return std::sqrt(sqdist2d(a, b)); }
 
 }  // namespace
+namespace {
+
+std::uint16_t route_u16(std::span<const std::byte> raw, std::size_t offset) {
+    return std::uint16_t(std::to_integer<std::uint8_t>(raw[offset])) |
+           (std::uint16_t(std::to_integer<std::uint8_t>(raw[offset + 1])) << 8);
+}
+
+std::uint32_t route_u32(std::span<const std::byte> raw, std::size_t offset) {
+    return std::uint32_t(route_u16(raw, offset)) |
+           (std::uint32_t(route_u16(raw, offset + 2)) << 16);
+}
+
+float route_f32(std::span<const std::byte> raw, std::size_t offset) {
+    return std::bit_cast<float>(route_u32(raw, offset));
+}
+
+CelPos route_cel_pos(std::span<const std::byte> raw, std::size_t offset) {
+    return {{route_f32(raw, offset), route_f32(raw, offset + 4), route_f32(raw, offset + 8)},
+            std::bit_cast<std::int32_t>(route_u32(raw, offset + 12))};
+}
+
+bool route_status(std::uint8_t raw, RouteStatus& status) {
+    switch (raw) {
+        case 0: status = RouteStatus::Following; return true;
+        case 1: status = RouteStatus::Approximate; return true;
+        case 2: status = RouteStatus::Straight; return true;
+        case 3: status = RouteStatus::Arrived; return true;
+        case 4: status = RouteStatus::NoTargetNodes; return true;
+        case 5: status = RouteStatus::NoStartNode; return true;
+        case 6: status = RouteStatus::Exhausted; return true;
+        case 7: status = RouteStatus::NoPath; return true;
+        case 8: status = RouteStatus::CannotCalc; return true;
+        case 9: status = RouteStatus::CreepFailed9; return true;
+        case 0xb: status = RouteStatus::Reset; return true;
+        case 0xc: status = RouteStatus::CreepFailed; return true;
+        default: return false;
+    }
+}
+
+}  // namespace
+
+
+bool NavAgent::restore_movement_route(std::span<const std::byte> route_raw,
+                                      std::span<const std::byte> route_nodes_raw, int path,
+                                      float arrive_radius, bool ignore_bounds) {
+    if (route_raw.size() != 0x100 || (route_nodes_raw.size() & 1) != 0)
+        return false;
+
+    const std::size_t node_count = route_u16(route_raw, 0x82);
+    if (route_nodes_raw.size() != node_count * sizeof(std::uint16_t))
+        return false;
+
+    NavRoute route;
+    route.flags = route_u16(route_raw, 0x00);
+    route.flag2 = std::to_integer<std::uint8_t>(route_raw[0x02]);
+    if (!route_status(std::to_integer<std::uint8_t>(route_raw[0x04]), route.status))
+        return false;
+    route.last_node = route_u16(route_raw, 0x06);
+    route.target_stamp = route_u32(route_raw, 0x08);
+    route.prev_first = route_u16(route_raw, 0x0c);
+    route.first_node = route_u16(route_raw, 0x0e);
+    route.dest_node = route_u16(route_raw, 0x10);
+    route.start = route_cel_pos(route_raw, 0x20);
+    route.goal = route_cel_pos(route_raw, 0x40);
+    route.waypoint = route_cel_pos(route_raw, 0x60);
+    route.index = std::bit_cast<std::int16_t>(route_u16(route_raw, 0x80));
+    if (route.index < -1 || route.index >= int(node_count))
+        return false;
+    route.distance = route_f32(route_raw, 0x88);
+    route.radius = route_f32(route_raw, 0x8c);
+    route.lookahead = route_f32(route_raw, 0x90);
+    route.path = path;
+    route.creep_active = std::to_integer<std::uint8_t>(route_raw[0xa0]) != 0;
+    route.special_pending = std::to_integer<std::uint8_t>(route_raw[0xa1]) != 0;
+    route.creep_link = std::bit_cast<std::int16_t>(route_u16(route_raw, 0xa4));
+    route.creep_a = std::bit_cast<std::int16_t>(route_u16(route_raw, 0xac));
+    route.creep_b = std::bit_cast<std::int16_t>(route_u16(route_raw, 0xae));
+    route.creep_step = std::bit_cast<std::int16_t>(route_u16(route_raw, 0xb0));
+    route.creep_steps = route_u16(route_raw, 0xb2);
+    route.step_vec = {route_f32(route_raw, 0xc0), route_f32(route_raw, 0xc4), route_f32(route_raw, 0xc8)};
+    route.seg_start = {route_f32(route_raw, 0xd0), route_f32(route_raw, 0xd4), route_f32(route_raw, 0xd8)};
+    route.seg_end = {route_f32(route_raw, 0xe0), route_f32(route_raw, 0xe4), route_f32(route_raw, 0xe8)};
+    route.ignore_bounds = ignore_bounds;
+    route.nodes.resize(node_count);
+    for (std::size_t i = 0; i < node_count; ++i)
+        route.nodes[i] = route_u16(route_nodes_raw, i * sizeof(std::uint16_t));
+    if (route.valid() && (path < 0 || route.index < 0))
+        return false;
+
+    path_ = path;
+    arrive_radius_ = arrive_radius;
+    move_route_ = std::move(route);
+    return true;
+}
+
+
 
 // ---- route bookkeeping --------------------------------------------------------------------------
 

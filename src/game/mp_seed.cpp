@@ -273,8 +273,8 @@ struct MpSeedImporter::Impl {
         if (it == rows.end()) throw std::runtime_error("MP seed: no recorded frame " + std::to_string(frame));
         if (!it->second.at("seed_ready").boolean()) throw std::runtime_error("MP seed: frame " + std::to_string(frame) + " is not seed_ready");
         const std::uint32_t version = uint_number(it->second.at("seed_version"));
-        if (version != 2 && version != 3)
-            throw std::runtime_error("MP seed: requires recorder schema v2 or v3");
+        if (version != 2 && version != 3 && version != 4)
+            throw std::runtime_error("MP seed: requires recorder schema v2, v3, or v4");
         if (const Json* ok = it->second.find("projectiles_available"); !ok || !ok->boolean()) throw std::runtime_error("MP seed: projectile snapshot is unavailable at frame " + std::to_string(frame));
         const auto& missing = it->second.at("state_missing").array();
         for (const Json& field : missing) {
@@ -376,7 +376,7 @@ void MpSeedImporter::configure(MatchLaunch& launch) const {
 bool MpSeedImporter::input_for(std::uint64_t frame, PadInputs& pads, float& rate) const {
     auto it = impl_->rows.find(frame);
     if (it == impl_->rows.end()) return false;
-    const Json& r = impl_->row(frame);
+    const Json& r = it->second;
     rate = float_number(r.at("rate"));
     const auto& controllers = r.at("pad_all").array();
     if (controllers.size() != 4) throw std::runtime_error("MP seed: expected four recorded controller pads");
@@ -404,7 +404,16 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
     world.frame_ = frame;
     const Json* timer_frame_record = source.find("timer_frame");
     world.timer_frame_ = timer_frame_record ? uint_number(*timer_frame_record) : frame;
-    session.weapons().seed(uint_number(index(source.at("rng_words"), 0)), uint_number(index(source.at("rng_words"), 1)));
+    // The source stamps its pre-tick RNG sample with GS_FRAME_START; the
+    // current tick's RNG state is therefore the next absolute-frame record.
+    const auto rng_it = impl_->rows.find(frame + 1);
+    if (rng_it == impl_->rows.end())
+        throw std::runtime_error("MP seed: no recorded RNG frame " + std::to_string(frame + 1));
+    const Json& rng = rng_it->second;
+    const Json* rng_words = rng.find("rng_words");
+    if (!rng_words || rng_words->array().size() < 2)
+        throw std::runtime_error("MP seed: frame " + std::to_string(frame + 1) + " has no RNG state");
+    session.weapons().seed(uint_number(index(*rng_words, 0)), uint_number(index(*rng_words, 1)));
 
     ArenaSeedSnapshot snapshot;
     const int state_code = int(u32_at(mpg, 0x188));
@@ -699,6 +708,39 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
             if (item.is_null()) throw std::runtime_error("MP seed: configured bot has no source participant state");
             const auto drone = raw_for(item, "drone_raw", 0xD20);
             const auto bv = raw_for(item, "bv_raw", 0x780);
+            const bool restore_route = uint_number(source.at("seed_version")) >= 4;
+            std::vector<std::byte> route_nodes;
+            int route_path = -1;
+            if (restore_route) {
+                const Json* route_rows = source.find("bot_ai_paths");
+                if (!route_rows) throw std::runtime_error("MP seed: v4 row omits bot_ai_paths");
+                const Json* route_row = nullptr;
+                for (const Json& candidate : route_rows->array()) {
+                    if (int_number(candidate.at("bot_slot")) == s) {
+                        route_row = &candidate;
+                        break;
+                    }
+                }
+                if (!route_row || !route_row->at("present").boolean() ||
+                    !route_row->at("complete").boolean())
+                    throw std::runtime_error("MP seed: bot route snapshot is incomplete for slot " + std::to_string(s));
+                const std::uint64_t node_count = uint_number(route_row->at("route_node_count"));
+                const std::uint64_t node_size = uint_number(route_row->at("route_node_size"));
+                if (node_count > std::numeric_limits<std::uint16_t>::max() || node_size != node_count * 2 ||
+                    u16_at(drone, 0x860 + 0x82) != node_count ||
+                    u32_at(drone, 0x950) != uint_number(route_row->at("route_node_address")) ||
+                    u32_at(drone, 0x954) != uint_number(route_row->at("ai_path_address")))
+                    throw std::runtime_error("MP seed: bot route snapshot does not match Drone state for slot " + std::to_string(s));
+                route_nodes = hex_bytes(route_row->at("route_node_raw"));
+                if (route_nodes.size() != node_size)
+                    throw std::runtime_error("MP seed: bot route node buffer has wrong byte length for slot " + std::to_string(s));
+                if (u32_at(drone, 0x954) != 0) {
+                    const std::vector<std::byte> ai_path = raw_for(*route_row, "ai_path_raw", 0x200);
+                    route_path = u16_at(ai_path, 0);
+                } else if (!route_row->at("ai_path_raw").is_null()) {
+                    throw std::runtime_error("MP seed: null AIPath has a raw snapshot for slot " + std::to_string(s));
+                }
+            }
             const auto obj = raw_for(item, "obj_raw", 0x100);
             std::array<std::optional<int>, 2> goal_targets;
             const auto& engine_objectives = session.arena().objectives();
@@ -728,7 +770,8 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                     goal_targets[i] = objective_id(int(MpObjective::Kind::Demolition), kTeamNone);
                 }
             }
-            const auto result = system.restore_snapshot(s, drone, bv, obj, participant_addresses, goal_targets);
+            const auto result = system.restore_snapshot(s, drone, bv, obj, route_nodes, route_path,
+                                                        restore_route, participant_addresses, goal_targets);
             if (!result) throw std::runtime_error("MP seed: BotSystem restore rejected slot " + std::to_string(s) + " code " + std::to_string(int(result.code)) + " blob " + std::to_string(int(result.blob)) + " offset 0x" + [&] { std::ostringstream os; os << std::hex << result.offset; return os.str(); }());
         }
     }

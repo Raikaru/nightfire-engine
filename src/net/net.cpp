@@ -850,26 +850,61 @@ bool UdpSocket::enable_broadcast(std::string* error) {
     return true;
 }
 
-bool UdpSocket::send(std::string_view host,std::uint16_t port,const Packet& packet) {
-    if(!valid())return false;
-    sockaddr_in addr{};addr.sin_family=AF_INET;addr.sin_port=htons(port);
+bool UdpSocket::send(std::string_view host, std::uint16_t port, const Packet& packet) {
+    if (!valid()) return false;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
     const std::string h(host);
-    if(inet_pton(AF_INET,h.c_str(),&addr.sin_addr)!=1)return false;
-    auto data=encode(packet);if(data.empty())return false;
-    impl_->rng^=impl_->rng<<13;impl_->rng^=impl_->rng>>17;impl_->rng^=impl_->rng<<5;
-    if(sim_.loss_percent && impl_->rng%100<sim_.loss_percent)return true;
-    if(sim_.latency_ms){impl_->delayed.push_back({std::chrono::steady_clock::now()+std::chrono::milliseconds(sim_.latency_ms),addr,std::move(data)});return true;}
-    return sendto(impl_->fd,data.data(),data.size(),0,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))==ssize_t(data.size());
+    if (inet_pton(AF_INET, h.c_str(), &addr.sin_addr) != 1) return false;
+    auto data = encode(packet);
+    if (data.empty()) return false;
+    impl_->rng ^= impl_->rng << 13;
+    impl_->rng ^= impl_->rng >> 17;
+    impl_->rng ^= impl_->rng << 5;
+    if (sim_.loss_percent && impl_->rng % 100 < sim_.loss_percent) return true;
+    std::int64_t delay_ms = sim_.latency_ms;
+    if (sim_.jitter_ms != 0) {
+        impl_->rng ^= impl_->rng << 13;
+        impl_->rng ^= impl_->rng >> 17;
+        impl_->rng ^= impl_->rng << 5;
+        const std::uint64_t span = std::uint64_t(sim_.jitter_ms) * 2 + 1;
+        delay_ms += std::int64_t(std::uint64_t(impl_->rng) % span) - std::int64_t(sim_.jitter_ms);
+    }
+    delay_ms = std::max<std::int64_t>(delay_ms, 0);
+    if (delay_ms != 0) {
+        Impl::Delayed delayed{std::chrono::steady_clock::now() + std::chrono::milliseconds(delay_ms), addr,
+                              std::move(data)};
+        const auto at = std::upper_bound(impl_->delayed.begin(), impl_->delayed.end(), delayed.due,
+                                         [](const auto& due, const auto& queued) { return due < queued.due; });
+        impl_->delayed.insert(at, std::move(delayed));
+        return true;
+    }
+    return sendto(impl_->fd, data.data(), data.size(), 0, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) ==
+           ssize_t(data.size());
 }
+
 std::vector<Received> UdpSocket::receive() {
-    std::vector<Received> out;if(!valid())return out;
-    const auto now=std::chrono::steady_clock::now();
-    while(!impl_->delayed.empty()&&impl_->delayed.front().due<=now){auto& d=impl_->delayed.front();sendto(impl_->fd,d.data.data(),d.data.size(),0,reinterpret_cast<sockaddr*>(&d.peer),sizeof(d.peer));impl_->delayed.pop_front();}
-    std::array<std::uint8_t,kMaxDatagramBytes+1> buffer{};
-    for(;;){sockaddr_in peer{};socklen_t len=sizeof(peer);const auto n=recvfrom(impl_->fd,buffer.data(),buffer.size(),0,reinterpret_cast<sockaddr*>(&peer),&len);if(n<=0)break;
-        const auto decoded=decode(std::span<const std::uint8_t>(buffer.data(),std::size_t(n)));if(!decoded)continue;
-        char host[INET_ADDRSTRLEN]{};inet_ntop(AF_INET,&peer.sin_addr,host,sizeof(host));
-        out.push_back({*decoded,host,ntohs(peer.sin_port)});
+    std::vector<Received> out;
+    if (!valid()) return out;
+    const auto now = std::chrono::steady_clock::now();
+    while (!impl_->delayed.empty() && impl_->delayed.front().due <= now) {
+        auto& delayed = impl_->delayed.front();
+        sendto(impl_->fd, delayed.data.data(), delayed.data.size(), 0, reinterpret_cast<sockaddr*>(&delayed.peer),
+               sizeof(delayed.peer));
+        impl_->delayed.pop_front();
+    }
+    std::array<std::uint8_t, kMaxDatagramBytes + 1> buffer{};
+    for (;;) {
+        sockaddr_in peer{};
+        socklen_t len = sizeof(peer);
+        const auto size = recvfrom(impl_->fd, buffer.data(), buffer.size(), 0, reinterpret_cast<sockaddr*>(&peer), &len);
+        if (size <= 0) break;
+        const auto decoded = decode(std::span<const std::uint8_t>(buffer.data(), std::size_t(size)));
+        if (!decoded) continue;
+        char host[INET_ADDRSTRLEN]{};
+        inet_ntop(AF_INET, &peer.sin_addr, host, sizeof(host));
+        out.push_back({*decoded, host, ntohs(peer.sin_port)});
     }
     return out;
 }

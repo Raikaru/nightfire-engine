@@ -318,7 +318,7 @@ bool in_shouting_range(const Drone& d, const Drone& source) {
 }
 
 void alert_others(Drone& d, int msg_id, const TargetRef& target, const Vec3& pos, float factor) {
-    // NDrone2_DroneAlertToObject / ToPosition: shared record + 30-tick delayed broadcast.
+    // NDrone2_DroneAlertToObject / ToPosition: shared record + 30 reference-frame delayed broadcast.
     AlertRecord& a = d.sys->alert_record();
     a.alerted_to = target.valid() ? target.index : -1;
     a.target = target;
@@ -328,7 +328,7 @@ void alert_others(Drone& d, int msg_id, const TargetRef& target, const Vec3& pos
     a.position = pos;
     a.radius_a = a.radius_b = 20.0f;
     a.factor = factor;
-    d.broadcast(msg_id, 0, 30, &a);
+    d.broadcast(msg_id, 0, int(d.seconds(30.0f / 60.0f)), &a);
 }
 
 int alert_sound(Drone& d) {

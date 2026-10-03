@@ -6,6 +6,7 @@
 #include "core/rng.hpp"
 
 #include "game/drone_weap.hpp"
+#include "game/drone_system.hpp"
 namespace nf::bots {
 
 namespace {
@@ -216,7 +217,7 @@ bool BotBrain::is_distracted() const {
 
 void BotBrain::start_recovery() {
     if (v.bits & bitflag::kRecovering) return;
-    v.recovery_end = env->tick() + std::uint32_t(float(v.stats.recovery_rate) * 0.6666667f);
+    v.recovery_end = env->tick() + std::uint32_t(float(recovery_ticks(v.stats.recovery_rate)) * self->rate() / 30.0f);
     v.bits |= bitflag::kRecovering;
 }
 
@@ -325,11 +326,11 @@ void BotBrain::set_other_player_info() {
             continue;
         }
         if (!same) {
-            // Concealed bit with its hold time after the last quiet moment.
             const bool was = (o.flags & otherflag::kConcealed) != 0;
             bool now_concealed = p.concealed;
             if (now_concealed) o.stamp = clock;
-            if (was && !now_concealed && clock < o.stamp + 2.0f * self->rate()) now_concealed = true;
+            // `clock` and the concealment stamp are seconds, unlike Drone::rate's ticks per second.
+            if (was && !now_concealed && clock < o.stamp + 2.0f) now_concealed = true;
             o.flags = now_concealed ? (o.flags | otherflag::kConcealed) : (o.flags & ~otherflag::kConcealed);
         }
         // Bot-to-bot sight reuses the candidate bot's cached view of us when it is already visible.
@@ -549,6 +550,7 @@ void BotBrain::opponent_targetting() {
     const std::uint32_t now_tick = env->tick();
     const Participant opp = env->participant(opponent_slot_);
     const float rate = self->rate();
+    const float reference_clock = float(now_tick) * self->sys->timing().FRAME_RATE_MUL;
     const float half = float(int(rate) >> 1);
     float ramp = float((v.stats.accuracy / 3 + 1)) * half;
     if (self->opp_dist > 2.0f) ramp *= (self->opp_dist - 2.0f) * 0.05f + 1.0f;
@@ -571,8 +573,8 @@ void BotBrain::opponent_targetting() {
     self->aim_offset = {};
     if (ramping) {
         // PS2Sinf, not host sin (the original calls PS2Sinf__Ff twice per tick here).
-        self->aim_offset[0] = drone::weap::ps2_sin(float(now_tick) * 0.05f + 1.5707964f) * 1.2f;
-        self->aim_offset[1] = drone::weap::ps2_sin(float(now_tick) * 0.05f) * 1.7f;
+        self->aim_offset[0] = drone::weap::ps2_sin(reference_clock * 0.05f + 1.5707964f) * 1.2f;
+        self->aim_offset[1] = drone::weap::ps2_sin(reference_clock * 0.05f) * 1.7f;
     }
     self->opp_pos = opp.pos;
 }

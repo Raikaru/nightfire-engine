@@ -84,8 +84,8 @@ int enemy_look_for_opponent(Drone& d);              // DroneVision_EnemyLookForO
 int enemy_alerts(Drone& d, const Msg& m);
 int alert_sound(Drone& d);                          // DroneVision_AlertSound 0x177800 (msg 0x14)
 bool in_shouting_range(const Drone& d, const Drone& source);   // NDrone2_InShoutingRange 0x1788a0
-// NDrone2_DroneAlertToObject / ToPosition: broadcast `msg_id` (+30 ticks) with an alert record
-// (radii 20/20, factor 1.0 unless given). `target` may be invalid for position alerts.
+// NDrone2_DroneAlertToObject / ToPosition: broadcast `msg_id` (+30 reference-frame ticks, scaled to the active rate)
+// with an alert record (radii 20/20, factor 1.0 unless given). `target` may be invalid for position alerts.
 void alert_others(Drone& d, int msg_id, const TargetRef& target, const Vec3& pos, float factor = 1.0f);
 // DroneFunc_HandleSoundAlerts 0x148a30 is driven by DroneSystem::emit_noise; call this from a state's tick to poll
 // noises already stored on the drone.

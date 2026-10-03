@@ -28,7 +28,7 @@ int bullet_impact(Drone& d, const DroneHit* hit, int state, bool non_punch);
 int explosive_impact(Drone& d, const DroneHit* hit, int state, bool in_state);
 int punch_impact(Drone& d, const DroneHit* hit, int state, bool in_state);
 
-// DroneFunc_SendHurtMessage: behaviour 0x32, once per drone -> broadcast msg 0x12 (30-tick delay) with an alert record.
+// DroneFunc_SendHurtMessage: behaviour 0x32, once per drone -> broadcast msg 0x12 (30 reference-frame delay).
 void send_hurt_message(Drone& d);
 // DroneAnim_LocationDeathAnim(dcv, end_state) / DroneAnim_LocationImpactAnim: hit-location dependent clips.
 void location_death_anim(Drone& d, int end_state);

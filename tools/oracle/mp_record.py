@@ -176,6 +176,8 @@ AI_PATH_POINTER_OFFSET = 0x954
 AI_PATH_RAW_SIZE = 0x200
 AI_PATH_CHILD_POINTER_OFFSETS = (0x34, 0x3C, 0x40)
 AI_PATH_CHILD_RAW_SIZE = 0x200
+AI_ROUTE_NODE_POINTER_OFFSET = 0x950
+
 
 
 def valid_ee_pointer(addr, size):
@@ -240,6 +242,26 @@ def read_ai_path_updates(pine, updates, frame, done):
         result[k]["pointees"][offset] = (pointer, raw)
     return result
 
+def read_route_node_updates(pine, updates, frame, done):
+    """Read per-drone route node buffers only while the requested frame stays fixed."""
+    guards = pine.read_ranges([(A.GS_DONE, 4), (A.GS_FRAME_START, 4)])
+    if (struct.unpack("<I", guards[0])[0] != done
+            or struct.unpack("<I", guards[1])[0] != frame):
+        return {}
+    tags = []
+    ranges = []
+    for k, (address, size) in updates.items():
+        if valid_ee_pointer(address, size):
+            tags.append(k)
+            ranges.append((address, size))
+    chunks = read_ranges_batched(pine, ranges) if ranges else []
+    after = pine.read_ranges([(A.GS_DONE, 4), (A.GS_FRAME_START, 4)])
+    if (struct.unpack("<I", after[0])[0] != done
+            or struct.unpack("<I", after[1])[0] != frame):
+        return {}
+    return {k: raw for k, raw in zip(tags, chunks)}
+
+
 
 def refresh_projectile_cache(pine, cache, head, initial=False):
     """Walk only newly prepended DynamicObjList nodes; return new type-5 objects."""
@@ -282,7 +304,7 @@ def main():
     ap.add_argument("--script")
     ap.add_argument("--full-every", type=int, default=30)
     ap.add_argument("--seedable", action="store_true",
-                    help="emit v3 seed fields and objective blobs each frame")
+                    help="emit v4 seed fields, objective blobs, and bot route snapshots each frame")
     ap.add_argument("--weapon-anim-raw", action="store_true",
                     help="capture coherent 0x100-byte human BLData+0x7e8 objects (requires --seedable)")
     ap.add_argument("--rng-calls", action="store_true",
@@ -753,7 +775,7 @@ def main():
             rec["bot_goal_targets"] = goal_targets
             if not goal_target_stable:
                 rec["state_missing"].append("bot_goal_target_changed")
-            rec["seed_version"] = 3
+            rec["seed_version"] = 4
             rec["state_complete"] = False
 
         parts = []
@@ -894,6 +916,28 @@ def main():
                     path_updates[k] = address
             updated_paths = read_ai_path_updates(
                 pine, path_updates, frame0, done0) if path_updates else {}
+            route_node_requests = {}
+            route_node_descriptors = {}
+            for k in range(4):
+                if ("dr_raw", k) not in bytag:
+                    continue
+                drone_raw = bytag[("dr_raw", k)]
+                route_raw = drone_raw[
+                    AI_ROUTE_OFFSET:AI_ROUTE_OFFSET + AI_ROUTE_RAW_SIZE]
+                address = struct.unpack_from(
+                    "<I", drone_raw, AI_ROUTE_NODE_POINTER_OFFSET)[0]
+                count = struct.unpack_from("<H", route_raw, 0x82)[0]
+                size = count * 2
+                route_node_descriptors[k] = (address, count, size)
+                if size:
+                    route_node_requests[k] = (address, size)
+            route_node_updates = read_route_node_updates(
+                pine, route_node_requests, frame0, done0) if route_node_requests else {}
+            route_node_raws = {
+                k: (b"" if size == 0 else route_node_updates.get(k))
+                for k, (_, _, size) in route_node_descriptors.items()
+            }
+
             ai_path_rows = []
             for k in range(4):
                 drone = cache["drone"].get(k)
@@ -919,8 +963,15 @@ def main():
                 else:
                     path_raw = None
                     child_samples = {}
-                complete = address == 0 or (
-                    valid_ee_pointer(address, AI_PATH_RAW_SIZE) and path_raw is not None)
+                route_node_address, route_node_count, route_node_size = route_node_descriptors[k]
+                route_node_raw = route_node_raws.get(k)
+                route_nodes_complete = (
+                    route_node_raw is not None
+                    and len(route_node_raw) == route_node_size
+                )
+                complete = route_nodes_complete and (
+                    address == 0 or (
+                        valid_ee_pointer(address, AI_PATH_RAW_SIZE) and path_raw is not None))
                 pointers = ai_path_child_pointers(path_raw) if path_raw is not None else {}
                 pointees = []
                 for offset in AI_PATH_CHILD_POINTER_OFFSETS:
@@ -948,6 +999,10 @@ def main():
                     "frame": frame0, "timer_frame": timer_frame0,
                     "drone_ptr": drone, "route_address": drone + AI_ROUTE_OFFSET,
                     "route_size": AI_ROUTE_RAW_SIZE, "route_raw": route_raw.hex(),
+                    "route_node_address": route_node_address,
+                    "route_node_count": route_node_count,
+                    "route_node_size": route_node_size,
+                    "route_node_raw": route_node_raw.hex() if route_node_raw is not None else None,
                     "ai_path_pointer_source_offset": AI_PATH_POINTER_OFFSET,
                     "ai_path_address": address,
                     "ai_path_valid": valid_ee_pointer(address, AI_PATH_RAW_SIZE),
@@ -966,6 +1021,8 @@ def main():
                     ai_path_refresh.add(k)
                 if not complete:
                     rec["state_missing"].append("bot_ai_path_pointees")
+                if not route_nodes_complete:
+                    rec["state_missing"].append("bot_ai_route_nodes")
             rec["bot_ai_paths"] = ai_path_rows
             if path_updates and not updated_paths:
                 ai_path_refresh.update(path_updates)
@@ -1161,6 +1218,7 @@ def main():
                 and "bot_goal_target_changed" not in rec["state_missing"]
                 and projectile_refs_ready
                 and weapon_anim_state_ready
+                and not any(field != "transient_hit_zone" for field in rec["state_missing"])
             )
             if "objx" not in rec:
                 rec["state_missing"].append("objective_blobs")

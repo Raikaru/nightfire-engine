@@ -95,7 +95,7 @@ struct NetworkSession::Impl {
         const auto map_bytes = ctx.files.read(*map_file);
         const auto elf_bytes = nf::read_file(std::filesystem::path(ctx.gamedir) / "ACTION.ELF");
         const auto hash = nf::net::game_data_hash(elf_bytes, map_bytes);
-        socket.simulate({unsigned(options.loss_percent), unsigned(options.latency_ms), 0x4e46434c});
+        socket.simulate({unsigned(options.loss_percent), unsigned(options.latency_ms), 0x4e46434c, options.jitter_ms});
         std::string error;
         if (!socket.bind(0, &error)) throw std::runtime_error("network client " + error);
         hello.header.message = nf::net::Message::Hello;

@@ -22,6 +22,8 @@ The original derives these from `GS_SetRefreshRate(60 / vblanksPerFrame)` each f
 and MP default to a deterministic 60-Hz logic step; `--logic-hz 30` selects the compatibility step.
 Oracle replay consumes each frame's recorded rate, independently of the local fixed-rate setting.
 Driving missions retain their separate 60-Hz vehicle simulation.
+Drone animation/root-motion and fallback locomotion steps also advance by `FRAME_RATE_MUL`; bot/drone timers use
+current-rate ticks, while reference-frame aim phases and alert delays preserve their 60-Hz timing.
 
 ## Input
 

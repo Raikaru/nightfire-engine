@@ -229,11 +229,13 @@ std::vector<std::uint8_t> encode_event(const ReplicationEvent& event);
 bool decode_event(std::span<const std::uint8_t> payload, ReplicationEvent& event);
 
 // Outbound fault injection for a socket. Loss is probabilistic; latency queues datagrams
-// until the configured one-way delay expires (zero disables simulation).
+// around the configured one-way delay, with optional bounded symmetric jitter.
+inline constexpr unsigned kDefaultNetSimJitterMs = 5;
 struct NetSim {
     unsigned loss_percent = 0;
     unsigned latency_ms = 0;
     std::uint32_t random_seed = 0x4e46504e;
+    unsigned jitter_ms = 0;
 };
 
 struct Received {

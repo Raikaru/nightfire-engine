@@ -270,7 +270,7 @@ int state_door_open(Drone& d, const Msg& m) {
         }
         d.call_anim(0, d.alertness >= 1.0f ? 0x21 : 0x4b, d.alertness >= 1.0f ? 0 : 1);
         b.body->open_door();
-        set_timer1(d, 2 * 60);
+        set_timer1(d, 2 * seconds(d, 1.0f));
         return 1;
     case kMsgTick:
         if (b.body->door_is_open()) go(d, b.door_return_state_);
@@ -753,7 +753,7 @@ int state_stun_grenade(Drone& d, const Msg& m) {         // @0x175418
         return 1;
     case kMsgEnter:
         d.call_anim(0, 0x2d);
-        set_timer1(d, stun_ticks(b.v.stats.recovery_rate));
+        set_timer1(d, std::uint32_t(float(stun_ticks(b.v.stats.recovery_rate)) * d.rate() / 30.0f));
         return 1;
     case kMsgTimer1:
         go(d, st::kIdle);
@@ -814,7 +814,7 @@ int state_dead(Drone& d, const Msg& m) {                 // @0x171518
         if (b.v.active_goal >= 0) b.uninit_goal(b.v.active_goal);
         d.flags |= flag::kDeathProcessed;   // NDrone2_SetAsDead
         set_timer1(d, 3 * seconds(d, 1.0f));
-        if (d.has_beh(0x31)) set_timer2(d, 60);
+        if (d.has_beh(0x31)) set_timer2(d, seconds(d, 1.0f));
         return 1;
     case kMsgTimer1:
         go(d, st::kRespawn);

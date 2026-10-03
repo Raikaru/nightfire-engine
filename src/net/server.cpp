@@ -37,7 +37,7 @@ void request_server_shutdown(int) { g_server_shutdown = 1; }
 void usage() {
     std::puts("usage: nfserver <gamedir> [--config file] [--map file.bin] [--mode arena] [--ruleset ps2|gc-xbox|extended]"
               " [--bots N] [--port 27500] [--name server] [--password text] [--master host:port]"
-              " [--frag-limit N] [--time-limit minutes] [--net-sim-loss percent] [--net-sim-latency ms]"
+              " [--frag-limit N] [--time-limit minutes] [--net-sim-loss percent] [--net-sim-latency ms] [--net-sim-jitter]"
               " [--rotation map.bin,mode]... [--visibility-culling|--no-visibility-culling] [--logic-hz 30|60] [--ticks N]");
 }
 using Clock = std::chrono::steady_clock;
@@ -407,7 +407,7 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
     options.enabled = true;
     options.humans = 0; // Online humans are admitted only when a peer joins; never reserve ghost players.
     options.log = true;
-    int port = 27500, net_loss = 0, net_latency = 0, max_ticks = -1;
+    int port = 27500, net_loss = 0, net_latency = 0, net_jitter = 0, max_ticks = -1;
     int logic_hz = runtime_config ? runtime_config->logic_hz : int(nf::World::kTickHz);
     std::vector<std::pair<std::string, std::uint32_t>> rotation_specs;
     bool visibility_culling = true;
@@ -418,6 +418,7 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
         master_host = runtime_config->master_host;
         net_loss = int(runtime_config->net_sim.loss_percent);
         net_latency = int(runtime_config->net_sim.latency_ms);
+        net_jitter = int(runtime_config->net_sim.jitter_ms);
         visibility_culling = runtime_config->visibility_culling;
     } else {
         try {
@@ -455,6 +456,10 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                     if (value_text == "true" || value_text == "1") config_args.emplace_back("--visibility-culling");
                     else if (value_text == "false" || value_text == "0") config_args.emplace_back("--no-visibility-culling");
                     else throw std::runtime_error("invalid visibility-culling value on config line " + std::to_string(line_number));
+                } else if (key == "net-sim-jitter") {
+                    if (value_text == "true" || value_text == "1") config_args.emplace_back("--net-sim-jitter");
+                    else if (value_text != "false" && value_text != "0")
+                        throw std::runtime_error("invalid net-sim-jitter value on config line " + std::to_string(line_number));
                 } else {
                     config_args.push_back("--" + key);
                     config_args.push_back(value_text);
@@ -496,6 +501,7 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                 rotation_specs.emplace_back(rotation_map, mode);
             } else if (arg == "--visibility-culling") visibility_culling = true;
             else if (arg == "--no-visibility-culling") visibility_culling = false;
+            else if (arg == "--net-sim-jitter") net_jitter = int(nf::net::kDefaultNetSimJitterMs);
             else if (arg == "--logic-hz") {
                 int v = 0;
                 if (!parse_int(value(), v) || (v != 30 && v != 60))
@@ -537,7 +543,7 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
         config.master_host = master_host;
         config.master_port = master_port;
         config.visibility_culling = visibility_culling;
-        config.net_sim = {unsigned(net_loss), unsigned(net_latency), 0x4e465345};
+        config.net_sim = {unsigned(net_loss), unsigned(net_latency), 0x4e464553, unsigned(net_jitter)};
         for (const auto& [rotation_map, mode] : rotation_specs) {
             nf::MatchOptions match = options;
             match.mode = mode;
@@ -966,12 +972,14 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
             if (!session.arena().over()) {
                 for (Peer& peer : peers) {
                     if (!peer.active) continue;
+                    std::array<bool, nf::net::kMaxLocalPlayers> consumed_input{};
                     while (peer.pending_input_count != 0 &&
                            peer.pending_inputs[peer.pending_input_head].tick <= tick) {
                         const nf::net::PadInput input = peer.pending_inputs[peer.pending_input_head];
+                        const std::size_t local = input.local_player;
+                        if (consumed_input[local]) break;
                         peer.pending_input_head = (peer.pending_input_head + 1) % kPendingInputCapacity;
                         --peer.pending_input_count;
-                        const std::size_t local = input.local_player;
                         const std::size_t slot = std::size_t(peer.slot) + local;
                         peer.last_input_tick[local] = input.tick;
                         peer.view_tick[local] = input.view_tick;
@@ -980,6 +988,7 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
                         pad.buttons = input.buttons;
                         pad.rx = input.sticks[0]; pad.ry = input.sticks[1];
                         pad.lx = input.sticks[2]; pad.ly = input.sticks[3];
+                        consumed_input[local] = true;
                     }
                 }
             }

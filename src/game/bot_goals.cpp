@@ -117,7 +117,7 @@ void BotBrain::set_pickup_visit_time(int pickup) {
 bool BotBrain::validate_route(int r) {
     const std::uint32_t tick = env->tick();
     if (r >= 0 && r <= 3) {
-        if (v.route_fail_count == 0 || tick - v.last_route_fail_tick >= 5) v.route_fail_count = 0;
+        if (v.route_fail_count == 0 || tick - v.last_route_fail_tick >= self->seconds(5.0f / 60.0f)) v.route_fail_count = 0;
         return true;
     }
     if (r == moveres::kBlocked) {

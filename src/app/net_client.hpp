@@ -20,6 +20,7 @@ struct NetworkClientOptions {
     long frames = -1;
     int loss_percent = 0;
     int latency_ms = 0;
+    unsigned jitter_ms = 0;
     std::uint8_t local_players = 1;
 };
 class NetworkSession {
