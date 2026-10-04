@@ -21,6 +21,8 @@ constexpr int kActZoom = 6;         // D-pad up (-1) / down (+1)
 
 constexpr int kNoWeapon = 71;       // Player_WeaponNone
 constexpr int kFists = 1;
+// Player_Init replaces weapon_data[1].model_gfx with the default Bond fist skin before creating the anim object.
+constexpr std::uint32_t kFistsModelGfx = 0x050000B0;
 constexpr int kFidgetDeep = 600;      // +2362 frames for the +204 path (20 s at 30 Hz logic)
 constexpr int kFidgetHold = 600;      // +2366 = 20 s at 30 Hz once a +212 starts
 
@@ -393,7 +395,8 @@ void WeaponSystem::set_weapon_anim(PlayerWeapons& p) {   // Player_SetWeaponAnim
     p.anim_script = 0;
     if (!bank_) return;
     const WeaponDef& d = table_.weapon(p.current);
-    const SkinDef* skin = d.model_gfx ? bank_->skin(d.model_gfx) : nullptr;
+    const std::uint32_t model_gfx = p.current == kFists ? kFistsModelGfx : d.model_gfx;
+    const SkinDef* skin = model_gfx ? bank_->skin(model_gfx) : nullptr;
     if (!skin) return;
     p.anim = std::make_unique<CharacterInstance>(*bank_, *skin);
     p.anim_weapon = p.current;

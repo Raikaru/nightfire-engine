@@ -93,24 +93,25 @@ inline std::vector<std::string> describe_result(const MatchResult& result, const
 }
 
 // HUD_RadarUpdate name tags: projects the named ArenaHud blips (participants, when MPSettings+0x1C4 radar_names)
-// into HudState's 512x448 space (origin top left). `yaw`/`pitch` are the RENDER camera angles (render/Camera:
-// yaw 0 looks down -Z, positive pitch looks up) \u2014 note the radar blips above use the game\u2019s own camera
-// space instead; tags behind the viewer are dropped.
+// into the local view's HUD coordinates (origin top left). `yaw`/`pitch` are the RENDER camera angles (render/Camera:
+// yaw 0 looks down -Z, positive pitch looks up). `view_w`/`view_h` are the source viewport's 512x448-based dimensions.
+// The original drops tags behind the viewer or at 100+ units.
 inline void project_name_tags(const ArenaHud& src, const Vec3& eye, float yaw, float pitch, float fovy, float aspect,
-                              HudMp& dst) {
+                              float view_w, float view_h, HudMp& dst) {
     const float cp = std::cos(pitch), sp = std::sin(pitch), sy = std::sin(yaw), cy = std::cos(yaw);
     const Vec3 fwd{-sy * cp, sp, -cy * cp}, right{cy, 0, -sy};
     const Vec3 up = cross(right, fwd);
-    const float scale = 224.0f / std::tan(fovy * 0.5f);   // 448 / 2 rows, x scaled by the viewport aspect below
+    const float scale_y = view_h * 0.5f / std::tan(fovy * 0.5f);
+    const float scale_x = view_w * 0.5f / (aspect * std::tan(fovy * 0.5f));
     for (const ArenaHud::Blip& b : src.blips) {
         if (b.name.empty()) continue;
         const Vec3 rel = b.world - eye;
         const float z = dot(rel, fwd);
-        if (z <= 0.05f) continue;
+        if (z <= 0.05f || z >= 100.0f) continue;
         HudNameTag tag;
         tag.name = b.name;
-        tag.x = 256.0f + dot(rel, right) / z * scale * aspect * (448.0f / 512.0f);
-        tag.y = 224.0f - dot(rel, up) / z * scale;
+        tag.x = view_w * 0.5f + dot(rel, right) / z * scale_x;
+        tag.y = view_h * 0.5f - dot(rel, up) / z * scale_y;
         tag.same_team = b.same_team;
         dst.name_tags.push_back(std::move(tag));
     }

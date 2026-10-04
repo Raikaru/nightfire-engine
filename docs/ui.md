@@ -205,8 +205,15 @@ What is reproduced (function → behaviour):
   Sight / Ronin / Laser (static panes).
 - MP: `HUD_UpdateMPHealthPane` (health fraction of `100 + bonus` x 128 px, armour x 2.56 px), `HUD_MPUpdatePane` /
   `HUD_CreateMPScorePane` (team score, points / kills / deaths text and icons per scenario, uplink colours),
-  `HUD_RadarUpdate` (blips of `TexUV`, distance x 0.02 clamped to the disc's 0.45 radius, opponent names in font 2 with
-  team colours), `HUD_FixMP` / `HUD_ValidateXY` layout for 1..4 viewers.
+  `HUD_RadarUpdate` (blips of `TexUV`, distance x 0.02 clamped to the disc's 0.45 radius; optional opponent name tags
+  projected into the view by `View_3DPoint2Screen`, with team colours and the source's 100-unit depth limit),
+  `HUD_FixMP` / `HUD_ValidateXY` layout for 1..4 viewers.
+The MP HUD is rendered on the full-window UI canvas and scissored to each player's viewport, so the original source-coordinate
+pane offsets remain valid in top/bottom, side-by-side, and four-view layouts instead of being clipped against a per-view
+canvas. Each 3D view uses its actual split-viewport aspect. This matches `Camera_CalcViewAngles`: the source starts from
+4:3 (or the widescreen 16:9 flag), halves aspect for side-by-side two-player views, doubles it for top/bottom two-player
+views, and leaves three/four-player quadrant aspect unchanged.
+
 
 Weapon icons: the original HUD has none. The weapon in hand is the first-person 3D model (`weapon_data +220` gfx hash);
 `HUD_UpdateAmmoPane` reads the name labels (`+0x38` SP / `+0x3C` MP of the weapon being selected), the fire-mode label
