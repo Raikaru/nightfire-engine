@@ -206,14 +206,17 @@ Tools: `tools/oracle/mp_addrs.py` (address map, single source of truth),
 `mp_frame_trace.py` phase-locks recorder reads to the end of `Game_Run`: the hook is at
 `0x001C98BC` (after `control_movement_object_handler`), code is in EE RAM at
 `0x01FE6000`, descriptors at `0x01FE8000`, and the snapshot ring spans
-`0x01FEA000..0x01FFFFFF`. Each configured sample copies the requested ranges plus
-`GS_DONE`, `GS_FRAME_START`, and `GS_FRAME` into a 16-byte-header slot, then publishes
-the ring head. Duplicate end-frame counters are skipped; full rings drop the new
-sample and increment overflow. `mp_record.py` drains these immutable end-of-frame
-snapshots instead of batching live source reads, preventing fields from adjacent
-logic frames being mixed. Slot capacity depends on the configured payload size.
-Loading a P2S restores the original RAM and erases hook code, so the recorder
-rehydrates its frame and preinstalled RNG hooks before resuming capture.
+`0x0008E000..0x000FFFFF`. The 456-KiB region below ACTION's `0x00100000` load
+base was zero in the sampled CTF, Demolition, Team, and Arena savestates; with
+the current ~40-KiB seed payload this gives eight ring slots rather than two.
+Each configured sample copies the requested ranges plus `GS_DONE`,
+`GS_FRAME_START`, and `GS_FRAME` into a 16-byte-header slot, then publishes
+the ring head. Duplicate end-frame counters are skipped; full rings drop the
+new sample and increment overflow. `mp_record.py` drains these immutable
+end-of-frame snapshots instead of batching live source reads, preventing
+fields from adjacent logic frames being mixed. Capacity remains payload-size
+dependent. Loading a P2S restores original RAM and erases hook code, so the
+recorder rehydrates its frame and preinstalled RNG hooks before capture.
 `mp_record.py` includes human-only `damage_flash` (BLData+0x8BC),
 `fade_total`/`fade_timer` (+0x918/+0x91C), `fade_colour` (+0x963),
 `pain_dir` (+0x967), and `pain_alpha` (+0x968). The fade timer and total
@@ -257,7 +260,11 @@ advances the GameState frame/timer counters and applies the corresponding
 `pad_all` values before each following call. `N` includes the initial row; pad
 input must cover every frame after that row. Row numbers come from the saved
 GameState counters, not the P2S filename or requested checkpoint frame. The
-script feeds full RAM snapshots into the same `mp_record.py` decoder, so its
+input word is the raw active-high Sony tSlot mask (for example, Cross is
+`0x40` and R1 is `0x08`); stick bytes come from `pad_all[].s`. Add
+`--weapon-anim-raw` to capture the 0x100-byte pointed-to human animation object
+as `pl[].weapon_anim_raw` for replay code that needs more than the enum.
+The script feeds full RAM snapshots into the same `mp_record.py` decoder, so its
 JSONL uses the seedable v5 schema without a second decoder. Example:
 
 ```sh

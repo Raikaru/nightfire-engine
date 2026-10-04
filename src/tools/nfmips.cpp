@@ -2625,7 +2625,7 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
     constexpr u32 kGameState = 0x002A3768;
     constexpr u32 kDone = kGameState + 0x30;
     constexpr u32 kFrame = kGameState + 0x34;
-    constexpr u32 kFrameStart = kGameState + 0x3C;
+    constexpr u32 kFrameAccumulator = kGameState + 0x38;
     constexpr u32 kTslot0 = 0x00245680;
     constexpr u32 kTslotStride = 0x180;
     constexpr u32 kPadInput = 0x120;
@@ -2754,6 +2754,12 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
         // interpreter calls that frame body directly, so reproduce its edge.
         m.mem.write<u32>(kFrameStart, next_frame);
         m.mem.write<u32>(kFrame, next_timer_frame);
+        const u32 frame_rate_int = m.mem.read<u32>(0x0030D0CC);
+        if (frame_rate_int == 0)
+            throw std::runtime_error("FRAME_RATE_INT is zero");
+        const u32 frame_tick = m.mem.read<u32>(0x0030D0C8) / frame_rate_int;
+        m.mem.write<u32>(kFrameAccumulator,
+                         m.mem.read<u32>(kFrameAccumulator) + frame_tick);
         const auto events = pads.find(before + 1);
         if (events != pads.end()) {
             for (const OraclePad& event : events->second) {
