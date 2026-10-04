@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <optional>
 #include <unordered_map>
@@ -293,6 +294,9 @@ bool RoomMap::view_can_reach(int from, int target, const Vec3& eye, const Vec3& 
             std::swap(input, output);
             point_count = clipped_count;
         }
+        if (from == 8 && target == 5)
+            std::fprintf(stderr, "PORTAL room=%d dest=%d clipped=%zu plane=%zu\\n",
+                          frame.room, portal.dest, point_count, frame.plane_count);
         if (point_count == 0) continue;
         if (portal.dest == target) return true;
 

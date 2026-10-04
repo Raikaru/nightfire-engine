@@ -3,6 +3,7 @@
 #include "game/drone_system.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
 
 #include "game/drone_anim.hpp"
@@ -462,20 +463,26 @@ void DroneSystem::after_tick(World& world, FrameTiming) {
         for (const auto& dp : drones_) {
             Drone& d = *dp;
             if (d.hidden || d.pending_delete) continue;
-            if (!rooms.view_can_reach(player->water.room, d.source_view_room, eye, right, up, forward,
-                                      tan_half_x, tan_half_y))
-                continue;
+            const bool room_visible = rooms.view_can_reach(player->water.room, d.source_view_room, eye, right, up,
+                                                           forward, tan_half_x, tan_half_y);
             const Vec3 delta = d.pos - eye;
             const float depth = dot(delta, forward);
             const float horizontal = std::abs(dot(delta, right));
             const float vertical = std::abs(dot(delta, up));
             const float radius = d.radius;
-            if (depth * tan_half_x + radius * x_radius < horizontal ||
-                depth * tan_half_y + radius * y_radius < vertical)
-                continue;
+            const bool in_frustum =
+                depth * tan_half_x + radius * x_radius >= horizontal &&
+                depth * tan_half_y + radius * y_radius >= vertical;
+            if (world.frame() == 15389)
+                std::fprintf(stderr, "VIEW frame=%llu id=%d rooms=%d/%d room_ok=%d eye=%.3f,%.3f,%.3f "
+                                     "delta=%.3f,%.3f,%.3f depth=%.3f h=%.3f v=%.3f radius=%.3f fov=%.3f\\n",
+                             static_cast<unsigned long long>(world.frame()), d.id, player->water.room,
+                             d.source_view_room, room_visible, eye[0], eye[1], eye[2], delta[0], delta[1], delta[2],
+                             depth, horizontal, vertical, radius, fovy);
+            if (!room_visible || !in_frustum) continue;
             d.anim.source_object_anim = 2;
-        }
     }
+}
 }
 
 }  // namespace nf::drone

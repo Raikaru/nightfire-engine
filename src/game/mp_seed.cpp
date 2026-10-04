@@ -872,6 +872,12 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
             const auto result = system.restore_snapshot(s, drone, bv, obj, route_nodes, route_path,
                                                         restore_route, participant_addresses, goal_targets);
             if (!result) throw std::runtime_error("MP seed: BotSystem restore rejected slot " + std::to_string(s) + " code " + std::to_string(int(result.code)) + " blob " + std::to_string(int(result.blob)) + " offset 0x" + [&] { std::ostringstream os; os << std::hex << result.offset; return os.str(); }());
+            if (bots::BotSystem::Bot* bot = system.bot_at_slot(s);
+                bot && bot->drone) {
+                bot->drone->source_view_room =
+                    world.rooms().find(bot->drone->pos, world.collision());
+                bot->drone->source_view_pos = bot->drone->pos;
+            }
             if (uint_number(source.at("seed_version")) >= 5) {
                 const Json* anim = item.find("anim");
                 if (!anim || !anim->at("layers_complete").boolean() ||

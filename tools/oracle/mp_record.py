@@ -27,6 +27,7 @@ import pathlib
 import shutil
 import socket
 import struct
+import subprocess
 import sys
 import time
 
@@ -43,6 +44,35 @@ def vpad(*words):
     reply = s.recv(256)
     s.close()
     return reply
+
+def set_pcsx2_paused(pine, paused):
+    """Toggle the visible PCSX2 VM through its System menu and verify via PINE."""
+    target = 1 if paused else 0
+    if pine.status() == target:
+        return
+    display = os.environ.get("PCSX2_DISPLAY") or os.environ.get("DISPLAY")
+    if not display:
+        raise RuntimeError("DISPLAY or PCSX2_DISPLAY is required to pause PCSX2 around LOADSTATE")
+    env = os.environ.copy()
+    env["DISPLAY"] = display
+    windows = subprocess.check_output(
+        ["xdotool", "search", "--onlyvisible", "--name", "007 - Nightfire"],
+        env=env, text=True).split()
+    if not windows:
+        raise RuntimeError("cannot find the visible PCSX2 game window")
+    window = windows[0]
+    subprocess.run(
+        ["xdotool", "mousemove", "--window", window, "25", "10", "click", "1"],
+        env=env, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(
+        ["xdotool", "mousemove", "--window", window, "45", "220", "click", "1"],
+        env=env, check=True, stdout=subprocess.DEVNULL)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if pine.status() == target:
+            return
+        time.sleep(0.02)
+    raise RuntimeError(f"PCSX2 did not become {'paused' if paused else 'running'}")
 
 
 def load_script(path):
@@ -476,12 +506,13 @@ def main():
     face_obj = 0
     rng_trace = None
     if args.load_slot is not None:
-        before = pine.read32(A.GS_FRAME_START)
+        set_pcsx2_paused(pine, True)
         pine.load_state(args.load_slot)
-        start = time.monotonic()
-        while abs(pine.read32(A.GS_FRAME_START) - before) <= 20 and time.monotonic() - start < 4.0:
-            time.sleep(0.001)
+        if pine.status() != 1:
+            set_pcsx2_paused(pine, True)
+        F.reset_ring(pine)
         rehydrate_trace_hooks(pine)
+        set_pcsx2_paused(pine, False)
     if args.rng_calls_preinstalled:
         rng_trace = R.attach(pine)
     if args.freeze_bot is not None:
