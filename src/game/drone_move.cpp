@@ -478,7 +478,6 @@ bool set_combat_move_anim(Drone& d, float dist) {
 
 // ---- per tick -------------------------------------------------------------------------------------------------------------
 void move_step(Drone& d) {
-    if (d.anim.source_gate_valid) d.anim.source_root_yaw = d.yaw;
     // NDrone2_Move 0x14fe?: steering, then the anim root motion moves the object (AnimObjectUpdate + AnimSeqTick).
     const float rec = d.sys->timing().rec();
     if (!d.mv.disabled) {
@@ -545,8 +544,9 @@ void move_step(Drone& d) {
         }
     }
 }
-void apply_animation_root_motion(Drone& d, const Vec3& root_delta, float yaw) {
-    d.pos += to_world(root_delta, yaw);
+void apply_animation_root_motion(Drone& d, const Vec3& root_delta, const std::array<Vec3, 3>& basis) {
+    const Vec3 world_delta = basis[0] * root_delta[0] + basis[1] * root_delta[1] + basis[2] * root_delta[2];
+    d.pos += world_delta;
 }
 
 void collision_step(Drone& d, const Vec3& pre_control_pos) {

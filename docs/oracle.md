@@ -253,10 +253,17 @@ retained as `assassin_ptr`, `target_ptr`, and `golden_target_ptr`. With
 resolve the shared layer/sequence schema at `pl[0..3].anim`.
 `golden_effect_handle` and `golden_effect_active` expose the GoldenEye effect
 actor; no remaining-effect tick value is mapped.
-Bot goal targets pointing to an objective descriptor (rather than directly to
-the root object) are resolved through the descriptor's first pointer plus
-`0x30`; `bot_goal_targets[].objective_index` therefore stays available for CTF
-seed reconstruction.
+Bot goal targets pointing to an objective descriptor are retained in
+`bot_goal_targets[]`; `bot_goal_target_changed[]` records frame-to-frame
+pointer changes (`from_ptr` and `target_ptr`). The recorder resolves direct
+`FLAGS[]`, `BASES[]`, and Demolition descriptor addresses to the matching
+`objectives[]` index, and resolves target-object descriptors through their
+first pointer plus `0x30`.
+
+`transient_hit_zone` remains a `state_missing` marker, not a seed-readiness
+failure: ACTION's `Player_HandlePain` receives the zone as a call argument,
+not a persistent end-of-frame field. It cannot be reconstructed from a RAM
+snapshot after the call has returned.
 
 For deterministic offline replay from an existing PCSX2 savestate, use
 `ee_oracle.py STATE.p2s OUT.jsonl --rows N [--inputs REC.jsonl]`. It runs the

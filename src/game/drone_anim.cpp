@@ -241,9 +241,13 @@ void prepare_source_animation_tick(Drone& d) {
         return;
     }
 
+    const float root_height = d.character
+                                  ? (d.character->root_height() + a.source_root_height_offset) *
+                                        a.source_root_height_scale
+                                  : 0.0f;
     const bool do_animation =
-        d.char_class == 0x0c || a.source_gate_root_height == 0.0f || a.source_object_anim ||
-        a.source_force_anim || (a.cur_flags & 4u) == 0;
+        d.char_class == 0x0c || root_height == 0.0f || a.source_object_anim || a.source_force_anim ||
+        (a.cur_flags & 4u) == 0;
     a.source_update_due = do_animation || a.source_anim_stamp == d.now();
 }
 
@@ -321,7 +325,7 @@ void anim_update(Drone& d) {
         a.source_callback_height = callback_height;
     }
     if (source_gate) {
-        apply_animation_root_motion(d, root_motion, a.source_root_yaw);
+        apply_animation_root_motion(d, root_motion, a.source_root_basis);
         d.mv.root_motion = {};
         a.source_gate_valid = false;
         a.source_update_due = true;

@@ -102,6 +102,7 @@ void Vu0::fmac(Op op, u32 inst, int sel, bool to_acc) {
         switch (op) {
             case Op::Add: v = fp::vu_add(a, b, fl); break;
             case Op::Sub: v = fp::vu_sub(a, b, fl); break;
+            case Op::Mul: v = fp::mul(a, b, fl); break;
             case Op::Madd: {
                 u32 ignore = 0;
                 v = fp::vu_add(acc.w[lane], fp::mul(a, b, ignore), fl);
