@@ -907,13 +907,43 @@ cylinder push-out instead of restoring that snapshot field.
 `Drone_FeetOnPoint` also returns a signed foot-to-hit separation through its
 fifth argument. When collbody `+0x60` bit 8 is set and that separation exceeds
 `-0.1`, `Drone_CollisionHandler` subtracts one eighth of it from object Y.
-The host mirrors this arithmetic after gravity using its selected ground hit
-and source `Drone+0xa0` stand height. Direct P2S execution at Team Arena frame
-13544 confirmed the `-0.0106039` store despite gravity being skipped. However,
-the seeded host replay from frame 13544 still has a 0.0121 Y residual for bot slot 5 at frame
-13545 (oracle 12.0798, engine 12.0919). The host feet-hit selection or tick
-phase therefore does not yet reproduce that captured correction; this is not
-a closed replay residual.
+The host uses source `Drone+0xa0` height and the captured `+0x400` endpoint
+when available. `FeetResult::nearest` retains the first ray hit even when the
+host ground-range/material filters reject it; this supplies the output delta.
+Direct P2S execution at Team Arena frame 13544 confirmed the `-0.0106039` store
+despite gravity being skipped. On the v5 dense Team seed at frame 13544, bot
+slot 5 Y now matches at 13545; remaining residuals are bot slot 6 Y (+0.0089)
+and Z (+0.0040) for each of frames 13545–13554.
+
+An earlier pre-Control P2S hit at Y `3.9454253` was stale for the host's
+post-Control ray. After `Drone_Control` then `Drone_CollisionHandler`, P2S
+returned hit Y `3.95749831` and separation `0.0119822`; the host query on the
+same ray returned Y `3.9574995` (about 1.2 μm different). The observed p6
+residual is therefore not evidence of a collision-mesh decode mismatch.
+
+The phase-aligned P2S ray selects source leaf box `0x009572b0`, triangle range
+`[177,234)`, vertex chunk 41. Only triangle 231 in that range intersects the
+ray; its material is 12 and its vertex indices are `(102,117,114)`. Source
+decompression (scale `1/1024`, offset `(-8.48975468, 7.08238935, 33.36190414)`)
+reproduces host placement 12 / triangle 231's three world vertices within
+`1e-6`; mesh decoding is not the cause of this residual.
+
+A v5 Arena seed at frame 14727 produced 5/10 position-divergent frames: bot slot
+5 Y differed by 1.1–1.6 mm at frames 14729–14733, and slot 6 Y by +3.4 mm at
+frame 14730. The other five frames matched within the 1 mm comparator tolerance.
+
+When a v5 snapshot has non-null `obj+0xd0`, source `Drone_CollisionHandler`
+adds the captured `Drone+0x3e0` response and does not apply the generic feet
+snap on that branch; the host mirrors this source gate. Direct P2S p6 execution
+measured the handler displacement equal to that vector within EE ULP precision.
+The v5 Team seed now matches all 10 tested frames. A peer-run Arena comparison
+seeded at 14729→30 reports p5 Y `-0.0016` and p6 Y `+0.0034` (host-push branch:
+p6 `+0.0033`). The captured p6 `Drone+0x3e0` Y changes by `-0.0034486` between
+rows 14729 and 14730; direct Control/Handler execution consumes the older value,
+so the later full-tick update that produces the row-14730 value is still unknown.
+A temporary importer-only lookahead using row 14730's vector removed that p6
+residual, confirming its magnitude; it was discarded because future-row state
+cannot drive production replay.
 
 Restoring an in-progress bot state clears the runtime fresh-drone flag so the
 next tick does not inject a Global `ENTER` and re-run `BotInit` over the

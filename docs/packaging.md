@@ -58,10 +58,10 @@ cmake --build build --parallel 2
 (cd build && cpack -G DragNDrop)
 ```
 
-CMake sets the macOS deployment target to 13.3 for standard-library floating-point `from_chars` support. It marks `nightfire` as an application bundle and configures CPack's `DragNDrop` DMG generator. `packaging/macos/Info.plist.in` documents bundle metadata. The bundle is not built or tested on Linux; validate bundle resource placement, signing/notarization and runtime library resolution on macOS before release. macOS user configuration and game data live under `~/Library/Application Support/Nightfire/`.
+CMake sets the macOS deployment target to 13.3. It marks `nightfire` as an application bundle and configures CPack's `DragNDrop` DMG generator. `packaging/macos/Info.plist.in` documents bundle metadata. The bundle is not built or tested on Linux; validate bundle resource placement, signing/notarization and runtime library resolution on macOS before release. macOS user configuration and game data live under `~/Library/Application Support/Nightfire/`.
 
 ## Disc data
 
-`nightfire` uses a first-run setup screen when no valid game data is configured. Choose the original PS2 ISO or a disc folder containing `SYSTEM.CNF`, `ACTION.ELF`, and `FILES.BIN`. The setup accepts the USA retail identifier `SLUS-20579`, extracts the two runtime files into the platform per-user data directory, runs `nfdump validate`, and saves the resulting path only after validation succeeds. A failed validation shows its error details and does not configure the data.
+`nightfire` uses a first-run setup screen when no valid game data is configured. Choose the original PS2 ISO or an extracted full-disc folder containing `SYSTEM.CNF`, `ACTION.ELF`, `FILES.BIN`, and the remaining directories. The setup accepts the USA retail identifier `SLUS-20579`, stages and installs the complete directory tree, reports the current file and total-byte progress, runs `nfdump validate`, and saves the path only after validation succeeds. A failed validation shows its error details and does not configure the data.
 
 Configuration uses `${XDG_CONFIG_HOME:-$HOME/.config}/nightfire/nightfire.cfg` on Linux, `%APPDATA%\\Nightfire\\nightfire.cfg` on Windows, and `~/Library/Application Support/Nightfire/nightfire.cfg` on macOS. Game files are stored under `${XDG_DATA_HOME:-$HOME/.local/share}/nightfire` on Linux, `%APPDATA%\\Nightfire\\data` on Windows, and `~/Library/Application Support/Nightfire/data` on macOS. Supplying `nightfire <gamedir>` remains supported and stores that directory for later launches.

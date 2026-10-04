@@ -248,15 +248,17 @@ SetupResult run_setup_wizard(AppConfig& config, const std::string& screenshot) {
                                     try {
                                         (void)identify_nightfire_disc(selected);
                                         const std::filesystem::path destination = user_data_path();
-                                        status = "Extracting required runtime files...";
+                                        status = "Preparing full disc extraction...";
                                         draw(status, 0, 1, 0);
                                         std::uint64_t progress = 0, total = 0;
-                                        extract_nightfire_disc(selected, destination, [&](std::uint64_t done, std::uint64_t all) {
-                                            progress = done;
-                                            total = all;
-                                            draw(status, progress, total, int(progress / (1024 * 1024)));
-                                            SDL_PumpEvents();
-                                        });
+                                        extract_nightfire_disc(selected, destination,
+                                            [&](const std::filesystem::path& file, std::uint64_t done, std::uint64_t all) {
+                                                progress = done;
+                                                total = all;
+                                                status = "Extracting " + clipped_path(file.generic_string());
+                                                draw(status, progress, total, int(progress / (1024 * 1024)));
+                                                SDL_PumpEvents();
+                                            });
                                         const std::filesystem::path log = destination / ".nfdump-validation.log";
                                         const std::string command = shell_quote(nfdump_path().string()) + " " +
                                             shell_quote(destination.string()) + " validate > " + shell_quote(log.string()) + " 2>&1";

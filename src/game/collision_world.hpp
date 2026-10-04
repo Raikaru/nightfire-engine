@@ -76,6 +76,8 @@ struct FeetResult {
     bool on_ground = false;
     // BLData+0x110 (written only when a ground ray hit was in range; otherwise 1.0).
     float ground_normal_y = 1.0f;
+    // First accepted ray hit, regardless of feet range or material filter.
+    std::optional<CollisionHit> nearest;
     // The in-range ground ray hit (iVar10 in the original), if any.
     std::optional<CollisionHit> ground;
     // The nearest ground ray hit whose material is non-zero (iVar9), used for footsteps / collbody.

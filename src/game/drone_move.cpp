@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 
 #include "game/drone_anim.hpp"
 #include "game/drone_system.hpp"
@@ -594,24 +593,20 @@ void collision_step(Drone& d) {
         }
         const CylinderResult r = world.cylinder(q);
         // Drone_CollisionHandler probes feet before applying its accumulated push.
-        const FeetResult feet = world.feet_on_point(d.pos, r.b, {0, 1, 0}, collision_height, r.contact);
-        if (source_collision_valid) {
-            std::fprintf(stderr, "feet-debug pos=(%.7f %.7f %.7f) due=%d h=%.7f b=(%.7f %.7f %.7f) ground=%d hit=(%.7f %.7f %.7f) dist=%.7f delta=%.7f\n",
-                         d.pos[0], d.pos[1], d.pos[2], source_collision_due, collision_height,
-                         r.b[0], r.b[1], r.b[2], feet.ground.has_value(),
-                         feet.ground ? feet.ground->point[0] : 0.0f,
-                         feet.ground ? feet.ground->point[1] : 0.0f,
-                         feet.ground ? feet.ground->point[2] : 0.0f,
-                         feet.ground ? feet.ground->dist : 0.0f,
-                         feet.ground ? (d.pos[1] - collision_height) - feet.ground->point[1] : 0.0f);
-        }
+        const Vec3 feet_top = d.is_bot() && d.mv.seeded_capsule_valid
+                                  ? d.pos + to_world(d.mv.seeded_capsule_b_offset, d.yaw)
+                                  : r.b;
+        const FeetResult feet = world.feet_on_point(d.pos, feet_top, {0, 1, 0}, collision_height, r.contact);
         d.on_ground = feet.on_ground;
-        if (source_collision_valid && source_collision_due && !d.mv.disabled && feet.ground) {
-            source_feet_delta = (d.pos[1] - collision_height) - feet.ground->point[1];
+        if (source_collision_valid && source_collision_due && !d.mv.disabled && feet.nearest) {
+            source_feet_delta = (d.pos[1] - collision_height) - feet.nearest->point[1];
             source_feet_delta_valid = true;
         }
         d.ground_normal_y = feet.ground_normal_y;
-        if (!r.hits.empty()) {
+        // The source handler tests obj+0xD0 and applies Drone+0x3E0 on this branch.
+        if (source_collision_valid && source_collision_due && d.anim.source_hit_list_present) {
+            d.pos += d.anim.source_collision_push;
+        } else if (!r.hits.empty()) {
             d.pos += r.push_out;
         }
     } else {
@@ -631,7 +626,9 @@ void collision_step(Drone& d) {
         d.fall_velocity[1] = std::clamp(d.fall_velocity[1], -45.0f, 45.0f);
         d.pos = d.pos + d.fall_velocity * timing.rec();
     }
-    if (source_feet_delta_valid && d.on_ground && source_feet_delta > -0.1f) {
+    // The D0 path applies the source push response rather than the host's generic feet snap.
+    if (source_feet_delta_valid && d.on_ground && source_feet_delta > -0.1f &&
+        !(source_collision_valid && d.anim.source_hit_list_present)) {
         d.pos[1] -= source_feet_delta * 0.125f;
     }
 

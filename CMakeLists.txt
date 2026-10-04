@@ -159,21 +159,29 @@ add_executable(nfgame src/game/main.cpp src/game/nfgame_mp.cpp src/game/nfgame_w
 target_link_libraries(nfgame PRIVATE nf_game nf_render nf_audio)
 target_compile_options(nfgame PRIVATE ${NF_WARNINGS})
 
-# EE/R5900 headless interpreter + harness (docs/ee.md). nf_ee needs only
-# zlib/zstd; nfmips additionally links nf_assets for the weapon_data check.
-file(GLOB NF_EE_SOURCES CONFIGURE_DEPENDS src/ee/*.cpp)
-add_library(nf_ee STATIC ${NF_EE_SOURCES})
-target_include_directories(nf_ee PUBLIC src)
-find_package(ZLIB REQUIRED)
-find_library(ZSTD_LIB zstd REQUIRED)
-find_path(ZSTD_INCLUDE zstd.h REQUIRED)
-target_include_directories(nf_ee PRIVATE ${ZSTD_INCLUDE})
-target_link_libraries(nf_ee PUBLIC ZLIB::ZLIB ${ZSTD_LIB})
-target_compile_options(nf_ee PRIVATE ${NF_WARNINGS})
+if(MSVC)
+  set(NF_BUILD_EE_TOOLS_DEFAULT OFF)
+else()
+  set(NF_BUILD_EE_TOOLS_DEFAULT ON)
+endif()
+option(NF_BUILD_EE_TOOLS "Build the developer-only EE interpreter and nfmips tools" ${NF_BUILD_EE_TOOLS_DEFAULT})
+if(NF_BUILD_EE_TOOLS)
+  # EE/R5900 headless interpreter + harness (docs/ee.md). nf_ee needs only
+  # zlib/zstd; nfmips additionally links nf_assets for the weapon_data check.
+  file(GLOB NF_EE_SOURCES CONFIGURE_DEPENDS src/ee/*.cpp)
+  add_library(nf_ee STATIC ${NF_EE_SOURCES})
+  target_include_directories(nf_ee PUBLIC src)
+  find_package(ZLIB REQUIRED)
+  find_library(ZSTD_LIB zstd REQUIRED)
+  find_path(ZSTD_INCLUDE zstd.h REQUIRED)
+  target_include_directories(nf_ee PRIVATE ${ZSTD_INCLUDE})
+  target_link_libraries(nf_ee PUBLIC ZLIB::ZLIB ${ZSTD_LIB})
+  target_compile_options(nf_ee PRIVATE ${NF_WARNINGS})
 
-add_executable(nfmips src/tools/nfmips.cpp)
-target_link_libraries(nfmips PRIVATE nf_ee nf_assets nf_game)   # nf_game: diff-input compares nf::map_inputs
-target_compile_options(nfmips PRIVATE ${NF_WARNINGS})
+  add_executable(nfmips src/tools/nfmips.cpp)
+  target_link_libraries(nfmips PRIVATE nf_ee nf_assets nf_game)
+  target_compile_options(nfmips PRIVATE ${NF_WARNINGS})
+endif()
 
 # Online multiplayer wire protocol and UDP transport.
 add_library(nf_net STATIC src/net/net.cpp)
@@ -211,7 +219,11 @@ if(APPLE)
     MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1.0")
 endif()
 
-install(TARGETS nightfire nfgame nfserver nfmaster nfui nfdump nfmips nfview nfdrive nfplay nfnet-test nfnet-predict-diff
+set(NF_INSTALL_TARGETS nightfire nfgame nfserver nfmaster nfui nfdump nfview nfdrive nfplay nfnet-test nfnet-predict-diff)
+if(NF_BUILD_EE_TOOLS)
+  list(APPEND NF_INSTALL_TARGETS nfmips)
+endif()
+install(TARGETS ${NF_INSTALL_TARGETS}
   RUNTIME DESTINATION bin
   BUNDLE DESTINATION .)
 install(DIRECTORY assets/ui/ DESTINATION share/nightfire/assets/ui

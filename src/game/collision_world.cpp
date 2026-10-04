@@ -695,6 +695,7 @@ FeetResult CollisionWorld::feet_on_point(const Vec3& pos, const Vec3& top, const
     const auto hits = ray_hits(pos, to, 0xC, 8);
     if (!hits.empty()) {
         const CollisionHit& nearest = hits.front();
+        r.nearest = nearest;
         if (nearest.material != 0) r.surface = nearest;
         if (nearest.dist - kBoxPad <= stand_height) {
             r.ground = nearest;

@@ -2,7 +2,7 @@ name: Packages
 
 on:
   push:
-    branches: [master]
+    branches: [master, 'ci/**']
   pull_request:
   workflow_dispatch:
 
