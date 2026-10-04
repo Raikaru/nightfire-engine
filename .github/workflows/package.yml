@@ -215,7 +215,7 @@ jobs:
           "$RUNNER_TEMP/iso-smoke" "$RUNNER_TEMP/nightfire-usa.iso" "$HOME/data/nightfire"
           "$NFDUMP" "$HOME/data/nightfire" validate | tee "$RUNNER_TEMP/nfdump.log"
           grep -q 'failures 0' "$RUNNER_TEMP/nfdump.log"
-          "$NIGHTFIRE" "$HOME/data/nightfire" --page 0x40000002 --shot "$RUNNER_TEMP/nightfire-shots/main-menu.bmp"
+          xvfb-run -a "$NIGHTFIRE" "$HOME/data/nightfire" --page 0x40000002 --shot "$RUNNER_TEMP/nightfire-shots/main-menu.bmp"
       - name: Reject a wrong file
         run: |
           printf 'not an ISO image\n' > "$RUNNER_TEMP/wrong-disc.iso"
