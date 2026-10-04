@@ -1200,12 +1200,24 @@ void WeaponSystem::post_tick_rng() {
     }
 }
 
-void WeaponSystem::tick(World& world, FrameTiming timing) {
+void WeaponSystem::after_player_update(World& world, FrameTiming timing) {
+    if (tuning_.mode != GameMode::Multiplayer) return;
     world_ = &world;
     timing_ = timing;
     for (int slot = 0; slot < World::kMaxPlayers; ++slot) {
         ensure_player(slot, world);
         if (players_[std::size_t(slot)]) tick_player(slot, world, timing);
+    }
+}
+
+void WeaponSystem::tick(World& world, FrameTiming timing) {
+    world_ = &world;
+    timing_ = timing;
+    if (tuning_.mode != GameMode::Multiplayer) {
+        for (int slot = 0; slot < World::kMaxPlayers; ++slot) {
+            ensure_player(slot, world);
+            if (players_[std::size_t(slot)]) tick_player(slot, world, timing);
+        }
     }
     step_projectiles(world, timing);
     for (int slot = 0; slot < World::kMaxPlayers; ++slot) {

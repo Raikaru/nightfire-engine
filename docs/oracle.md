@@ -236,12 +236,14 @@ Use `python3 tools/oracle/mp_record.py OUT.jsonl --load-slot SLOT --seedable
 the end-of-`Game_Run` frame ring; objective blobs, weapon-animation objects,
 bot route-node buffers, AI path graphs, and bot body-animation layers are
 included in its immutable snapshot. Dynamic pointers are checked against the
-sampled records; when a pointer changes, the recorder refreshes that range
-schema and skips the transition sample. Bot collision-body bytes are also
-captured per seedable frame as `pl[4..7].cb_raw` (0xD0 bytes from each bot's
-`obj_tag+0xDC` owner/collision-body block); bytes `+0xCC..+0xCF` are the
-collision foot-height baseline. Bot collision-body data is required for
-`seed_ready`. Each accepted row carries
+sampled records. When a pointer changes, the recorder refreshes that range
+schema but still emits the frame, with `partial: true`, `seed_ready: false`,
+and `state_missing` naming only fields whose pointed-to bytes were not part of
+that frame's snapshot. All other fields in the transition row remain captured.
+Bot collision-body bytes are also captured per seedable frame as
+`pl[4..7].cb_raw` (0xD0 bytes from each bot's `obj_tag+0xDC` owner/collision-body
+block); bytes `+0xCC..+0xCF` are the collision foot-height baseline. Bot
+collision-body data is required for `seed_ready`. Each complete row carries
 `seed_version: 5`, the separately sampled GameState+0x34 `timer_frame`, four RNG
 words, four controller inputs (`pad_all`), MP settings/game state, the eight
 `mp_roster` records, indexed `pk[]` pickup records, every objective extension
@@ -311,12 +313,15 @@ python3 tools/oracle/ee_oracle.py fill CHECKPOINTS/ pcsx2.jsonl filled.jsonl \
 
 Each adjacent checkpoint pair is replayed as a dense inclusive frame interval;
 the shared boundary row is emitted once. Every generated frame present in the
-PCSX2 JSONL is compared field by field (absolute float tolerance `0.001` by
-default; `--tolerance` changes it). A segment with no overlapping reference
-rows or any mismatch makes the command fail and leaves the requested output
-unwritten. Only a fully validated fill is atomically written to `filled.jsonl`.
-Use `--verbose` to print each mismatching field. Supply `--inputs` when the
-replay needs the recorded pad stream.
+PCSX2 JSONL is compared against its reference. Full rows require all flattened
+fields to match; `partial: true` transition rows compare every field they do
+contain, and the validated dense output uses the complete generated row in
+their place. Float comparison uses absolute tolerance `0.001` by default;
+`--tolerance` changes it. A segment with no overlapping reference rows or any
+mismatch makes the command fail and does not write or replace the requested output.
+Only a fully validated fill is atomically written to `filled.jsonl`. Use
+`--verbose` to print each mismatching field. Supply `--inputs` when the replay
+needs the recorded pad stream.
 
 The headless caller returns success for kernel semaphore/event-flag services
 64–79, coherent-memory `FlushCache` service 100, SIF-DMA services 118–119, and
@@ -1033,10 +1038,18 @@ countdown: `Game_Run` calls `MP_Update` (which runs `Drone_Control`) before
 passes set it to 2 for selected objects. The host consumes the seeded counter
 at the animation gate, decrements after control, and refreshes visible bots in
 its post-tick view pass; `Drone+0x580` is not part of this gate.
-`View_AddCels` also culls each candidate cel with `Vision_InView` using its
-center/radius before adding its objects. The host uses the room model's
-enclosing AABB sphere for that test and retains portal-clipped traversal for
-cells outside that direct sphere pass.
+`View_AddCels` (0x1E6BA0) calls `Vision_InView` (0x1E89E0) with each
+candidate cel's own `cel+0x8c` radius and `cel+0x80` center before adding its
+objects. The map parser's `parseentity_transform_bounding_box` (0x1D0FB0)
+transforms the model sphere center and copies its model radius unchanged;
+the host stores that sphere and tests it against the four camera side planes.
+There is no portal-recursion fallback in this cel-visibility decision.
+In multiplayer, `World::tick` keeps the Game_Run boundary explicit: player
+movement/collision and player-weapon updates precede `MP_Update`, then
+`Drone_InitComms` prepares global opponent/sight state before object-control
+callbacks; camera updates follow those callbacks. The object handler traverses
+a head-inserted list (`control_add_object_to_list`, 0x134698), so the host
+preserves the major frame phases and visits drones newest-first.
 
 `NDrone2_SetAngleToDest` and `NDrone2_SetAngleToObj` call
 `ATAN2_APPROX__Fff`; the host uses `atan2_approx` for these movement-heading

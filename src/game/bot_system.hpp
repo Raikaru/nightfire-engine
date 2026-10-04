@@ -93,6 +93,7 @@ public:
     void start();
 
     void tick(World& world, FrameTiming timing) override;
+    MultiplayerPhase multiplayer_phase() const override { return MultiplayerPhase::MpUpdate; }
     void after_tick(World& world, FrameTiming timing) override;
     // DroneWeap_DropWeapon: create the death drop without changing the bot armoury's current weapon or ammo.
     void drop_weapon(drone::Drone& drone);

@@ -43,11 +43,9 @@ public:
     // control_handle_cel_change for an object that moved `from` -> `to` while in `room` (kNone = not linked):
     // through a portal of the room, else (still inside the room's box) unchanged, else find(to).
     int track(int room, const Vec3& from, const Vec3& to, const CollisionWorld& world) const;
-    // Allocation-free cel tracking for the headless view pass; portal crossings retain the source cel link.
-    int track_view(int room, const Vec3& from, const Vec3& to) const;
-    // View_AddCels tests source cell spheres; portal traversal clips the recurse list against the frustum.
-    bool view_can_reach(int from, int target, const Vec3& eye, const Vec3& right, const Vec3& up,
-                        const Vec3& forward, float tan_half_x, float tan_half_y) const;
+    // View_AddCels (0x1E6BA0): Vision_InView (0x1E89E0) tests each cel's own sphere.
+    bool cell_in_view(int target, const Vec3& eye, const Vec3& right, const Vec3& up,
+                      const Vec3& forward, float tan_half_x, float tan_half_y) const;
     // cel+0x90 (kNoWater for kNone).
     float water_level(int room) const;
 
@@ -70,6 +68,8 @@ private:
         std::size_t placement;   // index into Level::placements(): where the collision of this room lives
         Vec3 min, max;
         float water;
+        Vec3 sphere_center;
+        float sphere_radius;
         std::vector<Portal> portals;   // in the order Cel_ObjectLeftCel visits them (last built first)
     };
     bool crosses_portal(const Portal& portal, const Vec3& from, const Vec3& to) const;

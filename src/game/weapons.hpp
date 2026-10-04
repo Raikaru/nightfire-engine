@@ -222,6 +222,7 @@ public:
     Vec3 aim_direction(int slot, const World& world) const;
 
     // --- simulation ---------------------------------------------------------------------------------
+    void after_player_update(World& world, FrameTiming timing) override;
     void tick(World& world, FrameTiming timing) override;
     WeaponEvents& events() { return events_; }               // cleared by the consumer
     const std::vector<Projectile>& projectiles() const { return projectiles_; }

@@ -114,15 +114,32 @@ void World::tick(const PadInputs& pads, FrameTiming timing) {
     for (int i = 0; i < kMaxPlayers; ++i)
         inputs_[std::size_t(i)].update(pads[std::size_t(i)], tables_, settings_[std::size_t(i)], i);
     for (auto& s : systems_) s->before_player_update(*this, timing);
+    const bool multiplayer = params_.health.damage.mode == GameMode::Multiplayer;
+    if (!multiplayer) {
+        for (auto& p : players_)
+            if (p) p->update_camera(timing);
+        for (auto& s : systems_) s->tick(*this, timing);
+        for (auto& s : systems_) s->after_tick(*this, timing);
+        return;
+    }
+
+    // Mission_Update advances players before Game_Run enters MP_Update.
     for (int i = 0; i < kMaxPlayers; ++i)
         if (auto& p = players_[std::size_t(i)])
             p->update(inputs_[std::size_t(i)], settings_[std::size_t(i)], collision_, timing);
     for (auto& p : players_)
         if (p) p->resolve_collisions(collision_);
+    for (auto& s : systems_) s->after_player_update(*this, timing);
+
+    // Game_Run calls MP_Update before control_movement_object_handler.
+    for (auto& s : systems_)
+        if (s->multiplayer_phase() == MultiplayerPhase::MpUpdate) s->tick(*this, timing);
+    for (auto& s : systems_) s->before_object_update(*this, timing);
+    for (auto& s : systems_)
+        if (s->multiplayer_phase() == MultiplayerPhase::ObjectControl) s->tick(*this, timing);
+    for (auto& s : systems_) s->after_tick(*this, timing);
     for (auto& p : players_)
         if (p) p->update_camera(timing);
-    for (auto& s : systems_) s->tick(*this, timing);
-    for (auto& s : systems_) s->after_tick(*this, timing);
 }
 
 void World::replay_player(int index, const ActionInput& input, FrameTiming timing) {

@@ -392,7 +392,15 @@ void DroneSystem::emit_noise(const Vec3& pos, float loudness, int source) {
     }
 }
 
-// ---- tick ------------------------------------------------------------------------------------------------
+// Drone_InitComms runs before control_movement_object_handler walks the object list.
+void DroneSystem::before_object_update(World&, FrameTiming) {
+    los_rays = 0;
+    count_enemies = count_friends = count_neutral = 0;
+    process_opponents(*this);
+    process_drone_sight(*this);
+    object_prelude_done_ = true;
+}
+
 void DroneSystem::tick(World&, FrameTiming timing) {
     timing_ = timing;
     // Drone_SM_SendDelayedMsgs
@@ -402,15 +410,18 @@ void DroneSystem::tick(World&, FrameTiming timing) {
         post(m);
     }
     if (nav_) nav_->begin_frame(now());
-    los_rays = 0;
-    count_enemies = count_friends = count_neutral = 0;
+    if (!object_prelude_done_) {
+        los_rays = 0;
+        count_enemies = count_friends = count_neutral = 0;
+        process_opponents(*this);
+        process_drone_sight(*this);
+    }
+    object_prelude_done_ = false;
 
-    process_opponents(*this);   // Drone_ProcessOpponents
-    process_drone_sight(*this); // DroneVision_ProcessDroneSight (+ FindAlertedDrones)
-
+    // control_add_object_to_list inserts each new drone at the head of the source dynamic-object list.
     std::vector<int> ids;
     ids.reserve(drones_.size());
-    for (const auto& d : drones_) ids.push_back(d->id);
+    for (auto it = drones_.rbegin(); it != drones_.rend(); ++it) ids.push_back((*it)->id);
     for (int id : ids) {
         Drone* d = find(id);
         if (!d) continue;
@@ -440,7 +451,7 @@ void DroneSystem::after_tick(World& world, FrameTiming) {
     const RoomMap& rooms = world.rooms();
     for (const auto& dp : drones_) {
         Drone& d = *dp;
-        d.source_view_room = rooms.track_view(d.source_view_room, d.source_view_pos, d.pos);
+        d.source_view_room = rooms.track(d.source_view_room, d.source_view_pos, d.pos, world.collision());
         d.source_view_pos = d.pos;
     }
 
@@ -459,13 +470,10 @@ void DroneSystem::after_tick(World& world, FrameTiming) {
         const float tan_half_x = tan_half_y * kPs2Aspect;
         const float x_radius = std::sqrt(1.0f + tan_half_x * tan_half_x);
         const float y_radius = std::sqrt(1.0f + tan_half_y * tan_half_y);
-        // Camera_SetToPlayer places the viewer at the head; track its cel from the body-linked room.
-        const int view_room = rooms.track_view(player->water.room, player->pos, eye);
         for (const auto& dp : drones_) {
             Drone& d = *dp;
             if (d.hidden || d.pending_delete) continue;
-            const bool room_visible = rooms.view_can_reach(view_room, d.source_view_room, eye, right, up,
-                                                           forward, tan_half_x, tan_half_y);
+            if (!rooms.cell_in_view(d.source_view_room, eye, right, up, forward, tan_half_x, tan_half_y)) continue;
             const Vec3 delta = d.pos - eye;
             const float depth = dot(delta, forward);
             const float horizontal = std::abs(dot(delta, right));
@@ -474,7 +482,7 @@ void DroneSystem::after_tick(World& world, FrameTiming) {
             const bool in_frustum =
                 depth * tan_half_x + radius * x_radius >= horizontal &&
                 depth * tan_half_y + radius * y_radius >= vertical;
-            if (!room_visible || !in_frustum) continue;
+            if (!in_frustum) continue;
             d.anim.source_object_anim = 2;
     }
 }

@@ -38,12 +38,16 @@ PlayerParams player_params_from_tuning(std::string_view tuning_vars_txt, std::st
 
 class World;
 
-// System phases mirror the source frame: MP_Update work runs after player motion, then object callbacks after all
-// multiplayer updates (Game_Run calls MP_Update before control_movement_object_handler).
+// System phases mirror the source multiplayer frame: MP_Update before player/object movement, then object callbacks.
+enum class MultiplayerPhase : std::uint8_t { MpUpdate, ObjectControl };
+
 class System {
 public:
     virtual ~System() = default;
     virtual void before_player_update(World&, FrameTiming) {}
+    virtual void after_player_update(World&, FrameTiming) {}
+    virtual MultiplayerPhase multiplayer_phase() const { return MultiplayerPhase::ObjectControl; }
+    virtual void before_object_update(World&, FrameTiming) {}
     virtual void tick(World& world, FrameTiming timing) = 0;
     virtual void after_tick(World&, FrameTiming) {}
 };

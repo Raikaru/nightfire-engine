@@ -60,13 +60,22 @@ def _flatten(row):
 
 
 def _compare_rows(reference, generated, tolerance):
-    # `checkpoint` describes the host-side P2S save transaction, not EE state;
-    # the replay has no equivalent capture-provenance object.
-    reference = {key: value for key, value in reference.items() if key != "checkpoint"}
+    # Checkpoint and partial/resync markers describe host-side capture state,
+    # not EE state. A partial row can validate only the fields it captured.
+    partial = reference.get("partial") is True
+    metadata = {"checkpoint", "partial", "resync", "state_missing", "seed_ready"}
+    reference = {key: value for key, value in reference.items() if key not in metadata}
+    generated = {key: value for key, value in generated.items() if key not in metadata}
     expected = _flatten(reference)
     actual = _flatten(generated)
+    if partial:
+        expected = {field: value for field, value in expected.items()
+                    if not field.endswith(".complete")}
+        actual = {field: value for field, value in actual.items()
+                  if not field.endswith(".complete")}
     mismatches = []
-    for field in sorted(expected.keys() | actual.keys()):
+    fields = expected.keys() & actual.keys() if partial else expected.keys() | actual.keys()
+    for field in sorted(fields):
         if field not in expected:
             mismatches.append((field, "<missing>", actual[field], None))
         elif field not in actual:
@@ -108,6 +117,9 @@ def main(argv=None):
             parser.error(f"file does not exist: {path}")
     checkpoints = _checkpoints(args.checkpoints)
     output = pathlib.Path(args.out).expanduser().resolve()
+    reference = pathlib.Path(args.reference).expanduser().resolve()
+    if output == reference:
+        parser.error("out and reference must be different files")
     output.parent.mkdir(parents=True, exist_ok=True)
 
     field_counts = collections.Counter()
@@ -120,7 +132,7 @@ def main(argv=None):
     with tempfile.TemporaryDirectory(prefix="ee-oracle-fill-", dir=output.parent) as temp_dir:
         temp_dir = pathlib.Path(temp_dir)
         staged = temp_dir / "filled.jsonl"
-        reference_rows = iter(_records(args.reference))
+        reference_rows = iter(_records(reference))
         ref = next(reference_rows, None)
         with staged.open("w", encoding="utf-8") as out:
             for segment_index, ((first_frame, state), (end_frame, _)) in enumerate(
@@ -147,22 +159,28 @@ def main(argv=None):
                 subprocess.run(command, check=True)
 
                 segment_common = 0
+                segment_rows = 0
+                segment_start = segment_end = None
                 for generated in _records(segment_path):
                     frame = generated["frame"]
+                    if segment_rows == 0:
+                        segment_start = frame
+                    segment_rows += 1
+                    segment_end = frame
                     if not first_frame <= frame <= end_frame:
                         raise ValueError(
                             f"segment {first_frame}..{end_frame} emitted frame {frame}")
-                    if last_frame is not None and frame == last_frame:
-                        # Adjacent replay windows both include their shared checkpoint.
-                        continue
-                    if last_frame is not None and frame != last_frame + 1:
+                    duplicate_boundary = last_frame is not None and frame == last_frame
+                    if (last_frame is not None and not duplicate_boundary
+                            and frame != last_frame + 1):
                         raise ValueError(f"filled rows have a gap before frame {frame}")
                     while ref is not None and ref["frame"] < frame:
                         ref = next(reference_rows, None)
                     if ref is not None and ref["frame"] == frame:
                         mismatches = _compare_rows(ref, generated, args.tolerance)
                         segment_common += 1
-                        common_rows += 1
+                        if not duplicate_boundary:
+                            common_rows += 1
                         if mismatches:
                             for field, expected, actual, delta in mismatches:
                                 field_counts[field] += 1
@@ -177,9 +195,16 @@ def main(argv=None):
                                 print(f"frame {frame}: {len(mismatches)} differing fields; "
                                       f"first {field}: PCSX2={expected!r} EE={actual!r} "
                                       f"residual={delta!r}", file=sys.stderr)
+                    if duplicate_boundary:
+                        continue
                     out.write(json.dumps(generated, separators=(",", ":")) + "\n")
                     last_frame = frame
                     total_rows += 1
+                if (segment_rows != row_count or segment_start != first_frame
+                        or segment_end != end_frame):
+                    raise ValueError(
+                        f"segment {first_frame}..{end_frame} emitted "
+                        f"{segment_rows} rows ({segment_start}..{segment_end})")
                 if segment_common == 0:
                     unmatched_segments.append((first_frame, end_frame))
                 print(f"checkpoint segment {first_frame}..{end_frame}: "
