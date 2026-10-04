@@ -256,8 +256,10 @@ seed reconstruction.
 For deterministic offline replay from an existing PCSX2 savestate, use
 `ee_oracle.py STATE.p2s OUT.jsonl --rows N [--inputs REC.jsonl]`. It runs the
 original `Game_Run` through `nfmips`, emits the P2S contents as row one, then
-advances the GameState frame/timer counters and applies the corresponding
-`pad_all` values before each following call. `N` includes the initial row; pad
+advances GameState's frame/timer counters and the video-frame accumulator
+using `GameFlow_Main`'s `VIDEO_FRAME_RATE / FRAME_RATE_INT` edge, then applies
+the corresponding `pad_all` values before each following call. `N` includes
+the initial row; pad
 input must cover every frame after that row. Row numbers come from the saved
 GameState counters, not the P2S filename or requested checkpoint frame. The
 input word is the raw active-high Sony tSlot mask (for example, Cross is

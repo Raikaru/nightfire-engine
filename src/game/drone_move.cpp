@@ -2,7 +2,9 @@
 #include "game/drone_move.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstdio>
 
 #include "game/drone_anim.hpp"
 #include "game/drone_system.hpp"
@@ -516,6 +518,10 @@ void move_step(Drone& d) {
              std::cos(d.yaw) * d.anim.step * d.sys->timing().FRAME_RATE_MUL};
     }
     d.pos += w;
+    if (d.player_slot == 4)
+        std::fprintf(stderr, "MOVE %u %08x %08x %08x\n", d.now(),
+                     std::bit_cast<std::uint32_t>(w[2]), std::bit_cast<std::uint32_t>(d.pos[2]),
+                     std::bit_cast<std::uint32_t>(before[2]));
     d.mv.speed = dist2d(before, d.pos);
     d.velocity = (d.pos - before) * d.rate();
     // DroneMove_NoBunching: keep drones from stacking on one spot.
@@ -646,6 +652,8 @@ void collision_step(Drone& d, const Vec3& pre_control_pos) {
     if (source_feet_delta_valid && !source_hit_list_present && d.on_ground && source_feet_delta > -0.1f) {
         d.pos[1] -= source_feet_delta * 0.125f;
     }
+    if (d.player_slot == 4)
+        std::fprintf(stderr, "COLL %u %08x\n", d.now(), std::bit_cast<std::uint32_t>(d.pos[2]));
 
 }
 

@@ -2626,6 +2626,7 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
     constexpr u32 kDone = kGameState + 0x30;
     constexpr u32 kFrame = kGameState + 0x34;
     constexpr u32 kFrameAccumulator = kGameState + 0x38;
+    constexpr u32 kFrameStart = kGameState + 0x3C;
     constexpr u32 kTslot0 = 0x00245680;
     constexpr u32 kTslotStride = 0x180;
     constexpr u32 kPadInput = 0x120;
