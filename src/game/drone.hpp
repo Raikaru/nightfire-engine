@@ -383,7 +383,10 @@ public:
         bool applied = false;           // +0x57b the request has been turned into a clip
         bool clip_running = false;      // +0x579 non-looping clip not yet finished
         bool loop = true;
-        float step = 0;                 // +0x58c Drone_AnimInfo +4 (per-tick forward step, no-anim fallback)
+        bool source_gate_valid = false; // one-tick v5 AnimObjectUpdate eligibility from source Drone_Control
+        bool source_update_due = true;  // NDrone2_DoAnimation or frame-stamp equality
+        float source_root_yaw = 0;
+        float step = 0;                 // +0x58c scalar fallback when AnimObjectUpdate is skipped
     } anim;
     // NDrone2 locomotion state (steering target, route, per-tick displacement).
     struct Move {

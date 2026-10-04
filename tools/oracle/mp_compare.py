@@ -162,7 +162,27 @@ def flatten_fields(value, prefix="", fields=None):
     return fields
 
 
-def diff_fields(record):
+def objective_goal_target(record, target_ptr, engine_objectives):
+    """Translate a source objective-data pointer through the paired objective roster."""
+    source = None
+    for base, kind in ((0x317210, 0), (0x317330, 1)):
+        offset = target_ptr - base
+        if 0 <= offset < 2 * 0x90 and offset % 0x90 == 0:
+            team = offset // 0x90
+            source = next((row for row in record.get("objectives", [])
+                           if row.get("kind") == kind and row.get("team") == team), None)
+            break
+    if source is None and target_ptr == 0x3178D0:
+        source = next((row for row in record.get("objectives", [])
+                       if row.get("kind") == 3), None)
+    if source is None:
+        return None
+    match = next((row for row in engine_objectives
+                  if row.get("kind") == source.get("kind") and row.get("team") == source.get("team")), None)
+    return match.get("idx") if match is not None else None
+
+
+def diff_fields(record, engine_objectives=()):
     fields = {}
     if "timer_frame" in record:
         fields["timer_frame"] = record["timer_frame"]
@@ -226,7 +246,11 @@ def diff_fields(record):
                                     player["goal_target"] = ref[field]
                                     break
                             else:
-                                player.pop("goal_target")
+                                target = objective_goal_target(record, target_ptr, engine_objectives)
+                                if target is None:
+                                    player.pop("goal_target")
+                                else:
+                                    player["goal_target"] = target
                         else:
                             player.pop("goal_target")
         common = {"pos", "yaw", "type", "state", "hp", "alive", "out", "mp_status"}
@@ -504,7 +528,7 @@ def diff(oracle_path, engine_path, tolerance=0.001, verbose=False):
     first = None
     divergent_frames = 0
     for frame in common:
-        expected = diff_fields(oracle[frame])
+        expected = diff_fields(oracle[frame], engine[frame].get("objs", []))
         actual = diff_fields(engine[frame])
         source_pk = {int(p["idx"]): p for p in oracle[frame].get("pk", []) if "idx" in p}
         recorder_only = set()

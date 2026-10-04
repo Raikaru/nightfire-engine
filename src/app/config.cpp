@@ -13,9 +13,35 @@
 namespace nf::app {
 
 std::filesystem::path config_path() {
+#if defined(_WIN32)
+    if (const char* appdata = std::getenv("APPDATA"); appdata && *appdata)
+        return std::filesystem::path(appdata) / "Nightfire" / "nightfire.cfg";
+#elif defined(__APPLE__)
+    if (const char* home = std::getenv("HOME"); home && *home)
+        return std::filesystem::path(home) / "Library" / "Application Support" / "Nightfire" / "nightfire.cfg";
+#else
+    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg)
+        return std::filesystem::path(xdg) / "nightfire" / "nightfire.cfg";
     if (const char* home = std::getenv("HOME"); home && *home)
         return std::filesystem::path(home) / ".config" / "nightfire" / "nightfire.cfg";
+#endif
     return std::filesystem::path("nightfire.cfg");
+}
+
+std::filesystem::path user_data_path() {
+#if defined(_WIN32)
+    if (const char* appdata = std::getenv("APPDATA"); appdata && *appdata)
+        return std::filesystem::path(appdata) / "Nightfire" / "data";
+#elif defined(__APPLE__)
+    if (const char* home = std::getenv("HOME"); home && *home)
+        return std::filesystem::path(home) / "Library" / "Application Support" / "Nightfire" / "data";
+#else
+    if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg)
+        return std::filesystem::path(xdg) / "nightfire";
+    if (const char* home = std::getenv("HOME"); home && *home)
+        return std::filesystem::path(home) / ".local" / "share" / "nightfire";
+#endif
+    return std::filesystem::path("nightfire-data");
 }
 
 namespace {
@@ -23,7 +49,8 @@ namespace {
 void set_key(AppConfig& c, const std::string& key, const std::string& value) {
     const int n = std::atoi(value.c_str());
     const bool b = n != 0;
-    if (key == "sfx_volume") c.sfx_volume = std::clamp(n, 0, 100);
+    if (key == "game_dir") c.game_dir = value;
+    else if (key == "sfx_volume") c.sfx_volume = std::clamp(n, 0, 100);
     else if (key == "music_volume") c.music_volume = std::clamp(n, 0, 100);
     else if (key == "controller_style") c.controller_style = n;
     else if (key == "invert_y") c.invert_y = b;
@@ -74,6 +101,7 @@ bool save_config(const std::filesystem::path& path, const AppConfig& c) {
     std::filesystem::create_directories(path.parent_path(), ec);
     std::ofstream out(path);
     if (!out) return false;
+    out << "game_dir=" << c.game_dir << "\n";
     out << "# nightfire settings (options pages write this back on change)\n";
     out << "sfx_volume=" << c.sfx_volume << "\nmusic_volume=" << c.music_volume << "\n";
     out << "controller_style=" << c.controller_style << "\ninvert_y=" << (c.invert_y ? 1 : 0) << "\n";

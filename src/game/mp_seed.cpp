@@ -287,8 +287,8 @@ struct MpSeedImporter::Impl {
         if (it == rows.end()) throw std::runtime_error("MP seed: no recorded frame " + std::to_string(frame));
         if (!it->second.at("seed_ready").boolean()) throw std::runtime_error("MP seed: frame " + std::to_string(frame) + " is not seed_ready");
         const std::uint32_t version = uint_number(it->second.at("seed_version"));
-        if (version != 2 && version != 3 && version != 4)
-            throw std::runtime_error("MP seed: requires recorder schema v2, v3, or v4");
+        if (version < 2 || version > 5)
+            throw std::runtime_error("MP seed: requires recorder schema v2 through v5");
         if (const Json* ok = it->second.find("projectiles_available"); !ok || !ok->boolean()) throw std::runtime_error("MP seed: projectile snapshot is unavailable at frame " + std::to_string(frame));
         const auto& missing = it->second.at("state_missing").array();
         for (const Json& field : missing) {
@@ -787,6 +787,82 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
             const auto result = system.restore_snapshot(s, drone, bv, obj, route_nodes, route_path,
                                                         restore_route, participant_addresses, goal_targets);
             if (!result) throw std::runtime_error("MP seed: BotSystem restore rejected slot " + std::to_string(s) + " code " + std::to_string(int(result.code)) + " blob " + std::to_string(int(result.blob)) + " offset 0x" + [&] { std::ostringstream os; os << std::hex << result.offset; return os.str(); }());
+            if (uint_number(source.at("seed_version")) >= 5) {
+                const Json* anim = item.find("anim");
+                if (!anim || !anim->at("layers_complete").boolean() ||
+                    anim->at("layer_order").string() != "oldest_to_newest")
+                    throw std::runtime_error("MP seed: v5 animation-layer snapshot is incomplete for slot " +
+                                             std::to_string(s));
+                const Json& rows = anim->at("layers");
+                if (rows.array().size() > 64)
+                    throw std::runtime_error("MP seed: too many animation layers for slot " + std::to_string(s));
+                bots::BotSystem::Bot* bot = system.bot_at_slot(s);
+                if (!bot || !bot->drone || !bot->drone->character)
+                    throw std::runtime_error("MP seed: bot has no CharacterInstance for slot " + std::to_string(s));
+                const bool do_animation =
+                    (u32_at(drone, 0x4f8) & 0x80000u) != 0 &&
+                    (u16_at(drone, 0xd8) == 0x0c || float_number(anim->at("root_height")) == 0.0f ||
+                     std::to_integer<std::uint8_t>(obj[0xfc]) != 0 || u32_at(drone, 0x538) != 0 ||
+                     (u32_at(drone, 0x570) & 4u) == 0);
+                bot->drone->anim.source_gate_valid = true;
+                bot->drone->anim.source_update_due =
+                    do_animation || std::uint64_t(u32_at(drone, 0x580)) == frame;
+                bot->drone->mv.root_motion = {};
+                std::vector<CharacterInstance::LayerSnapshot> layers;
+                layers.reserve(rows.array().size());
+                std::vector<std::pair<std::uint32_t, std::uint32_t>> layer_nodes;
+                layer_nodes.reserve(rows.array().size());
+                const float distance_step = float_number(anim->at("distance_step"));
+                for (const Json& row : rows.array()) {
+                    const auto layer_raw = raw_for(row, "raw", 0xc0);
+                    layer_nodes.emplace_back(uint_number(row.at("ptr")), u32_at(layer_raw, 0x84));
+                }
+                for (const Json& row : rows.array()) {
+                    const auto layer_raw = raw_for(row, "raw", 0xc0);
+                    CharacterInstance::LayerSnapshot layer;
+                    layer.script = uint_number(row.at("script_id"));
+                    layer.flags = uint_number(row.at("flags"));
+                    layer.id = u32_at(layer_raw, 0x84);
+                    layer.primary = 0;
+                    layer.frame = float_number(row.at("frame"));
+                    layer.previous_frame = float_number(row.at("previous_frame"));
+                    layer.speed = float_number(row.at("speed"));
+                    layer.blend_time = float_number(row.at("blend_time"));
+                    layer.blend_duration = float_number(row.at("blend_duration"));
+                    layer.direction = row.at("fade_direction").string() == "in" ? 1 :
+                                      row.at("fade_direction").string() == "out" ? -1 : 0;
+                    layer.drive_type = int_number(row.at("drive_type"));
+                    if (layer.drive_type == 2) {
+                        const std::uint32_t partner = uint_number(row.at("phase_partner_ptr"));
+                        for (const auto& [address, id] : layer_nodes)
+                            if (address == partner) layer.primary = id;
+                        if (partner && layer.primary == 0)
+                            throw std::runtime_error("MP seed: phase partner is outside the v5 layer list for slot " +
+                                                     std::to_string(s));
+                    }
+                    layer.pair_weight = float_number(row.at("pair_weight"));
+                    layer.distance_step = distance_step;
+                    layer.fresh = row.at("fresh").boolean();
+                    layer.strafe = row.at("strafe").boolean();
+                    layer.ended = layer.script == bot->drone->anim.script &&
+                                  !bot->drone->anim.loop && !bot->drone->anim.clip_running;
+                    layer.loop = layer.script == bot->drone->anim.script ? bot->drone->anim.loop : true;
+                    const Json* sequence = row.find("sequence");
+                    if (sequence && !sequence->is_null()) {
+                        layer.have_root = sequence->at("have_root").boolean();
+                        layer.previous_root = {float_number(index(sequence->at("previous_root"), 0)),
+                                               float_number(index(sequence->at("previous_root"), 1)),
+                                               float_number(index(sequence->at("previous_root"), 2))};
+                        layer.root_delta = {float_number(index(sequence->at("last_root_delta"), 0)),
+                                            float_number(index(sequence->at("last_root_delta"), 1)),
+                                            float_number(index(sequence->at("last_root_delta"), 2))};
+                    }
+                    layers.push_back(layer);
+                }
+                if (!bot->drone->character->restore_layers(
+                        layers, float_number(anim->at("distance_accumulator"))))
+                    throw std::runtime_error("MP seed: unsupported v5 animation layer for slot " + std::to_string(s));
+            }
         }
     }
 }

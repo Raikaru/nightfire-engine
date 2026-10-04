@@ -343,6 +343,17 @@ public:
         bool distance_driven, phase_locked, strafe;
         float pair_weight;         // +0x88 (Distance layers)
     };
+
+    struct LayerSnapshot {
+        std::uint32_t script = 0, flags = 0, id = 0, primary = 0;
+        float frame = 1, previous_frame = 1, speed = 1, blend_time = 1, blend_duration = 1;
+        float pair_weight = 0, distance = 0, distance_step = 0;
+        int direction = 1, drive_type = 0;
+        bool loop = true, ended = false, have_root = false, fresh = false, strafe = false;
+        Vec3 previous_root{}, root_delta{};
+    };
+    // Restores source animation cursors and sampled-root predecessors between ticks.
+    bool restore_layers(const std::vector<LayerSnapshot>& layers, float distance_accumulator);
     std::vector<LayerInfo> layer_infos() const;
 
     // Root motion (AnimSeqTick): the root bone's translation change per tick, blended across layers like the

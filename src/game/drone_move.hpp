@@ -90,8 +90,10 @@ bool opponent_is_aiming_at_me(const Drone& d, float degrees = 7.5f);
 bool opponent_facing_me(const Drone& d, float degrees);
 
 // ---- per-tick (called by the core, ControlSTANDARD) ----------------------------------------------------------------
-// NDrone2_Move + DroneMove_NoBunching: steer toward Drone::mv.dest_angle, then apply the anim root motion.
+// NDrone2_Move: steer to the waypoint and apply movement already accumulated by the caller.
 void move_step(Drone& d);
+// AnimFrameResolve: add the sampled root displacement after movement/control for this tick.
+void apply_animation_root_motion(Drone& d, const Vec3& root_delta, float yaw);
 // NDrone2_Collision + Collide_Update: gravity, capsule push-out, ground snap, AI bounds push (r = 0.4).
 void collision_step(Drone& d);
 // Places the drone on the floor below its feet position (used at spawn / teleport).

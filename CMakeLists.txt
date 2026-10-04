@@ -187,3 +187,48 @@ add_executable(nightfire ${NF_APP_SOURCES} src/net/server.cpp src/game/nfgame_we
 target_link_libraries(nightfire PRIVATE nf_net nf_game nf_render nf_audio nf_ui nf_driving nf_media)
 target_compile_definitions(nightfire PRIVATE NF_SERVER_EMBEDDED)
 target_compile_options(nightfire PRIVATE -Wall -Wextra)
+
+# Installed tools are useful alongside the game, but no copyrighted game data is
+# part of a package. UI art is embedded at build time; keep the original
+# distributable source sheets/manifests available for inspection and tooling.
+if(APPLE)
+  set_target_properties(nightfire PROPERTIES
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/packaging/macos/Info.plist.in"
+    MACOSX_BUNDLE_BUNDLE_NAME "Nightfire"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "org.nightfire.engine"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1.0")
+endif()
+
+install(TARGETS nightfire nfgame nfserver nfmaster nfui nfdump nfmips nfview nfdrive nfplay nfnet-test nfnet-predict-diff
+  RUNTIME DESTINATION bin
+  BUNDLE DESTINATION .)
+install(DIRECTORY assets/ui/ DESTINATION share/nightfire/assets/ui
+  FILES_MATCHING PATTERN "*.png" PATTERN "*.txt")
+install(DIRECTORY tools/art/ DESTINATION share/nightfire/tools/art
+  FILES_MATCHING PATTERN "*.py" PATTERN "*.txt")
+install(DIRECTORY assets/shaders/ DESTINATION share/nightfire/shaders OPTIONAL)
+install(FILES README.md DESTINATION share/doc/nightfire)
+
+set(CPACK_PACKAGE_NAME "nightfire-engine")
+set(CPACK_PACKAGE_VENDOR "nightfire-engine contributors")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OpenMW-style reimplementation of 007: Nightfire")
+set(CPACK_PACKAGE_VERSION "0.1.0")
+set(CPACK_PACKAGE_CONTACT "nightfire-engine contributors")
+set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/README.md")
+set(CPACK_GENERATOR "TGZ")
+set(CPACK_ARCHIVE_COMPONENT_INSTALL OFF)
+if(WIN32)
+  set(CPACK_GENERATOR "ZIP;NSIS")
+  set(CPACK_NSIS_DISPLAY_NAME "Nightfire Engine")
+  set(CPACK_NSIS_PACKAGE_NAME "Nightfire Engine")
+  set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+  set(CPACK_NSIS_MODIFY_PATH OFF)
+endif()
+if(APPLE)
+  set(CPACK_GENERATOR "DragNDrop")
+  set(CPACK_DMG_VOLUME_NAME "Nightfire")
+  set(CPACK_DMG_FORMAT "UDZO")
+endif()
+include(CPack)
