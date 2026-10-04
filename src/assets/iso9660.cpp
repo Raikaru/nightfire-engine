@@ -36,6 +36,12 @@ std::string canonical(std::string name) {
     if (const auto dot = name.find_last_of('.'); dot != std::string::npos && dot + 1 == name.size()) name.pop_back();
     return upper(std::move(name));
 }
+std::filesystem::path iso_path_component(std::string_view source) {
+    const std::string name = canonical(std::string(source));
+    if (name.empty() || name == "." || name == ".." || name.find_first_of("<>:\"/\\|?*") != std::string::npos)
+        throw std::runtime_error("ISO contains an invalid output filename");
+    return std::filesystem::path(name);
+}
 
 bool is_supported_boot(std::string_view boot) {
     std::string id;
@@ -49,6 +55,11 @@ struct Record {
     std::uint32_t size = 0;
     std::uint8_t flags = 0;
     std::string name;
+};
+
+struct DiscFile {
+    std::filesystem::path relative;
+    Record record;
 };
 
 class Iso9660 {
@@ -84,17 +95,29 @@ public:
         }
         throw std::runtime_error("empty ISO path");
     }
+    std::vector<DiscFile> files() {
+        std::vector<DiscFile> out;
+        files(root_, {}, out);
+        return out;
+    }
 
-    void copy(const Record& record, const std::filesystem::path& output,
-              const std::function<void(std::uint64_t, std::uint64_t)>& progress, std::uint64_t& completed,
-              std::uint64_t total) {
-        if (record.flags & 0x02) throw std::runtime_error(record.name + " is a directory on the ISO");
+    void files(const Record& directory, const std::filesystem::path& parent, std::vector<DiscFile>& out) {
+        for (const Record& child : children(directory)) {
+            const std::filesystem::path relative = parent / iso_path_component(child.name);
+            if (child.flags & 0x02) files(child, relative, out);
+            else out.push_back({relative, child});
+        }
+    }
+
+    void copy(const Record& record, const std::filesystem::path& output, const std::filesystem::path& relative,
+              const DiscProgress& progress, std::uint64_t& completed, std::uint64_t total) {
         std::ofstream out(output, std::ios::binary | std::ios::trunc);
         if (!out) throw std::runtime_error("cannot write " + output.string());
         in_.clear();
         in_.seekg(std::streamoff(std::uint64_t(record.extent) * kBlockSize));
         std::array<char, 1024 * 1024> buffer{};
         std::uint32_t remaining = record.size;
+        if (progress) progress(relative, completed, total);
         while (remaining) {
             const std::size_t count = std::min<std::size_t>(buffer.size(), remaining);
             in_.read(buffer.data(), std::streamsize(count));
@@ -103,7 +126,7 @@ public:
             if (!out) throw std::runtime_error("failed writing extracted file: " + output.string());
             remaining -= std::uint32_t(count);
             completed += count;
-            if (progress) progress(completed, total);
+            if (progress) progress(relative, completed, total);
         }
     }
 
@@ -144,10 +167,11 @@ private:
         return out;
     }
 
-    Record find_child(const Record& directory, const std::string& wanted) {
+    std::vector<Record> children(const Record& directory) {
         if (!(directory.flags & 0x02)) throw std::runtime_error("ISO path parent is not a directory");
         if (directory.size > kMaxDirectoryBytes) throw std::runtime_error("ISO directory is too large");
-        std::vector<std::uint8_t> bytes = read_extent(directory.extent, directory.size);
+        const std::vector<std::uint8_t> bytes = read_extent(directory.extent, directory.size);
+        std::vector<Record> result;
         for (std::size_t at = 0; at < bytes.size();) {
             const std::uint8_t length = bytes[at];
             if (length == 0) {
@@ -156,9 +180,15 @@ private:
             }
             if (length > bytes.size() - at) throw std::runtime_error("malformed ISO directory extent");
             Record child = parse_record(bytes.data() + at, length);
-            if (child.name != "." && child.name != ".." && canonical(child.name) == wanted) return child;
+            if (child.name != "." && child.name != "..") result.push_back(std::move(child));
             at += length;
         }
+        return result;
+    }
+
+    Record find_child(const Record& directory, const std::string& wanted) {
+        for (Record& child : children(directory))
+            if (canonical(child.name) == wanted) return std::move(child);
         throw std::runtime_error("ISO image is missing " + wanted);
     }
 
@@ -200,23 +230,46 @@ DiscIdentity identify(const std::vector<std::uint8_t>& cnf) {
     return {"SLUS-20579"};
 }
 
-void copy_file(const std::filesystem::path& from, const std::filesystem::path& to, std::uint64_t& completed,
-               std::uint64_t total, const std::function<void(std::uint64_t, std::uint64_t)>& progress) {
+struct SourceFile {
+    std::filesystem::path relative;
+    std::uint64_t size;
+};
+
+std::vector<SourceFile> source_files(const std::filesystem::path& root) {
+    std::vector<SourceFile> files;
+    for (std::filesystem::recursive_directory_iterator it(root), end; it != end; ++it) {
+        const std::filesystem::file_status status = it->symlink_status();
+        if (!std::filesystem::is_regular_file(status)) continue;
+        const std::filesystem::path relative = it->path().lexically_relative(root);
+        files.push_back({relative, std::filesystem::file_size(it->path())});
+    }
+    std::sort(files.begin(), files.end(), [](const SourceFile& a, const SourceFile& b) {
+        return a.relative.generic_string() < b.relative.generic_string();
+    });
+    return files;
+}
+
+void copy_file(const std::filesystem::path& from, const std::filesystem::path& to,
+               const std::filesystem::path& relative, std::uint64_t size, std::uint64_t& completed,
+               std::uint64_t total, const DiscProgress& progress) {
     std::ifstream in(from, std::ios::binary);
     if (!in) throw std::runtime_error("cannot read " + from.string());
+    std::filesystem::create_directories(to.parent_path());
     std::ofstream out(to, std::ios::binary | std::ios::trunc);
     if (!out) throw std::runtime_error("cannot write " + to.string());
     std::array<char, 1024 * 1024> buffer{};
-    while (in) {
-        in.read(buffer.data(), std::streamsize(buffer.size()));
-        const std::streamsize count = in.gcount();
-        if (!count) break;
-        out.write(buffer.data(), count);
+    std::uint64_t remaining = size;
+    if (progress) progress(relative, completed, total);
+    while (remaining) {
+        const std::size_t count = std::size_t(std::min<std::uint64_t>(buffer.size(), remaining));
+        in.read(buffer.data(), std::streamsize(count));
+        if (in.gcount() != std::streamsize(count)) throw std::runtime_error("short read of " + from.string());
+        out.write(buffer.data(), std::streamsize(count));
         if (!out) throw std::runtime_error("failed writing extracted file: " + to.string());
-        completed += std::uint64_t(count);
-        if (progress) progress(completed, total);
+        remaining -= count;
+        completed += count;
+        if (progress) progress(relative, completed, total);
     }
-    if (!in.eof()) throw std::runtime_error("failed reading " + from.string());
 }
 
 }  // namespace
@@ -228,46 +281,63 @@ DiscIdentity identify_nightfire_disc(const std::filesystem::path& source) {
 }
 
 void extract_nightfire_disc(const std::filesystem::path& source, const std::filesystem::path& destination,
-                            const std::function<void(std::uint64_t, std::uint64_t)>& progress) {
+                            const DiscProgress& progress) {
     (void)identify_nightfire_disc(source);
     const bool folder = std::filesystem::is_directory(source);
-    std::uint64_t file_sizes[2]{};
-    if (folder) {
-        for (const char* file : {"ACTION.ELF", "FILES.BIN"}) {
-            const auto size = std::filesystem::file_size(source / file);
-            if (size > UINT32_MAX) throw std::runtime_error(std::string(file) + " is too large");
-            file_sizes[file[0] == 'A' ? 0 : 1] = size;
-        }
-    } else {
+    const std::vector<SourceFile> folder_files = folder ? source_files(source) : std::vector<SourceFile>{};
+    std::vector<DiscFile> iso_files;
+    if (!folder) {
         Iso9660 iso(source);
-        file_sizes[0] = iso.lookup("ACTION.ELF").size;
-        file_sizes[1] = iso.lookup("FILES.BIN").size;
+        iso_files = iso.files();
     }
-    const std::uint64_t total = file_sizes[0] + file_sizes[1];
-    std::uint64_t completed = 0;
+    std::uint64_t total = 0;
+    if (folder) {
+        for (const SourceFile& file : folder_files) total += file.size;
+    } else {
+        for (const DiscFile& file : iso_files) total += file.record.size;
+    }
+
     const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-    const std::filesystem::path staging = destination.parent_path() / (destination.filename().string() + ".setup-" + std::to_string(now));
+    const std::filesystem::path parent = destination.parent_path().empty() ? "." : destination.parent_path();
+    if (destination.filename().empty()) throw std::runtime_error("game-data destination must name a directory");
+    const std::string suffix = ".setup-" + std::to_string(now);
+    const std::filesystem::path staging = parent / (destination.filename().string() + suffix);
+    const std::filesystem::path backup = parent / (destination.filename().string() + suffix + ".previous");
     std::error_code ec;
-    std::filesystem::create_directories(staging, ec);
+    std::filesystem::create_directories(parent, ec);
+    if (ec) throw std::runtime_error("cannot create game-data parent directory: " + ec.message());
+    std::filesystem::create_directory(staging, ec);
     if (ec) throw std::runtime_error("cannot create extraction staging directory: " + ec.message());
+
+    std::uint64_t completed = 0;
+    bool backed_up = false;
     try {
         if (folder) {
-            copy_file(source / "ACTION.ELF", staging / "ACTION.ELF", completed, total, progress);
-            copy_file(source / "FILES.BIN", staging / "FILES.BIN", completed, total, progress);
+            for (const SourceFile& file : folder_files)
+                copy_file(source / file.relative, staging / file.relative, file.relative, file.size, completed, total, progress);
         } else {
             Iso9660 iso(source);
-            iso.copy(iso.lookup("ACTION.ELF"), staging / "ACTION.ELF", progress, completed, total);
-            iso.copy(iso.lookup("FILES.BIN"), staging / "FILES.BIN", progress, completed, total);
+            for (const DiscFile& file : iso_files) {
+                const std::filesystem::path output = staging / file.relative;
+                std::filesystem::create_directories(output.parent_path());
+                iso.copy(file.record, output, file.relative, progress, completed, total);
+            }
         }
-        std::filesystem::create_directories(destination, ec);
-        if (ec) throw std::runtime_error("cannot create game-data directory: " + ec.message());
-        for (const char* file : {"ACTION.ELF", "FILES.BIN"}) {
-            std::filesystem::copy_file(staging / file, destination / file, std::filesystem::copy_options::overwrite_existing, ec);
-            if (ec) throw std::runtime_error("cannot install " + std::string(file) + ": " + ec.message());
+
+        const bool destination_exists = std::filesystem::exists(destination, ec);
+        if (ec) throw std::runtime_error("cannot inspect existing game-data directory: " + ec.message());
+        if (destination_exists) {
+            std::filesystem::rename(destination, backup, ec);
+            if (ec) throw std::runtime_error("cannot move existing game data aside: " + ec.message());
+            backed_up = true;
         }
-        std::filesystem::remove_all(staging, ec);
+        std::filesystem::rename(staging, destination, ec);
+        if (ec) throw std::runtime_error("cannot install extracted game data: " + ec.message());
+        if (backed_up) std::filesystem::remove_all(backup, ec);
     } catch (...) {
         std::filesystem::remove_all(staging, ec);
+        if (backed_up && !std::filesystem::exists(destination, ec))
+            std::filesystem::rename(backup, destination, ec);
         throw;
     }
 }

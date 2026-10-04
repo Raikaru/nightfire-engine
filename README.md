@@ -7,14 +7,12 @@ against the game running in PCSX2 (`docs/oracle.md`).
 
 ## Game data
 
-On first launch, the setup screen accepts your own Nightfire PS2 USA ISO or an extracted disc folder. It checks the disc's `SYSTEM.CNF` for SLUS-20579, extracts `ACTION.ELF` and `FILES.BIN` into the per-user data directory, then runs `nfdump validate` before saving the configuration. The extracted files remain in your user data directory; the ISO is opened read-only.
+On first launch, the setup screen accepts your own Nightfire PS2 USA ISO or an extracted disc folder. It checks `SYSTEM.CNF` for SLUS-20579, stages and installs the complete disc directory tree (including `ACTION.ELF`, `FILES.BIN`, `DRIVING/`, `DRIVING.ELF`, `MODULES/`, `MOVIES/`, and `PS2/`), then runs `nfdump validate` before saving the configuration. Progress shows the current file and total bytes. ISO images are opened read-only.
 
-For manual extraction (and optional audio/driving assets), use:
+For manual extraction, unpack the whole disc image so all runtime files and directories are present:
 
 ```
-7z e "007 - Nightfire (USA).iso" ACTION.ELF FILES.BIN -o<gamedir>
-7z x "007 - Nightfire (USA).iso" PS2 -o<gamedir>     # sound banks, music, streams (optional)
-7z x "007 - Nightfire (USA).iso" 'DRIVING/*.VIV' -o<gamedir>   # driving missions (nfdrive)
+7z x "007 - Nightfire (USA).iso" -o<gamedir>
 ```
 
 `nightfire <gamedir>` records the directory in the per-user configuration. Subsequent launches can omit it.

@@ -3,6 +3,7 @@
 // read from ACTION.ELF (nm-verified symbols), so a data change throws instead of mis-showing.
 #include "assets/tweak_data.hpp"
 
+#include <cstring>
 #include <cmath>
 
 namespace nf {
@@ -109,7 +110,7 @@ TweakData load_tweak_data(const Elf32& action_elf) {
         if (!sym) throw FormatError(std::string("ACTION.ELF has no ") + s.symbol);
         const Bytes bytes = action_elf.at(sym->value, 4);
         float value = 0;
-        __builtin_memcpy(&value, bytes.data(), 4);
+        std::memcpy(&value, bytes.data(), sizeof(value));
         data.scrolls[s.control] = int(std::lround(value * s.scale));
         data.scales[s.control] = s.scale;
     }
