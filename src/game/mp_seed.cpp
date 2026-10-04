@@ -862,6 +862,19 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                 if (!bot->drone->character->restore_layers(
                         layers, float_number(anim->at("distance_accumulator"))))
                     throw std::runtime_error("MP seed: unsupported v5 animation layer for slot " + std::to_string(s));
+                const std::uint32_t source_flags = u32_at(drone, 0x4f8);
+                bool near_player = false;
+                for (std::size_t i = 0; i < 4; ++i)
+                    near_player |= f32_at(drone, 0x154 + i * sizeof(float)) < 4.0f;
+                bot->drone->anim.source_collision_due =
+                    (source_flags & 0x200u) == 0 && (source_flags & 0x20u) != 0 &&
+                    (u16_at(drone, 0xd8) == 0x0c ||
+                     (u16_at(drone, 0xd8) != 0x13 &&
+                      (u32_at(drone, 0x538) != 0 || near_player || byte_at(obj, 0xfc) != 0 ||
+                       (u32_at(drone, 0x570) & 2u) != 0)));
+                bot->drone->anim.source_collision_valid = true;
+                bot->drone->anim.source_root_height_offset =
+                    float_number(anim->at("root_height")) - bot->drone->character->root_height();
             }
         }
     }

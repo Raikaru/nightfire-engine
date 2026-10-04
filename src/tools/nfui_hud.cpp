@@ -205,7 +205,7 @@ private:
         b3.x = 35, b3.z = 30, b3.color = 0x10FF10FF, b3.kind = 2;
         arena.blips = {b0, b1, b2, b3};
         apply_arena_hud(arena, st_.mp);
-        project_name_tags(arena, {0, 0, 0}, 0, 0, 1.2f, 4.0f / 3.0f, st_.mp);
+        project_name_tags(arena, {0, 0, 0}, 0, 0, 1.2f, 4.0f / 3.0f, 512.0f, 448.0f, st_.mp);
         MatchMessage msg;
         msg.type = MatchMessage::Type::Objective;
         msg.text = "Uplink captured";
