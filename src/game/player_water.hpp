@@ -43,6 +43,12 @@ public:
     // control_handle_cel_change for an object that moved `from` -> `to` while in `room` (kNone = not linked):
     // through a portal of the room, else (still inside the room's box) unchanged, else find(to).
     int track(int room, const Vec3& from, const Vec3& to, const CollisionWorld& world) const;
+    // Allocation-free cel tracking for the headless view pass; portal crossings retain the source cel link.
+    int track_view(int room, const Vec3& from, const Vec3& to) const;
+    // View_AddCels: does portal traversal from `from` reach `target` through a portal in the
+    // viewer's four side-plane frustum? `right`/`up`/`forward` are the view basis rows.
+    bool view_can_reach(int from, int target, const Vec3& eye, const Vec3& right, const Vec3& up,
+                        const Vec3& forward, float tan_half_x, float tan_half_y) const;
     // cel+0x90 (kNoWater for kNone).
     float water_level(int room) const;
 

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include <cstdio>
 #include "game/drone_anim.hpp"
 #include "game/drone_system.hpp"
 #include "game/drone_vision.hpp"
@@ -549,7 +550,7 @@ void apply_animation_root_motion(Drone& d, const Vec3& root_delta, const std::ar
     d.pos += world_delta;
 }
 
-void collision_step(Drone& d, const Vec3& pre_control_pos) {
+CollisionStepState collision_pre_root_step(Drone& d) {
     if (d.anim.source_collision_supported) {
         bool near_player = false;
         for (int slot = 0; slot < 4; ++slot) {
@@ -571,13 +572,58 @@ void collision_step(Drone& d, const Vec3& pre_control_pos) {
             ((flags & 0x4u) != 0 || (mode_allows_collision && collision_predicate));
         d.anim.source_collision_valid = true;
     }
+
     const bool source_collision_valid = d.anim.source_collision_valid;
     const bool source_collision_due = d.anim.source_collision_due;
-    const bool source_gravity_due = d.anim.source_gravity_due;
-    // NDrone2_Collision rebuilds the bot capsule from the current animation height.
+    d.radius = d.char_class == 0x0c ? 0.55f : 0.4f;
+
+    // NDrone2_Collision applies the AI-boundary push before AnimFrameResolve.
+    if (!source_collision_valid || source_collision_due) {
+        if (NavNetwork* nav = d.sys->nav()) {
+            Vec3 push{};
+            if (nav->bounds_push_vector(0.4f, nav->locate(d.pos), push)) {
+                d.pos[0] += push[0];
+                d.pos[2] += push[2];
+            }
+        }
+    }
+    CollisionStepState state;
+    state.source_collision_valid = source_collision_valid;
+    state.source_collision_due = source_collision_due;
+    state.source_gravity_due = d.anim.source_gravity_due;
+    if (!source_collision_valid || source_collision_due) {
+        const float feet_height =
+            d.anim.source_collision_valid && d.anim.source_callback_height_valid
+                ? d.anim.source_callback_height
+                : d.stand_height;
+        CylinderQuery q;
+        if (d.is_bot() && d.character) {
+            q.a = {d.pos[0], d.pos[1] + d.radius, d.pos[2]};
+            q.b = {d.pos[0], d.pos[1] + d.radius - feet_height, d.pos[2]};
+            q.radius = d.radius;
+        } else {
+            q.a = {d.pos[0], d.pos[1] - d.stand_height + 1.4f, d.pos[2]};
+            q.b = {d.pos[0], d.pos[1] - d.stand_height + d.radius, d.pos[2]};
+            q.radius = d.radius;
+        }
+        state.capsule_a = q.a;
+        state.capsule_b = q.b;
+        state.capsule_radius = q.radius;
+    }
+    return state;
+}
+
+void collision_post_root_step(Drone& d, const CollisionStepState& state) {
+    const bool source_collision_valid = state.source_collision_valid;
+    const bool source_collision_due = state.source_collision_due;
+    const bool source_gravity_due = state.source_gravity_due;
     const CollisionWorld& world = d.sys->collision();
     const FrameTiming timing = d.sys->timing();
-    d.radius = d.char_class == 0x0c ? 0.55f : 0.4f;
+    const bool diag_source_feet = d.anim.source_gate_supported && d.now() == 14740 &&
+                                  std::fabs(d.pos[0] - 15.085f) < 0.1f;
+    if (diag_source_feet)
+        std::fprintf(stderr, "feet-enter y=%.8f stand=%.8f applied=%.8f cap-b=%.8f radius=%.8f\\n",
+                     d.pos[1], d.stand_height, d.mv.applied_height, state.capsule_b[1], state.capsule_radius);
     // Feet stay planted while the pose height changes (crouch, roll).
     d.pos[1] += d.stand_height - d.mv.applied_height;
     d.mv.applied_height = d.stand_height;
@@ -588,52 +634,34 @@ void collision_step(Drone& d, const Vec3& pre_control_pos) {
         if (d.flags & 0x40) d.fly_velocity = d.fly_velocity * 0.9f;
     }
 
-    // NDrone2_Collision applies the AI-boundary push before Collide_Update builds the capsule hit list.
-    if (!source_collision_valid || source_collision_due) {
-        if (NavNetwork* nav = d.sys->nav()) {
-            Vec3 push{};
-            if (nav->bounds_push_vector(0.4f, nav->locate(d.pos), push)) {
-                d.pos[0] += push[0];
-                d.pos[2] += push[2];
-            }
-        }
-    }
-
     float source_feet_delta = 1.0f;
     bool source_hit_list_present = false;
     bool source_feet_delta_valid = false;
-    const float h = d.stand_height;
-    const float source_feet_height =
-        d.is_bot() && d.character
-            ? (d.character->root_height() + d.anim.source_root_height_offset) * d.anim.source_root_height_scale - 0.02f
-            : h;
-    const float collision_height = source_feet_height;
+    const float h =
+        source_collision_valid && d.anim.source_callback_height_valid
+            ? d.anim.source_callback_height
+            : d.stand_height;
     if (!source_collision_valid || source_collision_due) {
-        CylinderQuery q;
-        if (d.is_bot() && d.character) {
-            // The source collision radius is set from char_class above.
-            q.a = {pre_control_pos[0], pre_control_pos[1] + d.radius, pre_control_pos[2]};
-            q.b = {pre_control_pos[0], pre_control_pos[1] + d.radius - collision_height, pre_control_pos[2]};
-            q.radius = d.radius;
-        } else {
-            q.a = {d.pos[0], d.pos[1] - h + 1.4f, d.pos[2]};
-            q.b = {d.pos[0], d.pos[1] - h + d.radius, d.pos[2]};
-            q.radius = d.radius;
-        }
-        const CylinderResult r = world.cylinder(q);
-        source_hit_list_present = !r.hits.empty();
-        const FeetResult feet = world.feet_on_point(d.pos, r.b, {0, 1, 0}, source_feet_height, r.contact);
+        const CylinderResult capsule =
+            world.cylinder({state.capsule_a, state.capsule_b, state.capsule_radius});
+        const FeetResult feet =
+            world.feet_on_point(d.pos, state.capsule_b, {0, 1, 0}, h, capsule.contact);
         d.on_ground = feet.on_ground;
+        source_hit_list_present = !capsule.hits.empty();
         if (source_collision_valid && source_collision_due && !d.mv.disabled) {
-            d.on_ground = r.contact != 0;
+            d.on_ground = capsule.contact != 0;
             source_feet_delta_valid = true;
-            if (feet.nearest) {
-                source_feet_delta = (d.pos[1] - source_feet_height) - feet.nearest->point[1];
-                if (source_feet_delta < 0.2f) d.on_ground = true;
-            }
+            if (feet.nearest) source_feet_delta = (d.pos[1] - h) - feet.nearest->point[1];
+            if (source_feet_delta < 0.2f) d.on_ground = true;
+            if (diag_source_feet)
+                std::fprintf(stderr, "feet-probe delta=%.8f nearest=%d nearest-y=%.8f contact=%u on=%u ground=%.8f hits=%u\\n",
+                             source_feet_delta, feet.nearest.has_value(),
+                             feet.nearest ? feet.nearest->point[1] : 0.0f,
+                             capsule.contact, unsigned(d.on_ground), feet.ground_normal_y,
+                             unsigned(source_hit_list_present));
         }
         d.ground_normal_y = feet.ground_normal_y;
-        if (!r.hits.empty()) d.pos += r.push_out;
+        if (source_hit_list_present) d.pos += capsule.push_out;
     } else {
         // NDrone2_DoCollision returned false: source skips the feet probe and hit push.
         d.on_ground = false;
@@ -654,7 +682,9 @@ void collision_step(Drone& d, const Vec3& pre_control_pos) {
     if (source_feet_delta_valid && !source_hit_list_present && d.on_ground && source_feet_delta > -0.1f) {
         d.pos[1] -= source_feet_delta * 0.125f;
     }
-
+    if (diag_source_feet)
+        std::fprintf(stderr, "feet-exit y=%.8f delta=%.8f cap-push=%.8f\\n",
+                     d.pos[1], source_feet_delta, state.capsule_b[1]);
 }
 
 void place_on_floor(Drone& d) {

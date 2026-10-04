@@ -4,7 +4,7 @@
 #include "core/rng.hpp"
 
 #include <algorithm>
-#include <cstring>
+#include <cmath>
 
 #include "game/drone_system.hpp"
 #include "game/drone_move.hpp"
@@ -120,6 +120,11 @@ std::uint16_t DroneAnimData::anim_for(int prev_dasc, int dasc, int variant, int*
 namespace {
 
 const DroneAnimData* data_of(const Drone& d) { return d.sys->anim_data(); }
+std::array<Vec3, 3> object_basis_from_yaw(float yaw) {
+    const float s = std::sin(yaw);
+    const float c = std::cos(yaw);
+    return {Vec3{c, 0.0f, -s}, Vec3{0.0f, 1.0f, 0.0f}, Vec3{s, 0.0f, c}};
+}
 
 // DroneAnim_CallFullyComplete: fire the end handler recorded with the call.
 void call_complete(Drone& d) {
@@ -248,7 +253,7 @@ void prepare_source_animation_tick(Drone& d) {
     const bool do_animation =
         d.char_class == 0x0c || root_height == 0.0f || a.source_object_anim || a.source_force_anim ||
         (a.cur_flags & 4u) == 0;
-    a.source_update_due = do_animation || a.source_anim_stamp == d.now();
+    a.source_update_due = do_animation;
 }
 
 void anim_update(Drone& d) {
@@ -309,7 +314,6 @@ void anim_update(Drone& d) {
     }
     d.character->set_game_rng(&game_rng());
     d.character->tick(d.sys->timing().FRAME_RATE_MUL);
-    if (source_gate) a.source_anim_stamp = d.now();
     Vec3 root_motion = d.character->root_motion();
     if (d.obj_type == 2 && a.source_callback_y_enabled) {
         // The source pre-transform callback runs on every animation update, not just the seed tick.
@@ -324,8 +328,15 @@ void anim_update(Drone& d) {
         root_motion[1] = callback_height - a.source_callback_height;
         a.source_callback_height = callback_height;
     }
-    if (source_gate) {
+    if (source_gate && a.source_update_due) {
+        if (!a.source_root_basis_valid) a.source_root_basis = object_basis_from_yaw(d.yaw);
         apply_animation_root_motion(d, root_motion, a.source_root_basis);
+        a.source_root_basis = object_basis_from_yaw(d.yaw);
+        a.source_root_basis_valid = true;
+        d.mv.root_motion = {};
+        a.source_gate_valid = false;
+        a.source_update_due = true;
+    } else if (source_gate) {
         d.mv.root_motion = {};
         a.source_gate_valid = false;
         a.source_update_due = true;

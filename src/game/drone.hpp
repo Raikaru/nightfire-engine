@@ -281,6 +281,8 @@ public:
 
     // ---- body (obj+0x30/+0x54/+0xe0, collision) -------------------------------------------------------------
     Vec3 pos{};                         // obj+0x30 (above the feet by stand_height)
+    int source_view_room = -1;            // obj+0x20 cell used by View_AddCels
+    Vec3 source_view_pos{};              // last obj+0x30 used to track source_view_room through portals
     float yaw = 0;                      // obj+0x54, forward = (sin yaw, 0, cos yaw)
     Vec3 velocity{};                    // world-space walk velocity (units/s) set by locomotion
     Vec3 fall_velocity{};               // gravity part (units/s)
@@ -386,9 +388,8 @@ public:
         bool source_gate_supported = false; // seed has the object fields needed to mirror Drone_Control eligibility
         bool source_gate_valid = false;
         bool source_update_due = true;
-        bool source_object_anim = false; // obj+0xfc
+        std::uint8_t source_object_anim = 0; // obj+0xfc Game_Run animation-update countdown
         bool source_force_anim = false; // Drone+0x538 != 0
-        std::uint32_t source_anim_stamp = 0; // Drone+0x580
         std::array<Vec3, 3> source_root_basis{}; // AnimFrameResolve's cached sAnimObject +0x90..+0xb0
         bool source_root_basis_valid = false;
         float source_root_height_offset = 0; // v5 sAnimObject+0x60 offset before the root-height scale

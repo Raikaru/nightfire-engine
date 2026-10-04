@@ -2988,14 +2988,17 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                 const bool matrix_write = offset != ~u32(0) && offset < matrix + 0x30
                     && u64(offset) + size > matrix;
                 if (!position_write && !matrix_write) return;
+                const unsigned vt = (m.cpu.cur_inst >> 16) & 31;
+                const auto& source = m.cpu.vu0.vf[vt];
                 std::fprintf(stderr,
                     "OBJ_STORE %s frame=%u slot=%d pc=%08x inst=%08x addr=%08x size=%u "
-                    "pre=%08x,%08x,%08x sp=%08x ra=%08x\n",
+                    "pre=%08x,%08x,%08x src-vf%u=%08x,%08x,%08x,%08x sp=%08x ra=%08x\n",
                     position_write ? "position" : "matrix",
-                    next_frame, trace_slot, m.cpu.cur_pc, m.cpu.cur_inst, address,
-                    size, m.mem.read<u32>(object + (position_write ? kObjectPosition : 0x90)),
+                    next_frame, trace_slot, m.cpu.cur_pc, m.cpu.cur_inst, address, size,
+                    m.mem.read<u32>(object + (position_write ? kObjectPosition : 0x90)),
                     m.mem.read<u32>(object + (position_write ? kObjectPosition + 4 : 0x94)),
                     m.mem.read<u32>(object + (position_write ? kObjectPosition + 8 : 0x98)),
+                    vt, source.w[0], source.w[1], source.w[2], source.w[3],
                     u32(m.cpu.r[29].d[0]), u32(m.cpu.r[31].d[0]));
             });
             m.set_instruction_observer(
@@ -3080,7 +3083,7 @@ void usage() {
                  "usage: nfmips <elf> call <sym|addr> [args] [--state p|--ram d] [--dump a[:n]] [--steps N]\n"
                  "       nfmips <elf> init [--check] [--dump-out f] [--steps N]\n"
                  "       nfmips <elf> trace <sym|addr> [args] [--steps N] [--state p|--ram d]\n"
-                 "       nfmips <elf> mp-oracle --state <p2s> --rows N [--pads <frame/port/input.txt>] [--give-weapon ID ...] [--watch-human-hp 0..3] [--trace-frame N --trace-slot 4..7] [--trace-rng]\n"
+                 "       nfmips <elf> mp-oracle --state <p2s> --rows N [--pads <frame/port/input.txt>] [--give-weapon ID ...] [--watch-human-hp 0..3] [--trace-frame N --trace-slot 4..7] [--trace-rng] [--game-flow|--no-game-flow]\n"
                  "       nfmips <elf> float-selftest (EE/VU float model assertions)\n"
                  "       nfmips <elf> symbols [substr]\n"
                  "       nfmips <elf> diff [--count N] [--seed N] [--state p2s]\n"
@@ -3119,7 +3122,7 @@ int main(int argc, char** argv) {
             int rows = 0, watch_human_hp_slot = -1, trace_slot = -1;
             int watch_drone_anim_slot = -1;
             u32 trace_frame = 0, watch_drone_frame = 0;
-            bool trace_rng = false, game_flow = false;
+            bool trace_rng = false, game_flow = true;
             std::vector<int> give_weapons;
             for (size_t j = 2; j < av.size(); j++) {
                 if (av[j] == "--state" && j + 1 < av.size()) state = av[++j];
@@ -3139,12 +3142,13 @@ int main(int argc, char** argv) {
                     give_weapons.push_back(std::stoi(av[++j]));
                 else if (av[j] == "--trace-rng") trace_rng = true;
                 else if (av[j] == "--game-flow") game_flow = true;
+                else if (av[j] == "--no-game-flow") game_flow = false;
                 else throw std::runtime_error(
                     "mp-oracle wants --state <p2s> --rows N [--pads file] "
                     "[--give-weapon ID ...] [--watch-human-hp 0..3] "
                     "[--watch-drone-anim 4..7 --watch-drone-frame N] "
                     "[--trace-frame N --trace-slot 4..7] [--trace-rng] "
-                    "[--game-flow]");
+                    "[--no-game-flow]");
             }
             return cmd_mp_oracle(elf, state, rows, pads, watch_human_hp_slot,
                                  trace_frame, trace_slot, trace_rng, give_weapons,
