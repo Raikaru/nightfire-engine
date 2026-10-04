@@ -7,7 +7,6 @@
 #include <stdexcept>
 #include <bit>
 #include <cstddef>
-#include <cstdlib>
 #include <cstdint>
 
 #include "core/rng.hpp"
@@ -978,7 +977,7 @@ void BotSystem::tick(World&, FrameTiming) {
         b->have_last_pos = true;
     }
 }
-void BotSystem::after_tick(World& world, FrameTiming) {
+void BotSystem::after_tick(World&, FrameTiming) {
     ArenaSystem& arena = *impl_->cfg.arena;
     // Apply pickup visits after ArenaSystem publishes this frame's pickup events.
     for (const PickupEvent& e : arena.pickup_events()) {
@@ -991,88 +990,6 @@ void BotSystem::after_tick(World& world, FrameTiming) {
         ++counters.pickups;
         b->brain->log_event("pickup", fmt("#%zu cat %d item %d", e.index,
                                           arena.pickups().all()[e.index].category, arena.pickups().all()[e.index].item));
-    }
-    if (const char* path = std::getenv("NF_BOT_STATE_DUMP")) {
-        if (world.frame() >= 13326 && world.frame() <= 13328) {
-            if (std::FILE* out = std::fopen(path, "a")) {
-                for (const auto& ptr : bots_) {
-                    const Bot& b = *ptr;
-                    const Drone& d = *b.drone;
-                    const BotVars& v = b.brain->v;
-                    std::fprintf(out,
-                                 "{\"frame\":%llu,\"slot\":%d,\"pos\":[%.9g,%.9g,%.9g],\"yaw\":%.9g,"
-                                 "\"state\":[%d,%d,%d,%d,%u,%d],\"flags\":[%u,%u,%u],"
-                                 "\"velocity\":[%.9g,%.9g,%.9g],\"fall\":[%.9g,%.9g,%.9g],"
-"\"movement\":{\"status\":%d,\"have_dest\":%d,\"dest\":[%.9g,%.9g,%.9g],"
-"\"dest_dist\":%.9g,\"dest_angle\":%.9g,\"route_distance\":%.9g,\"dest_cel\":%d,"
-"\"disabled\":%d,\"fly\":%d,\"fly_speed\":%.9g,\"speed\":%.9g,\"turn_rate\":%.9g,"
-"\"bunched\":%d,\"ground\":[%d,%.9g],\"stand_height\":%.9g,"
-"\"applied_height\":%.9g,\"root_motion\":[%.9g,%.9g,%.9g]},"
-                                 "\"anim\":[%d,%d,%d,%u,%d,%d,%u,%.9g,%d,%d],"
-                                 "\"brain\":[%d,%d,%d,%u,%u,%u,%d,%u,%d,%d,%d,%d,%d],"
-                                 "\"goals\":[",
-                                 static_cast<unsigned long long>(world.frame()), b.spec.slot,
-                                 d.pos[0], d.pos[1], d.pos[2], d.yaw, d.smi.cur, d.smi.prev, d.smi.next,
-                                 d.smi.saved, d.smi.entry_time, d.smi.pending, d.flags, d.alert_flags, d.sight_flags,
-                                 d.velocity[0], d.velocity[1], d.velocity[2], d.fall_velocity[0], d.fall_velocity[1],
-                                 d.fall_velocity[2], int(d.mv.route_status), d.mv.have_dest, d.mv.dest[0], d.mv.dest[1],
-                                 d.mv.dest[2], d.mv.dest_dist, d.mv.dest_angle, d.mv.route_distance, d.mv.dest_cel,
-                                 d.mv.disabled, d.mv.fly, d.mv.fly_speed, d.mv.speed, d.mv.turn_rate, d.mv.bunched,
-                                 d.on_ground, d.ground_normal_y, d.stand_height, d.mv.applied_height,
-                                 d.mv.root_motion[0], d.mv.root_motion[1], d.mv.root_motion[2],
-d.anim.prev_state, d.anim.cur_state, d.anim.cur_anim, d.anim.cur_flags,
-                                 d.anim.clip_running, d.anim.applied, d.anim.script, d.anim.step, d.anim.next_anim,
-                                 d.anim.end_state, v.active_goal, v.state_type, v.rr_index, v.history_head, v.bits,
-                                 v.goto_stamp, v.pending_state, v.route_fail_count, v.last_pickup, v.friend_slot,
-                                 v.trait_opponent, v.desired_weapon, v.armour);
-                    for (std::size_t i = 0; i < v.goal.size(); ++i) {
-                        const BotGoal& g = v.goal[i];
-                        std::fprintf(out, "%s{\"pos\":[%.9g,%.9g,%.9g],\"has\":%d,\"target\":%d,"
-                                          "\"type\":%u,\"kind\":%d,\"slot\":%d,\"flags\":%u,"
-                                          "\"result\":%d,\"return\":%d,\"complete\":%d,\"set\":%.9g,"
-                                          "\"timeout\":%.9g}",
-                                     i ? "," : "", g.pos[0], g.pos[1], g.pos[2], g.has_pos, g.target,
-                                     unsigned(g.type), g.kind, g.slot, unsigned(g.flags), g.last_result,
-                                     g.return_state, g.complete, g.set_time, g.timeout);
-                    }
-                    std::fprintf(out, "],\"layers\":[");
-                    if (d.character) {
-                        const auto layers = d.character->layer_infos();
-                        for (std::size_t i = 0; i < layers.size(); ++i) {
-                            const auto& l = layers[i];
-                            std::fprintf(out, "%s{\"script\":%u,\"frame\":%.9g,\"speed\":%.9g,"
-                                              "\"blend\":%.9g,\"duration\":%.9g,\"direction\":%d,"
-                                              "\"distance_driven\":%d,\"phase_locked\":%d,\"strafe\":%d,"
-                                              "\"weight\":%.9g}",
-                                         i ? "," : "", l.script, l.frame, l.speed, l.blend_time,
-                                         l.blend_duration, l.direction, l.distance_driven, l.phase_locked,
-                                         l.strafe, l.pair_weight);
-                        }
-                    }
-                    std::fprintf(out, "],\"route\":");
-                    if (d.nav) {
-                        const NavRoute& r = d.nav->route();
-                        std::fprintf(out, "{\"flags\":%u,\"status\":%u,\"last\":%u,\"stamp\":%u,"
-                                          "\"prev_first\":%u,\"first\":%u,\"dest_node\":%u,"
-                                          "\"start\":[%.9g,%.9g,%.9g,%d],\"goal\":[%.9g,%.9g,%.9g,%d],"
-                                          "\"waypoint\":[%.9g,%.9g,%.9g,%d],\"index\":%d,"
-                                          "\"distance\":%.9g,\"radius\":%.9g,\"path\":%d,\"nodes\":[",
-                                     r.flags, unsigned(r.status), r.last_node, r.target_stamp, r.prev_first,
-                                     r.first_node, r.dest_node, r.start.pos[0], r.start.pos[1], r.start.pos[2],
-                                     r.start.cel, r.goal.pos[0], r.goal.pos[1], r.goal.pos[2], r.goal.cel,
-                                     r.waypoint.pos[0], r.waypoint.pos[1], r.waypoint.pos[2], r.waypoint.cel,
-                                     r.index, r.distance, r.radius, r.path);
-                        for (std::size_t i = 0; i < r.nodes.size(); ++i)
-                            std::fprintf(out, "%s%u", i ? "," : "", unsigned(r.nodes[i]));
-                        std::fprintf(out, "]}");
-                    } else {
-                        std::fprintf(out, "null");
-                    }
-                    std::fprintf(out, "}\n");
-                }
-                std::fclose(out);
-            }
-        }
     }
 }
 

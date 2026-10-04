@@ -690,6 +690,11 @@ def main():
                             and offset % A.MPPICKUP_STRIDE == 0):
                         tags.append(("goal_target_raw", target))
                         ranges.append((target, A.MPPICKUP_STRIDE))
+                    elif (target not in cache["objs"]
+                          and target not in cache["objective_ptrs"]
+                          and valid_ee_pointer(target, 4)):
+                        tags.append(("goal_target_link", target))
+                        ranges.append((target, 4))
         if args.seedable:
             for k, path in cache["ai_paths"].items():
                 if not path["valid"]:
@@ -949,6 +954,9 @@ def main():
                 if goal_frame == frame0 and goal_done == done0:
                     for target, raw in zip(unique_targets, goal_chunks[:-2]):
                         bytag[("goal_target_raw", target)] = raw
+            objective_index_by_ptr = {
+                address: index for index, address in enumerate(objective_ptrs)
+            }
             goal_targets = []
             for k, refs in cache["goal_refs"].items():
                 bv_raw = bytag[("bv_raw", k)]
@@ -967,8 +975,15 @@ def main():
                         pass
                     elif target in objs:
                         ref["target_slot"] = objs.index(target)
-                    elif target in objective_ptrs:
-                        ref["objective_index"] = objective_ptrs.index(target)
+                    elif target in objective_index_by_ptr:
+                        ref["objective_index"] = objective_index_by_ptr[target]
+                    else:
+                        target_link = bytag.get(("goal_target_link", target))
+                        if target_link is not None:
+                            target_object = struct.unpack("<I", target_link)[0]
+                            index = objective_index_by_ptr.get(target_object + 0x30)
+                            if index is not None:
+                                ref["objective_index"] = index
                     cache["goal_refs"].setdefault(k, [0, 0])[goal] = target
                     goal_targets.append(ref)
             rec["bot_goal_targets"] = goal_targets

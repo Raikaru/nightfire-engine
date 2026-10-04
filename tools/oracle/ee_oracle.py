@@ -134,10 +134,16 @@ def main():
     ap.add_argument("--rows", type=int, required=True,
                     help="number of snapshots, including the initial P2S row")
     ap.add_argument("--inputs", help="contiguous mp_record JSONL supplying pad_all values")
+    ap.add_argument("--watch-human-hp", type=int, choices=range(4),
+                    help="log writes to one MP human's BLData HP, including PC and $ra")
     ap.add_argument("--timeout", type=float, default=1200.0)
     args = ap.parse_args()
     if args.rows < 1:
         ap.error("--rows must be positive")
+    if args.watch_human_hp is not None:
+        command_watch_human_hp = ["--watch-human-hp", str(args.watch_human_hp)]
+    else:
+        command_watch_human_hp = []
     for path in (args.state, args.elf, args.nfmips):
         if not pathlib.Path(path).is_file():
             ap.error(f"file does not exist: {path}")
@@ -146,6 +152,7 @@ def main():
         pad_script = pathlib.Path(temp_dir) / "pads.txt"
         command = [str(pathlib.Path(args.nfmips).resolve()), args.elf, "mp-oracle",
                    "--state", args.state, "--rows", str(args.rows)]
+        command += command_watch_human_hp
         pad_span = None
         if args.inputs:
             pad_span = _write_pad_script(args.inputs, pad_script)

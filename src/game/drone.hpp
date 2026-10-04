@@ -395,9 +395,10 @@ public:
         float source_callback_height = 0; // DroneAnim_PreTransCallback previous Drone+0xA0 root-height baseline
         bool source_callback_y_enabled = true; // source Drone+0x1a == 0
         bool source_callback_height_valid = false;
-        bool source_collision_due = true; // v5 NDrone2_DoCollision result for this restored bot snapshot
-        bool source_collision_valid = false; // v5 eligibility snapshot, consumed by collision_step once
-        bool source_gravity_due = true; // v5 NDrone2_DoGravity result for this restored bot snapshot
+        bool source_collision_supported = false; // v5 seed supplies the source gates needed by NDrone2_Collision
+        bool source_collision_due = true;
+        bool source_collision_valid = false;
+        bool source_gravity_due = true;
         float step = 0;                 // +0x58c scalar fallback when AnimObjectUpdate is skipped
     } anim;
     // NDrone2 locomotion state (steering target, route, per-tick displacement).
