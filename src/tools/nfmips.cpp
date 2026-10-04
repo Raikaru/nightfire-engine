@@ -2583,7 +2583,8 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                   const std::string& pad_script, int watch_human_hp_slot,
                   u32 trace_frame, int trace_slot, bool trace_rng,
                   const std::vector<int>& give_weapons,
-                  int watch_drone_anim_slot, u32 watch_drone_frame) {
+                  int watch_drone_anim_slot, u32 watch_drone_frame,
+                  bool game_flow) {
     if (state.empty() || rows < 1)
         throw std::runtime_error("mp-oracle needs --state <p2s> and --rows N");
     if ((trace_frame == 0) != (trace_slot == -1)
@@ -2652,6 +2653,7 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
     constexpr u32 kDone = kGameState + 0x30;
     constexpr u32 kFrame = kGameState + 0x34;
     constexpr u32 kFrameStart = kGameState + 0x3C;
+    constexpr u32 kFrameAccumulator = kGameState + 0x38;
     constexpr u32 kTslot0 = 0x00245680;
     constexpr u32 kTslotStride = 0x180;
     constexpr u32 kPadInput = 0x120;
@@ -2874,7 +2876,7 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
     write_u32(kRamSize);
     snapshot();   // P2S state is the first emitted source frame.
 
-    const u32 entry = m.addr("GameFlow_Main__Fv");
+    const u32 entry = m.addr(game_flow ? "GameFlow_Main__Fv" : "Game_Run__Fv");
     struct RngFunction {
         u32 address;
         const char* name;
@@ -2929,7 +2931,17 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
         const u32 timer_before = m.mem.read<u32>(kFrame);
         const u32 next_frame = before + 1;
         const u32 next_timer_frame = timer_before + 1;
-        // GameFlow_Main owns these scheduler counters and accumulator.
+        if (!game_flow) {
+            const u32 frame_rate_int = m.mem.read<u32>(m.addr("FRAME_RATE_INT"));
+            if (!frame_rate_int)
+                throw std::runtime_error("FRAME_RATE_INT is zero");
+            const u32 video_frame_rate = m.mem.read<u32>(m.addr("VIDEO_FRAME_RATE"));
+            m.mem.write<u32>(kFrameStart, next_frame);
+            m.mem.write<u32>(kFrame, next_timer_frame);
+            m.mem.write<u32>(kFrameAccumulator,
+                             m.mem.read<u32>(kFrameAccumulator)
+                                 + video_frame_rate / frame_rate_int);
+        }
         const auto events = pads.find(before + 1);
         if (events != pads.end()) {
             for (const OraclePad& event : events->second) {
@@ -3019,9 +3031,10 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
         } catch (const std::exception& e) {
             m.set_instruction_observer({});
             m.mem.set_watch({});
-            std::fprintf(stderr, "GameFlow_Main trap at %08x: %s\n", m.cpu.cur_pc, e.what());
+            std::fprintf(stderr, "%s trap at %08x: %s\n",
+                         game_flow ? "GameFlow_Main" : "Game_Run",
+                         m.cpu.cur_pc, e.what());
             std::fputs(m.disasm_range(m.cpu.cur_pc - 16, 8).c_str(), stderr);
-            throw;
         }
         m.set_instruction_observer({});
         if (next_frame == trace_frame) {
@@ -3081,7 +3094,7 @@ int main(int argc, char** argv) {
             int rows = 0, watch_human_hp_slot = -1, trace_slot = -1;
             int watch_drone_anim_slot = -1;
             u32 trace_frame = 0, watch_drone_frame = 0;
-            bool trace_rng = false;
+            bool trace_rng = false, game_flow = false;
             std::vector<int> give_weapons;
             for (size_t j = 2; j < av.size(); j++) {
                 if (av[j] == "--state" && j + 1 < av.size()) state = av[++j];
@@ -3100,15 +3113,17 @@ int main(int argc, char** argv) {
                 else if (av[j] == "--give-weapon" && j + 1 < av.size())
                     give_weapons.push_back(std::stoi(av[++j]));
                 else if (av[j] == "--trace-rng") trace_rng = true;
+                else if (av[j] == "--game-flow") game_flow = true;
                 else throw std::runtime_error(
                     "mp-oracle wants --state <p2s> --rows N [--pads file] "
                     "[--give-weapon ID ...] [--watch-human-hp 0..3] "
                     "[--watch-drone-anim 4..7 --watch-drone-frame N] "
-                    "[--trace-frame N --trace-slot 4..7] [--trace-rng]");
+                    "[--trace-frame N --trace-slot 4..7] [--trace-rng] "
+                    "[--game-flow]");
             }
             return cmd_mp_oracle(elf, state, rows, pads, watch_human_hp_slot,
                                  trace_frame, trace_slot, trace_rng, give_weapons,
-                                 watch_drone_anim_slot, watch_drone_frame);
+                                 watch_drone_anim_slot, watch_drone_frame, game_flow);
         }
         if (cmd == "call") {
             if (av.size() < 3) {
