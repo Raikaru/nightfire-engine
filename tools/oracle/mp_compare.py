@@ -162,24 +162,44 @@ def flatten_fields(value, prefix="", fields=None):
     return fields
 
 
+def source_objective_identity(record, index):
+    objectives = record.get("objectives", record.get("objs", []))
+    if not isinstance(index, int) or index < 0 or index >= len(objectives):
+        return None
+    row = objectives[index]
+    identity = (row.get("kind"), row.get("team"))
+    if None in identity:
+        return None
+    ordinal = sum((previous.get("kind"), previous.get("team")) == identity
+                  for previous in objectives[:index])
+    return (*identity, ordinal)
+
+
+def engine_objective_index(identity, engine_objectives):
+    if identity is None:
+        return None
+    kind, team, ordinal = identity
+    matches = [row for row in engine_objectives
+               if row.get("kind") == kind and row.get("team") == team]
+    return matches[ordinal].get("idx") if ordinal < len(matches) else None
+
+
 def objective_goal_target(record, target_ptr, engine_objectives):
-    """Translate a source objective-data pointer through the paired objective roster."""
+    """Translate a source objective descriptor pointer to the paired engine index."""
     source = None
     for base, kind in ((0x317210, 0), (0x317330, 1)):
         offset = target_ptr - base
         if 0 <= offset < 2 * 0x90 and offset % 0x90 == 0:
             team = offset // 0x90
-            source = next((row for row in record.get("objectives", [])
+            source = next((i for i, row in enumerate(record.get("objectives", []))
                            if row.get("kind") == kind and row.get("team") == team), None)
             break
     if source is None and target_ptr == 0x3178D0:
-        source = next((row for row in record.get("objectives", [])
+        source = next((i for i, row in enumerate(record.get("objectives", []))
                        if row.get("kind") == 3), None)
     if source is None:
         return None
-    match = next((row for row in engine_objectives
-                  if row.get("kind") == source.get("kind") and row.get("team") == source.get("team")), None)
-    return match.get("idx") if match is not None else None
+    return engine_objective_index(source_objective_identity(record, source), engine_objectives)
 
 
 def diff_fields(record, engine_objectives=()):
@@ -248,11 +268,20 @@ def diff_fields(record, engine_objectives=()):
                         ref = next((r for r in refs if r.get("bot_slot") == slot
                                     and r.get("goal_slot") == active_goal), None)
                         if ref is not None:
+                            matched = False
                             for field in ("pickup_index", "objective_index", "target_slot"):
                                 if field in ref:
-                                    player["goal_target"] = ref[field]
+                                    target = ref[field]
+                                    if field == "objective_index":
+                                        paired = engine_objective_index(
+                                            source_objective_identity(record, target),
+                                            engine_objectives)
+                                        if paired is not None:
+                                            target = paired
+                                    player["goal_target"] = target
+                                    matched = True
                                     break
-                            else:
+                            if not matched:
                                 target = objective_goal_target(record, target_ptr, engine_objectives)
                                 if target is None:
                                     player.pop("goal_target")

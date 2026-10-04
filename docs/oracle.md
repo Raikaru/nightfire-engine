@@ -263,13 +263,15 @@ For deterministic offline replay from an existing PCSX2 savestate, use
 original `Game_Run` through `nfmips`. Row one is the saved P2S; each following
 row advances GameState's frame/timer counters and video-frame accumulator using
 `GameFlow_Main`'s `VIDEO_FRAME_RATE / FRAME_RATE_INT` edge, then applies the
-corresponding `pad_all` values before the call. `N` includes the initial row;
-pad input must cover every frame after it. Row numbers come from the saved
-GameState counters, not the P2S filename or requested checkpoint frame. The
-input word is the raw active-high Sony tSlot mask (for example, Cross is
-`0x40` and R1 is `0x08`); stick bytes come from `pad_all[].s`. Add
-`--weapon-anim-raw` to capture the 0x100-byte pointed-to human animation object
-as `pl[].weapon_anim_raw` for replay code that needs more than the enum.
+corresponding `pad_all` values and calls `Game_Run` exactly once. A second call
+would advance world state again while leaving the supplied frame counters
+unchanged. `N` includes the initial row; pad input must cover every frame after
+it. Row numbers come from the saved GameState counters, not the P2S filename or
+requested checkpoint frame. The input word is the raw active-high Sony tSlot
+mask (for example, Cross is `0x40` and R1 is `0x08`); stick bytes come from
+`pad_all[].s`. Add `--weapon-anim-raw` to capture the 0x100-byte pointed-to
+human animation object as `pl[].weapon_anim_raw` for replay code that needs
+more than the enum.
 The script feeds full RAM snapshots into the same `mp_record.py` decoder, so its
 JSONL uses the seedable v5 schema without a second decoder. Example:
 

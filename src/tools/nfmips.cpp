@@ -2579,7 +2579,8 @@ struct OraclePad {
 
 int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                   const std::string& pad_script, int watch_human_hp_slot,
-                  u32 trace_frame, int trace_slot, bool trace_rng) {
+                  u32 trace_frame, int trace_slot, bool trace_rng,
+                  const std::vector<int>& give_weapons) {
     if (state.empty() || rows < 1)
         throw std::runtime_error("mp-oracle needs --state <p2s> and --rows N");
     if ((trace_frame == 0) != (trace_slot == -1)
@@ -2637,6 +2638,23 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
     constexpr u32 kTslotStride = 0x180;
     constexpr u32 kPadInput = 0x120;
     constexpr u32 kRamSize = nf::ee::Memory::kRamSize;
+    for (const int weapon : give_weapons) {
+        if (weapon < 0 || weapon >= 115)
+            throw std::runtime_error("--give-weapon id must be in 0..114");
+        const u32 object = m.mem.read<u32>(0x002A499Cu);
+        if (!object) throw std::runtime_error("--give-weapon requires a human in MP slot 0");
+        const u32 bl_data = m.mem.read<u32>(object + 0xE0);
+        if (!bl_data) throw std::runtime_error("--give-weapon human has no BLData");
+        nf::ee::CallArgs args;
+        args.i(bl_data).i(u32(weapon)).i(999);
+        const auto result = m.call_keep("Player_EquipWeapon__FP6BLDatass", args);
+        if (result.v0 == 0)
+            throw std::runtime_error("Player_EquipWeapon rejected weapon " + std::to_string(weapon));
+        const u32 weapon_owner = m.mem.read<u32>(object + 0xDC);
+        if (!weapon_owner) throw std::runtime_error("--give-weapon human has no weapon owner");
+        m.mem.write<u8>(weapon_owner + 0x63, u8(weapon));
+        std::fprintf(stderr, "GAVE_WEAPON slot=0 id=%d bl=%08x\n", weapon, bl_data);
+    }
     if (watch_human_hp_slot < -1 || watch_human_hp_slot >= 4)
         throw std::runtime_error("--watch-human-hp slot must be in 0..3");
     if (watch_human_hp_slot >= 0) {
@@ -2752,22 +2770,37 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
     snapshot();   // P2S state is the first emitted post-Game_Run sample.
 
     const u32 entry = m.addr("Game_Run__Fv");
+    struct RngFunction {
+        u32 address;
+        const char* name;
+        bool float_result;
+    };
+    struct PendingRandom {
+        u32 caller_return;
+        u32 caller;
+        u32 stack;
+        u32 frame;
+        const RngFunction* function;
+    };
+    std::vector<RngFunction> rng_functions;
+    std::vector<PendingRandom> pending;
     if (trace_rng) {
-        const u32 random_function = m.addr("Rand_Random__Fv");
-        struct PendingRandom {
-            u32 caller_return;
-            u32 caller;
-            u32 stack;
-            u32 frame;
+        rng_functions = {
+            {m.addr("Rand_Random__Fv"), "Rand_Random", false},
+            {m.addr("Rand_Rand__FUi"), "Rand_Rand", false},
+            {m.addr("Rand_FRand__Ff"), "Rand_FRand", true},
+            {m.addr("Rand_FRandHalf__Ff"), "Rand_FRandHalf", true},
+            {m.addr("Rand_FRand_MVar2__Fff"), "Rand_FRand_MVar2", true},
         };
-        std::vector<PendingRandom> pending;
+        std::fprintf(stderr, "RNG_TRACE enabled functions=%zu\n", rng_functions.size());
         m.set_instruction_observer([&](const nf::ee::Cpu& cpu, u32 pc, u32) {
             const u32 stack = u32(cpu.r[29].d[0]);
             for (auto it = pending.begin(); it != pending.end();) {
                 if (pc == it->caller_return && stack == it->stack) {
                     const auto symbol = m.symbol_at(it->caller);
-                    std::fprintf(stderr, "RNG_CALL frame=%u caller=%08x result=%08x",
-                                 it->frame, it->caller, cpu.r[2].w[0]);
+                    const u32 result = it->function->float_result ? cpu.f[0] : cpu.r[2].w[0];
+                    std::fprintf(stderr, "RNG_CALL frame=%u fn=%s caller=%08x result=%08x",
+                                 it->frame, it->function->name, it->caller, result);
                     if (symbol)
                         std::fprintf(stderr, " <%s+0x%x>", symbol->name.c_str(),
                                      it->caller - symbol->value);
@@ -2777,12 +2810,12 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                     ++it;
                 }
             }
-            if (pc == random_function) {
+            for (const RngFunction& function : rng_functions) {
+                if (pc != function.address) continue;
                 const u32 caller_return = u32(cpu.r[31].d[0]);
                 pending.push_back({caller_return, caller_return - 8, stack,
-                                   m.mem.read<u32>(kFrameStart)});
-                std::fprintf(stderr, "RNG_ENTER frame=%u caller=%08x\n",
-                             m.mem.read<u32>(kFrameStart), caller_return - 8);
+                                   m.mem.read<u32>(kFrameStart), &function});
+                break;
             }
         });
     }
@@ -2900,13 +2933,6 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
             if (!trace_done)
                 throw std::runtime_error("trace slot never entered Drone_Control");
         }
-        try {
-            m.call_keep(entry, {}, 200'000'000);
-        } catch (const std::exception& e) {
-            std::fprintf(stderr, "Game_Run trap at %08x: %s\n", m.cpu.cur_pc, e.what());
-            std::fputs(m.disasm_range(m.cpu.cur_pc - 16, 8).c_str(), stderr);
-            throw;
-        }
         const u32 after = m.mem.read<u32>(kFrameStart);
         const u32 timer_after = m.mem.read<u32>(kFrame);
         if (after != next_frame || timer_after != next_timer_frame)
@@ -2923,7 +2949,7 @@ void usage() {
                  "usage: nfmips <elf> call <sym|addr> [args] [--state p|--ram d] [--dump a[:n]] [--steps N]\n"
                  "       nfmips <elf> init [--check] [--dump-out f] [--steps N]\n"
                  "       nfmips <elf> trace <sym|addr> [args] [--steps N] [--state p|--ram d]\n"
-                 "       nfmips <elf> mp-oracle --state <p2s> --rows N [--pads <frame/port/input.txt>] [--watch-human-hp 0..3] [--trace-frame N --trace-slot 4..7] [--trace-rng]\n"
+                 "       nfmips <elf> mp-oracle --state <p2s> --rows N [--pads <frame/port/input.txt>] [--give-weapon ID ...] [--watch-human-hp 0..3] [--trace-frame N --trace-slot 4..7] [--trace-rng]\n"
                  "       nfmips <elf> symbols [substr]\n"
                  "       nfmips <elf> diff [--count N] [--seed N] [--state p2s]\n"
                  "       nfmips <elf> diff-acc (DroneWeap_DoBulletAccuracy truth table, Bots diff)\n"
@@ -2956,6 +2982,7 @@ int main(int argc, char** argv) {
             std::string state, pads;
             int rows = 0, watch_human_hp_slot = -1, trace_slot = -1;
             bool trace_rng = false;
+            std::vector<int> give_weapons;
             u32 trace_frame = 0;
             for (size_t j = 2; j < av.size(); j++) {
                 if (av[j] == "--state" && j + 1 < av.size()) state = av[++j];
@@ -2967,13 +2994,16 @@ int main(int argc, char** argv) {
                     trace_frame = u32(std::stoul(av[++j]));
                 else if (av[j] == "--trace-slot" && j + 1 < av.size())
                     trace_slot = std::stoi(av[++j]);
+                else if (av[j] == "--give-weapon" && j + 1 < av.size())
+                    give_weapons.push_back(std::stoi(av[++j]));
                 else if (av[j] == "--trace-rng") trace_rng = true;
                 else throw std::runtime_error(
                     "mp-oracle wants --state <p2s> --rows N [--pads file] "
-                    "[--watch-human-hp 0..3] [--trace-frame N --trace-slot 4..7] [--trace-rng]");
+                    "[--give-weapon ID ...] [--watch-human-hp 0..3] "
+                    "[--trace-frame N --trace-slot 4..7] [--trace-rng]");
             }
             return cmd_mp_oracle(elf, state, rows, pads, watch_human_hp_slot,
-                                 trace_frame, trace_slot, trace_rng);
+                                 trace_frame, trace_slot, trace_rng, give_weapons);
         }
         if (cmd == "call") {
             if (av.size() < 3) {

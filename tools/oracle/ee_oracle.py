@@ -140,6 +140,8 @@ def main():
                     help="capture the full human weapon-animation object range")
     ap.add_argument("--trace-rng", action="store_true",
                     help="print each Rand_Random caller and result to stderr")
+    ap.add_argument("--give-weapon", action="append", type=int, default=[],
+                    help="use Player_EquipWeapon to grant and select a human MP weapon")
     ap.add_argument("--timeout", type=float, default=1200.0)
     args = ap.parse_args()
     if args.rows < 1:
@@ -159,6 +161,8 @@ def main():
         command += command_watch_human_hp
         if args.trace_rng:
             command.append("--trace-rng")
+        for weapon in args.give_weapon:
+            command += ["--give-weapon", str(weapon)]
         pad_span = None
         if args.inputs:
             pad_span = _write_pad_script(args.inputs, pad_script)
