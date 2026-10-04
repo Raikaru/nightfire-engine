@@ -296,6 +296,14 @@ PC/instruction, `$ra`, and saved stack words at SP+0x10, +0x90, +0xa0, and
 raw fields at +0x50, +0x52, +0x58, and +0x08; interpret it with the caller
 chain because the offset is specific to nested hit-handling frames.
 
+The interpreter calls the original `GameFlow_Main` once per replay frame, so
+its scheduler updates and normal `Game_Run`/`Game_Draw` gating execute. The
+source draws only when `GameState+0x40` and `sloflag` permit it. Object-matrix
+submission leaves are skipped; `PS2StartCalcPacket` releases the
+buffer-completion poll that would otherwise wait for a DMA worker. This keeps
+CPU-side scene traversal active, but does not emulate rendered output or
+GS/DMA side effects.
+
 Bot animation is recorded under `pl[4..7].anim`, when the `obj_tag` has a valid
 animation owner. `owner_ptr` is read from `obj_tag+0xDC`; the actual
 `sAnimObject` pointer is `owner_ptr+0x70` (verified in `AnimObjectNew` and
@@ -859,6 +867,18 @@ a weapon ID.
 | Skyrail Team Arena, fresh seedable v4, 3 bots | slot 75, teams 0/0/1; 180 s time limit | 1,672 rows, frame 12857..14857; 1,371 `seed_ready` | `~/.cache/MpOracle-2-tmp/fresh-v4-wheel/team.jsonl`; 306 ready windows, longest 45 frames; 329 missed samples, 3 resyncs. |
 | Skyrail CTF, fresh seedable v4, 3 bots | slot 76, teams 0/0/1; 180 s time limit | 1,537 rows, frame 13634..15634; 1,232 `seed_ready` | `~/.cache/MpOracle-2-tmp/fresh-v4-wheel/ctf.jsonl`; 245 ready windows, longest 48 frames; 464 missed samples, no resyncs; four live objective roots. |
 | Skyrail Demolition, fresh seedable v4, 3 bots | slot 74, teams 0/0/1; 180 s time limit | 1,926 rows, frame 12969..14969; 1,627 `seed_ready` | `~/.cache/MpOracle-2-tmp/fresh-v4-wheel/demo.jsonl`; 277 ready windows, longest 33 frames; 75 missed samples, no resyncs; one live demolition root. |
+
+Latest `--mp-seed-each` rechecks at `--tolerance 1e-6` used the longest
+contiguous fresh seedable windows: Team frames 14523..14726 (203 compared
+ticks), Demo 14077..14248 (171), and CTF 14187..14318 (131). All compared
+ticks diverged. Team's first mismatch was `pk[19].remaining_s` (residual
+0.000333333), with RNG mismatches on 132/203 frames (407 calls each); Demo's
+first mismatch was `pk[11].remaining_s` (0.000333333), RNG mismatches on
+113/171 frames (344 oracle / 342 engine calls); CTF's was also
+`pk[11].remaining_s` (0.000333333), RNG mismatches on 124/131 frames (265
+oracle / 263 engine calls). Traces are under
+`~/.cache/MpOracle-2-tmp/{team,demo,ctf}-render-1e6.jsonl`; these are not
+parity passes.
 
 ### Residuals / limits
 

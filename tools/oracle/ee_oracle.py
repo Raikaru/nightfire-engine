@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Run original Game_Run from a PCSX2 P2S through nfmips and decode MP rows.
+"""Run GameFlow_Main from a PCSX2 P2S and decode multiplayer state rows.
 
-This streams compressed EE RAM snapshots from nfmips into mp_record's existing
-v5 decoder, so the live-PINE and interpreter sources share one JSONL schema.
+The interpreter streams compressed EE RAM snapshots into mp_record's existing
+v5 decoder, so live-PINE and headless sources share one JSONL schema.
 """
 
 import argparse

@@ -2626,6 +2626,22 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
     // Game_Run's sceTtyWrite only emits DECI2 debug-console output and can
     // otherwise spin waiting for an IOP-side completion.
     if (m.symbol("sceTtyWrite")) hook_noop(m, "sceTtyWrite");
+    // Preserve CPU-side scene/animation traversal while bypassing object
+    // matrix submission leaves that send geometry to GS/VIF.
+    for (const char* draw : {"psiDrawObjectMatrix__FP12celglist_tagP6MATRIXUi",
+                             "psiDrawSkinObjectMatrix__FP12celglist_tagP6MATRIXP7obj_tagT1"})
+        hook_noop(m, draw);
+    if (!m.hook("PS2StartCalcPacket__Fv", [&m](nf::ee::Cpu&) {
+            constexpr u32 kDmaBufferStride = 0x4104;
+            const u32 buffer = m.mem.read<u32>(m.addr("CalcPacket"));
+            if (buffer >= 2)
+                throw std::runtime_error("PS2 CalcPacket index is out of range");
+            // This buffer-completion flag is normally advanced by the PS2 DMA
+            // engine. The interpreter has no DMA worker, so release the wait.
+            m.mem.write<u32>(m.addr("DBufData") + buffer * kDmaBufferStride, 3);
+            return false;
+        }))
+        throw std::runtime_error("ACTION.ELF has no PS2StartCalcPacket");
     for (const char* sound : {"Sound_Play__FUifsUi", "Sound_Play3D__FUiP7_VECTORfffsUii"})
         if (m.symbol(sound)) hook_noop(m, sound);
     // Preserve scripted tSlot data while running the game's real input mapper.
@@ -2635,7 +2651,6 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
     constexpr u32 kGameState = 0x002A3768;
     constexpr u32 kDone = kGameState + 0x30;
     constexpr u32 kFrame = kGameState + 0x34;
-    constexpr u32 kFrameAccumulator = kGameState + 0x38;
     constexpr u32 kFrameStart = kGameState + 0x3C;
     constexpr u32 kTslot0 = 0x00245680;
     constexpr u32 kTslotStride = 0x180;
@@ -2857,9 +2872,9 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
     write_u32(1); // stream version
     write_u32(u32(rows));
     write_u32(kRamSize);
-    snapshot();   // P2S state is the first emitted post-Game_Run sample.
+    snapshot();   // P2S state is the first emitted source frame.
 
-    const u32 entry = m.addr("Game_Run__Fv");
+    const u32 entry = m.addr("GameFlow_Main__Fv");
     struct RngFunction {
         u32 address;
         const char* name;
@@ -2914,16 +2929,7 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
         const u32 timer_before = m.mem.read<u32>(kFrame);
         const u32 next_frame = before + 1;
         const u32 next_timer_frame = timer_before + 1;
-        // The scheduler advances these before invoking Game_Run. The
-        // interpreter calls that frame body directly, so reproduce its edge.
-        m.mem.write<u32>(kFrameStart, next_frame);
-        m.mem.write<u32>(kFrame, next_timer_frame);
-        const u32 frame_rate_int = m.mem.read<u32>(0x0030D0CC);
-        if (frame_rate_int == 0)
-            throw std::runtime_error("FRAME_RATE_INT is zero");
-        const u32 frame_tick = m.mem.read<u32>(0x0030D0C8) / frame_rate_int;
-        m.mem.write<u32>(kFrameAccumulator,
-                         m.mem.read<u32>(kFrameAccumulator) + frame_tick);
+        // GameFlow_Main owns these scheduler counters and accumulator.
         const auto events = pads.find(before + 1);
         if (events != pads.end()) {
             for (const OraclePad& event : events->second) {
@@ -3013,7 +3019,7 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
         } catch (const std::exception& e) {
             m.set_instruction_observer({});
             m.mem.set_watch({});
-            std::fprintf(stderr, "Game_Run trap at %08x: %s\n", m.cpu.cur_pc, e.what());
+            std::fprintf(stderr, "GameFlow_Main trap at %08x: %s\n", m.cpu.cur_pc, e.what());
             std::fputs(m.disasm_range(m.cpu.cur_pc - 16, 8).c_str(), stderr);
             throw;
         }
