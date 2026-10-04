@@ -11,6 +11,14 @@
 
 namespace nf::drone {
 
+namespace {
+void finish_source_object_animation_tick(Drone& d) {
+    // Game_Run calls control_movement_object_handler after MP_Update.
+    if (d.anim.source_gate_supported && d.anim.source_object_anim != 0)
+        --d.anim.source_object_anim;
+}
+}  // namespace
+
 void pre_drone_control(Drone& d) {
     // NDrone2_PreDroneControl 0x148f10
     const std::uint32_t now = d.now();
@@ -61,11 +69,15 @@ void control_standard(Drone& d) {
 
     // Message 3 (TICK) to the current state (bots: BotGlobal first).
     d.send_self(kMsgTick);
-    if (d.pending_delete) return;
+    if (d.pending_delete) {
+        finish_source_object_animation_tick(d);
+        return;
+    }
 
     if ((d.flags & flag::kActive) == 0) {
         prepare_source_animation_tick(d);
         anim_update(d);
+        finish_source_object_animation_tick(d);
         return;
     }
     if (d.side == kSideFriend) ++d.sys->count_friends;
@@ -73,14 +85,15 @@ void control_standard(Drone& d) {
     else ++d.sys->count_neutral;
 
     find_opponent(d);
+    prepare_source_animation_tick(d);
 
-    const Vec3 pre_control_pos = d.pos;
     move_step(d);
+    const CollisionStepState collision_state = collision_pre_root_step(d);
     weap::handle_firing(d);
     if (!d.sys->config().multiplayer && d.sys->callbacks().handle_explosives) d.sys->callbacks().handle_explosives(d);   // DroneFunc_HandleExplosives
-    prepare_source_animation_tick(d);
     anim_update(d);
-    collision_step(d, pre_control_pos);
+    collision_post_root_step(d, collision_state);
+    finish_source_object_animation_tick(d);
 }
 
 }  // namespace nf::drone

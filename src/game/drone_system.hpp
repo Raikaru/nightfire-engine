@@ -192,6 +192,7 @@ public:
     float hurt_drone(int id, const DroneHit& hit);
 
     void tick(World& world, FrameTiming timing) override;
+    void after_tick(World& world, FrameTiming timing) override;
 
     // Internal: transition loop (called by Drone::set_state).
     void run_transition(Drone& d);

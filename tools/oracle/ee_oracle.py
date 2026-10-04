@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Replay multiplayer rows from a PCSX2 P2S using the Game_Run harness.
+"""Replay multiplayer rows from a PCSX2 P2S through GameFlow_Main.
 
-The interpreter streams compressed EE RAM snapshots into mp_record's existing
-v5 decoder, so live-PINE and headless sources share one JSONL schema.
+The default runs Game_Run and Game_Draw, including draw-side visibility state,
+while emitting the same mp_record v5 snapshot schema as the live recorder.
 """
 
 import argparse
@@ -138,8 +138,10 @@ def main():
                     help="log writes to one MP human's BLData HP, including PC and $ra")
     ap.add_argument("--weapon-anim-raw", action="store_true",
                     help="capture the full human weapon-animation object range")
-    ap.add_argument("--game-flow", action="store_true",
-                    help="opt into the partial GameFlow_Main/Game_Draw path")
+    ap.add_argument("--game-flow", dest="game_flow", action="store_true", default=True,
+                    help="run GameFlow_Main and its view capture (default)")
+    ap.add_argument("--no-game-flow", dest="game_flow", action="store_false",
+                    help="run Game_Run only, without draw-side visibility state")
     ap.add_argument("--trace-rng", action="store_true",
                     help="print each Rand_Random caller and result to stderr")
     ap.add_argument("--give-weapon", action="append", type=int, default=[],
@@ -163,8 +165,8 @@ def main():
         command += command_watch_human_hp
         if args.trace_rng:
             command.append("--trace-rng")
-        if args.game_flow:
-            command.append("--game-flow")
+        if not args.game_flow:
+            command.append("--no-game-flow")
         for weapon in args.give_weapon:
             command += ["--give-weapon", str(weapon)]
         pad_span = None

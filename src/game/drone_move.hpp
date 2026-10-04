@@ -11,6 +11,7 @@
 // collision (NDrone2_Collision).
 
 #include <functional>
+#include "game/collision_world.hpp"
 
 #include "game/drone.hpp"
 
@@ -94,8 +95,18 @@ bool opponent_facing_me(const Drone& d, float degrees);
 void move_step(Drone& d);
 // AnimFrameResolve: add the sampled root displacement after movement/control for this tick.
 void apply_animation_root_motion(Drone& d, const Vec3& root_delta, const std::array<Vec3, 3>& basis);
-// NDrone2_Collision + Collide_Update: gravity, capsule push-out, ground snap, AI bounds push (r = 0.4).
-void collision_step(Drone& d, const Vec3& pre_control_pos);
+// NDrone2_Collision before animation root motion: source eligibility, nav push, and capsule query.
+struct CollisionStepState {
+    bool source_collision_valid = false;
+    bool source_collision_due = false;
+    bool source_gravity_due = false;
+    Vec3 capsule_a{};
+    Vec3 capsule_b{};
+    float capsule_radius = 0.0f;
+};
+CollisionStepState collision_pre_root_step(Drone& d);
+// Drone_CollisionHandler after AnimFrameResolve: apply capsule response, feet, and gravity.
+void collision_post_root_step(Drone& d, const CollisionStepState& state);
 // Places the drone on the floor below its feet position (used at spawn / teleport).
 void place_on_floor(Drone& d);
 

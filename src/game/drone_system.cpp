@@ -259,6 +259,8 @@ Drone& DroneSystem::spawn(SpawnInfo info) {
     d->yaw = info.yaw;
     d->mv.dest_angle = info.yaw;   // no steering target yet: keep facing
     d->pos = {info.feet[0], info.feet[1] + d->stand_height, info.feet[2]};
+    d->source_view_room = world_.rooms().find(d->pos, world_.collision());
+    d->source_view_pos = d->pos;
     d->smi.cur = d->smi.prev = d->smi.next = d->smi.saved = kStateGlobal;
     d->smi.entry_time = now();
 
@@ -431,6 +433,48 @@ void DroneSystem::tick(World&, FrameTiming timing) {
     for (int id : ids) {
         Drone* d = find(id);
         if (d && d->pending_delete) remove(id);
+    }
+}
+
+void DroneSystem::after_tick(World& world, FrameTiming) {
+    const RoomMap& rooms = world.rooms();
+    for (const auto& dp : drones_) {
+        Drone& d = *dp;
+        d.source_view_room = rooms.track_view(d.source_view_room, d.source_view_pos, d.pos);
+        d.source_view_pos = d.pos;
+    }
+
+    constexpr float kDefaultFov = 1.0471976f;
+    constexpr float kPs2Aspect = 4.0f / 3.0f;
+    for (int slot = 0; slot < World::kMaxPlayers; ++slot) {
+        const Player* player = world.player(slot);
+        if (!player) continue;
+        const Vec3 eye = player->shaken_eye();
+        const Basis axes = player->view_axes();
+        const Vec3& right = axes[0];
+        const Vec3& up = axes[1];
+        const Vec3& forward = axes[2];
+        const float fovy = player->substate == SubState::Scan ? player->scan.fov : kDefaultFov / player->zoom;
+        const float tan_half_y = std::tan(fovy * 0.5f);
+        const float tan_half_x = tan_half_y * kPs2Aspect;
+        const float x_radius = std::sqrt(1.0f + tan_half_x * tan_half_x);
+        const float y_radius = std::sqrt(1.0f + tan_half_y * tan_half_y);
+        for (const auto& dp : drones_) {
+            Drone& d = *dp;
+            if (d.hidden || d.pending_delete) continue;
+            if (!rooms.view_can_reach(player->water.room, d.source_view_room, eye, right, up, forward,
+                                      tan_half_x, tan_half_y))
+                continue;
+            const Vec3 delta = d.pos - eye;
+            const float depth = dot(delta, forward);
+            const float horizontal = std::abs(dot(delta, right));
+            const float vertical = std::abs(dot(delta, up));
+            const float radius = d.radius;
+            if (depth * tan_half_x + radius * x_radius < horizontal ||
+                depth * tan_half_y + radius * y_radius < vertical)
+                continue;
+            d.anim.source_object_anim = 2;
+        }
     }
 }
 
