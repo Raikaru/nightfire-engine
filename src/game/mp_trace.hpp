@@ -26,7 +26,7 @@ class BotSystem;
 ///  "pad_all":[{"port":n,"w":word,"s":[rx,ry,lx,ly],"act":[40],"flg":[40]} x4],
 ///  "pl":[{"pos":[x,y,z],"yaw":r,"type":obj_type,"hp":f,"arm":f,"weap":id,"alive":b,
 ///        "pitch":f,"substate":n,"vel":[x,y,z],"fall_vel":[x,y,z],"weapon_slots":[...],
-///        "ammo_pool":[...],"mp_status":bits,"dead":bool,"out":bool} x8 (null for absent)],
+///        "ammo_pool":[...],"mp_status":bits,"dead":bool,"out":bool,"anim":{"layers":[...]}} x8 (null for absent)],
 ///  "respawns":[remainingSeconds x8; negative when inactive],
 ///  "bots":[{"pos":[],"yaw":r,"state":id,"hp":f,"goal":kind_or_-1} x4 (null)],
 ///  "scores":[{"slot":s,"k":kills,"d":deaths,"p":points}...],

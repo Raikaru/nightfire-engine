@@ -614,8 +614,11 @@ more-bone rig are additionally tolerated, with the extra bones held at bind pose
 `u32 hash; u16 length (frames); u16 (count & 0x1FF | flags << 9)`, then `count` commands
 `u8 op; u8 n; u16 words[n + 3 (op 0) | n + 2 (op 1..4) | n (op > 4)]`. Op 0 = start sequence `[start_frame, end_frame,
 sequence id (0x04000000 | id)]`; the sequence plays frame `t - start + 1` while the script is at frame `t`. Op 1 =
-sound at `[frame, sfx id]`. Other ops are parsed but not interpreted. ACTION.ELF's `AnimSet_*` tables (10 script ids each)
-map gameplay roles to scripts.
+sound at `[frame, sfx id]`; when an active sound command is crossed, `AnimProcessScriptCmds` draws `Rand_Rand(500)`
+for the sound's pitch variation before `Sound_Play3D` (ACTION.ELF `0x1C21E4`). Op 4 carries animation events
+(`[frame, event, arg]`); codes 0..7 cover footsteps, hand toggle, callback, stop sounds, foot-left/right, effect and
+fire. Ops 2, 3, and values above 4 are skipped. ACTION.ELF's `AnimSet_*` tables (10 script ids each) map gameplay
+roles to scripts.
 
 ### Pose and skinning palette (`psiBuildMatrixPalette`, `AnimGetBoneWorldTrans`)
 
@@ -692,8 +695,9 @@ twice.
 
 Script commands (`AnimProcessScriptCmds`, entry frames counted in script frames): an op with a single frame fires once when the
 layer's frame moves across it (`(previous, current]`, mirrored when playing backwards, either side of the wrap on a loop). Op 1
-plays sound `words[1]` at the object (ids are remapped by the holder's weapon: 1->2 for weapons 7/9, 0x403->2 for 3/5, 0xFA->0x1FB
-for 0x14, 0x106->0x284 for 0x1E..0x23, 0x1E1->0x602 for 0x10, 4->0x604 for 0x16/0x17). Op 4 = event `words[1]`: 0 footstep with the
+draws `Rand_Rand(500)` in `AnimProcessScriptCmds` (`ACTION.ELF` `0x1C21E4`), subtracts 250 for the sound pitch, and plays sound `words[1]` at the object (ids
+are remapped by the holder's weapon: 1->2 for weapons 7/9, 0x403->2 for 3/5, 0xFA->0x1FB for 0x14, 0x106->0x284 for 0x1E..0x23,
+0x1E1->0x602 for 0x10, 4->0x604 for 0x16/0x17). Op 4 = event `words[1]`: 0 footstep with the
 alternating foot toggled, 4 / 5 footstep of the left / right foot (the footstep type is 1 for scripts 0x06000099 and 0x060000AE, else
 2), 1 toggle the parent's alternate-hand flag, 2 call the script's on-event function with `words[2]`, 3 stop all sounds with id
 `words[2]`, 6 create the impact/hit effect, 7 fire the holder's weapon (bullet + muzzle flash + gas from datum 0). Ops 2, 3 and

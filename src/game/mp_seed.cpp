@@ -884,10 +884,10 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                 bots::BotSystem::Bot* bot = system.bot_at_slot(s);
                 if (!bot || !bot->drone || !bot->drone->character)
                     throw std::runtime_error("MP seed: bot has no CharacterInstance for slot " + std::to_string(s));
-                bot->drone->anim.source_gate_supported = true;
                 bot->drone->anim.source_object_anim = byte_at(obj, 0xfc) != 0;
                 bot->drone->anim.source_force_anim = u32_at(drone, 0x538) != 0;
                 bot->drone->anim.source_anim_stamp = u32_at(drone, 0x580);
+                bot->drone->anim.source_gate_root_height = f32_at(drone, 0xcc);
                 bot->drone->mv.root_motion = {};
                 std::vector<CharacterInstance::LayerSnapshot> layers;
                 layers.reserve(rows.array().size());

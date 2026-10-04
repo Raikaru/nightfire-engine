@@ -289,6 +289,28 @@ def diff_fields(record, engine_objectives=()):
                                     player["goal_target"] = target
                         else:
                             player.pop("goal_target")
+        if slot >= 4 and isinstance(player.get("anim"), dict):
+            layers = player["anim"].get("layers", [])
+            player["anim_layer_count"] = len(layers)
+            player["anim"] = {
+                "layers": [
+                    {
+                        "script_id": layer.get("script_id"),
+                        "frame": layer.get("frame"),
+                        "previous_frame": layer.get("previous_frame"),
+                        "speed": layer.get("speed"),
+                        "weight": layer.get("effective_weight", layer.get("weight")),
+                        "blend_time": layer.get("blend_time"),
+                        "blend_duration": layer.get("blend_duration"),
+                        "last_root_delta": (
+                            layer["sequence"].get("last_root_delta")
+                            if isinstance(layer.get("sequence"), dict)
+                            else None
+                        ),
+                    }
+                    for layer in layers
+                ]
+            }
         common = {"pos", "yaw", "type", "state", "hp", "alive", "out", "mp_status"}
         if slot < 4:
             common |= {"arm", "dead", "vel", "fall_vel", "substate", "pitch", "foot", "zoom", "aim",
@@ -296,7 +318,7 @@ def diff_fields(record, engine_objectives=()):
                        "lock_victim", "lock_yaw", "lock_pitch", "ammo_pool", "weapon_slots", "weapon_timers",
                        "weapon_anim_state"}
         else:
-            common |= {"active_goal", "goal_type", "goal_kind", "goal_target"}
+            common |= {"active_goal", "goal_type", "goal_kind", "goal_target", "anim", "anim_layer_count"}
         player = {key: value for key, value in player.items() if key in common}
         flatten_fields(player, path, fields)
 
@@ -570,6 +592,18 @@ def diff(oracle_path, engine_path, tolerance=0.001, verbose=False):
     for frame in common:
         expected = diff_fields(oracle[frame], engine[frame].get("objs", []))
         actual = diff_fields(engine[frame])
+        source_players = oracle[frame].get("pl", [])
+        for slot in range(4, 8):
+            source_player = source_players[slot] if slot < len(source_players) else None
+            source_anim = source_player.get("anim") if isinstance(source_player, dict) else None
+            if isinstance(source_anim, dict) and source_anim.get("layers_complete", True):
+                continue
+            prefix = f"pl[{slot}]"
+            for fields in (expected, actual):
+                fields.pop(f"{prefix}.anim_layer_count", None)
+                for path in tuple(fields):
+                    if path.startswith(f"{prefix}.anim."):
+                        fields.pop(path)
         source_pk = {int(p["idx"]): p for p in oracle[frame].get("pk", []) if "idx" in p}
         recorder_only = set()
         for index, pickup in source_pk.items():

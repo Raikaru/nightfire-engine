@@ -387,8 +387,9 @@ public:
         bool source_gate_valid = false;
         bool source_update_due = true;
         bool source_object_anim = false; // obj+0xfc
-        bool source_force_anim = false;  // Drone+0x538 != 0
+        bool source_force_anim = false; // Drone+0x538 != 0
         std::uint32_t source_anim_stamp = 0; // Drone+0x580
+        float source_gate_root_height = 0; // Drone+0xcc, tested by NDrone2_DoAnimation
         float source_root_yaw = 0;
         float source_root_height_offset = 0; // v5 sAnimObject+0x60 offset before the root-height scale
         float source_root_height_scale = 1.0f; // AnimFrameResolve multiplier, gated by MP and skin skeleton id

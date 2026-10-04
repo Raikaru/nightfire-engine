@@ -3,6 +3,8 @@
 // objects, headless scripted runs for the tests.
 #include "game/nfgame_mp.hpp"
 
+#include "core/rng.hpp"
+
 #include <SDL3/SDL.h>
 
 #include <algorithm>
@@ -18,6 +20,8 @@
 #include "assets/character.hpp"
 #include "assets/game_files.hpp"
 #include "assets/level.hpp"
+#include "game/player_anim.hpp"
+
 #include "game/arena_view.hpp"
 #include "game/bot_match.hpp"
 #include "game/mp_trace.hpp"
@@ -256,6 +260,32 @@ int run_match(const MatchLaunch& request) {
             world.player(i)->place_at_rest(*scripts[std::size_t(i)].start, scripts[std::size_t(i)].yaw, scripts[std::size_t(i)].pitch,
                                            scripts[std::size_t(i)].ground_normal_y);
     }
+    std::vector<AnimSet> headless_anim_sets;
+    std::vector<std::unique_ptr<PlayerAnimator>> headless_bodies;
+    if (scripted) {
+        headless_anim_sets = read_anim_sets(action_elf);
+        const SkinDef* body_skin = nullptr;
+        for (const auto& [hash, def] : weapon_bank->skins()) {
+            (void)hash;
+            const std::string name = weapon_bank->skin_name(def);
+            if (name.size() > 3 && (name[0] == 'M' || name[0] == 'm') &&
+                (name[1] == 'p' || name[1] == 'P') && name[2] == '_') {
+                body_skin = &def;
+                break;
+            }
+        }
+        if (!body_skin && !weapon_bank->skins().empty()) body_skin = &weapon_bank->skins().begin()->second;
+        if (!body_skin) throw std::runtime_error("MP player animation has no character skin");
+        headless_bodies.reserve(std::size_t(options.humans));
+        for (int i = 0; i < options.humans; ++i) {
+            int category = 1;
+            if (const PlayerWeapons* state = session.weapons().state(i))
+                category = int(session.weapons().table().weapon(state->current).category);
+            headless_bodies.push_back(
+                std::make_unique<PlayerAnimator>(*weapon_bank, *body_skin, headless_anim_sets, category));
+        }
+    }
+
 
     auto report = [&] {
         std::printf("frame %llu: %.1f s, phase %d\n", static_cast<unsigned long long>(world.frame()), arena.elapsed(), int(arena.phase()));
@@ -297,6 +327,15 @@ int run_match(const MatchLaunch& request) {
             }
             const FrameTiming timing{tick_rate};
             session.tick(pads, timing);
+            for (int i = 0; i < options.humans; ++i) {
+                PlayerAnimator& body = *headless_bodies[std::size_t(i)];
+                const Player& player = *world.player(i);
+                if (const PlayerWeapons* state = session.weapons().state(i))
+                    body.set_category(int(session.weapons().table().weapon(state->current).category));
+                body.update(player.substate == SubState::Crouch, player.velocity, timing.FRAME_RATE_MUL,
+                            &game_rng());
+                (void)body.take_events();
+            }
             if (shot_weather) {
                 shot_weather->update(world.player(0)->eye(), timing.FRAME_RATE_MUL, timing.REC_FRAME_RATE,
                                      [&world](int ch) { return world.objects().channel(unsigned(ch)); });
