@@ -30,9 +30,11 @@ int msb(u128 v) {
 
 }  // namespace
 
-u32 add(u32 a, u32 b, u32& flags) {
-    a = in(a);
-    b = in(b);
+namespace {
+
+// Exact binary32 add/sub with truncation toward zero. VU macro operations use this directly;
+// the EE COP1 FPU applies its one-guard-bit operand reduction before reaching this helper.
+u32 add_exact(u32 a, u32 b, u32& flags) {
     int ea = int((a >> 23) & 0xFF), eb = int((b >> 23) & 0xFF);
     if (ea == 0 && eb == 0) return a & b;                    // -0 only when both are -0
     if (ea == 0) return b;
@@ -73,7 +75,34 @@ u32 add(u32 a, u32 b, u32& flags) {
     return pack(sign, e, m, flags);
 }
 
-u32 sub(u32 a, u32 b, u32& flags) { return add(a, b ^ kSignBit, flags); }
+u32 add_fpu(u32 a, u32 b, bool subtract, u32& flags) {
+    a = in(a);
+    b = in(b);
+
+    // PCSX2's FPU_ADD_SUB leaves only the PS2's single guard bit when the
+    // exponent gap would otherwise expose lower significand bits.
+    const int delta = int((a >> 23) & 0xFF) - int((b >> 23) & 0xFF);
+    if (delta >= 25) {
+        b &= kSignBit;                                         // smaller operand becomes signed zero
+    } else if (delta > 0) {
+        b &= 0xFFFFFFFFu << (delta - 1);
+    } else if (delta <= -25) {
+        a &= kSignBit;
+    } else if (delta < 0) {
+        a &= 0xFFFFFFFFu << (-delta - 1);
+    }
+
+    if (subtract) b ^= kSignBit;
+    return add_exact(a, b, flags);
+}
+
+}  // namespace
+
+u32 add(u32 a, u32 b, u32& flags) { return add_fpu(a, b, false, flags); }
+u32 sub(u32 a, u32 b, u32& flags) { return add_fpu(a, b, true, flags); }
+
+u32 vu_add(u32 a, u32 b, u32& flags) { return add_exact(in(a), in(b), flags); }
+u32 vu_sub(u32 a, u32 b, u32& flags) { return add_exact(in(a), in(b) ^ kSignBit, flags); }
 
 u32 mul(u32 a, u32 b, u32& flags) {
     a = in(a);
@@ -93,26 +122,33 @@ u32 mul(u32 a, u32 b, u32& flags) {
     return pack(sign, e, m, flags);
 }
 
-u32 div(u32 a, u32 b, u32& flags) {
+namespace {
+u32 div_impl(u32 a, u32 b, u32& flags, bool nearest) {
     a = in(a);
     b = in(b);
     const u32 sign = (a ^ b) & kSignBit;
     const int ea = int((a >> 23) & 0xFF), eb = int((b >> 23) & 0xFF);
     if (ea == 0) return pack_zero(sign);
     const u64 ma = (a & 0x7FFFFFu) | 0x800000u, mb = (b & 0x7FFFFFu) | 0x800000u;
-    const u64 q = (ma << 26) / mb;                            // 2^25 <= q < 2^27
-    int e = ea - eb + 127;
-    u32 m;
-    if (q >= (u64(1) << 26)) {
-        m = u32(q >> 3);
-    } else {
-        m = u32(q >> 2);
-        --e;
+    const bool ratio_below_one = ma < mb;
+    const u64 numerator = ma << (ratio_below_one ? 24 : 23);
+    u64 m = numerator / mb;
+    const u64 remainder = numerator % mb;
+    if (nearest && (2 * remainder > mb || (2 * remainder == mb && (m & 1)))) ++m;
+    int e = ea - eb + 127 - int(ratio_below_one);
+    if (m == (u64(1) << 24)) {
+        m >>= 1;
+        ++e;
     }
-    return pack(sign, e, m, flags);
+    return pack(sign, e, u32(m), flags);
 }
+}  // namespace
 
-u32 sqrt_abs(u32 x) {
+u32 div(u32 a, u32 b, u32& flags) { return div_impl(a, b, flags, false); }
+u32 div_nearest(u32 a, u32 b, u32& flags) { return div_impl(a, b, flags, true); }
+
+namespace {
+u32 sqrt_abs_impl(u32 x, bool nearest) {
     x = in(x) & 0x7FFFFFFFu;
     const int ex = int(x >> 23);
     if (ex == 0) return 0;
@@ -122,15 +158,25 @@ u32 sqrt_abs(u32 x) {
         m <<= 1;
         --e;
     }
-    // sqrt(m * 2^23) in [2^23, 2^24): the 24-bit result mantissa, exact floor.
+    // sqrt(m * 2^23) in [2^23, 2^24): the 24-bit result mantissa.
     const u64 n = m << 23;
     u64 lo = 0, hi = u64(1) << 25;
     while (lo + 1 < hi) {
         const u64 mid = (lo + hi) / 2;
         if (mid * mid <= n) lo = mid; else hi = mid;
     }
-    return (u32(e / 2 + 127) << 23) | (u32(lo) & 0x7FFFFFu);
+    if (nearest && 4 * n > (2 * lo + 1) * (2 * lo + 1)) ++lo;
+    int result_exp = e / 2 + 127;
+    if (lo == (u64(1) << 24)) {
+        lo >>= 1;
+        ++result_exp;
+    }
+    return (u32(result_exp) << 23) | (u32(lo) & 0x7FFFFFu);
 }
+}  // namespace
+
+u32 sqrt_abs(u32 x) { return sqrt_abs_impl(x, false); }
+u32 sqrt_nearest_abs(u32 x) { return sqrt_abs_impl(x, true); }
 
 u32 from_i32(s32 v) {
     if (v == 0) return 0;

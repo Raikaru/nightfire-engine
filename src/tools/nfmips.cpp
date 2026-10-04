@@ -8,6 +8,7 @@
 //   nfmips <elf> disasm <addr> [count]
 //   nfmips <elf> symbols [substring]
 //   nfmips <elf> diff [--count N] [--seed N] [--state p2s]
+//   nfmips <elf> float-selftest
 //
 // Integer args (decimal/0xhex, or i:..) fill a0-a3 then the o32 stack area;
 // f:.. args fill f12, f13, ... . Results print as v0/v1 (hex+dec) and f0.
@@ -29,6 +30,7 @@
 #include "assets/elf.hpp"
 #include "assets/weapon_data.hpp"
 #include "ee/machine.hpp"
+#include "ee/ps2float_test.hpp"
 #include "ee/disasm.hpp"
 #include "game/actions.hpp"
 
@@ -2580,7 +2582,8 @@ struct OraclePad {
 int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                   const std::string& pad_script, int watch_human_hp_slot,
                   u32 trace_frame, int trace_slot, bool trace_rng,
-                  const std::vector<int>& give_weapons) {
+                  const std::vector<int>& give_weapons,
+                  int watch_drone_anim_slot, u32 watch_drone_frame) {
     if (state.empty() || rows < 1)
         throw std::runtime_error("mp-oracle needs --state <p2s> and --rows N");
     if ((trace_frame == 0) != (trace_slot == -1)
@@ -2652,8 +2655,95 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
             throw std::runtime_error("Player_EquipWeapon rejected weapon " + std::to_string(weapon));
         const u32 weapon_owner = m.mem.read<u32>(object + 0xDC);
         if (!weapon_owner) throw std::runtime_error("--give-weapon human has no weapon owner");
+        const u8 current_weapon = m.mem.read<u8>(weapon_owner + 0x62);
         m.mem.write<u8>(weapon_owner + 0x63, u8(weapon));
+        if (current_weapon != u8(weapon)) {
+            nf::ee::CallArgs select_args;
+            select_args.i(object);
+            m.call_keep("Player_WeaponSelect__FP7obj_tag", select_args);
+        }
         std::fprintf(stderr, "GAVE_WEAPON slot=0 id=%d bl=%08x\n", weapon, bl_data);
+    }
+    if ((watch_drone_anim_slot == -1) != (watch_drone_frame == 0)
+        || (watch_drone_anim_slot != -1
+            && (watch_drone_anim_slot < 4 || watch_drone_anim_slot > 7))
+        || (watch_drone_anim_slot != -1 && watch_human_hp_slot >= 0))
+        throw std::runtime_error(
+            "--watch-drone-anim requires --watch-drone-frame and excludes --watch-human-hp");
+    if (watch_drone_anim_slot != -1) {
+        constexpr u32 kMpGame = 0x002A4980;
+        constexpr u32 kMpSlotStride = 0x30;
+        const u32 object = m.mem.read<u32>(
+            kMpGame + u32(watch_drone_anim_slot) * kMpSlotStride + 0x1C);
+        if (!object) throw std::runtime_error("--watch-drone-anim slot has no MP object");
+        const u32 drone = m.mem.read<u32>(object + 0xE0);
+        const u32 owner = m.mem.read<u32>(object + 0xDC);
+        if (!drone || !owner)
+            throw std::runtime_error("--watch-drone-anim slot has no Drone or animation owner");
+        const u32 anim = owner + 0x70;
+        struct WatchRange { u32 address, size; const char* label; };
+        std::vector<WatchRange> ranges;
+        const auto add_range = [&](u32 address, u32 size, const char* label) {
+            if (!size || m.mem.ram_offset(address) == ~u32(0)
+                || m.mem.ram_offset(address + size - 1) == ~u32(0))
+                throw std::runtime_error(std::string("--watch-drone-anim has invalid ") + label);
+            ranges.push_back({address, size, label});
+        };
+        add_range(object + 0x30, 12, "object position");
+        add_range(object + 0xFC, 1, "object animation flag");
+        add_range(drone + 0x58C, 4, "Drone animation step");
+        add_range(anim + 0x2C, 4, "animation layer head");
+        add_range(anim + 0x5C, 4, "animation root height");
+        add_range(anim + 0x64, 4, "animation distance step");
+        add_range(anim + 0x6C, 4, "animation distance accumulator");
+        add_range(anim + 0xCC, 4, "animation foot height");
+        u32 layer = m.mem.read<u32>(anim + 0x2C);
+        for (u32 count = 0; layer && count < 64; ++count) {
+            if (m.mem.ram_offset(layer + 0xC0) == ~u32(0))
+                throw std::runtime_error("--watch-drone-anim has invalid layer chain");
+            add_range(layer + 0x48, 4, "animation layer next");
+            add_range(layer + 0x50, 4, "animation sequence pointer");
+            add_range(layer + 0x74, 4, "animation layer script id");
+            add_range(layer + 0x80, 4, "animation layer id");
+            add_range(layer + 0x90, 4, "animation layer frame");
+            add_range(layer + 0x94, 4, "animation layer previous frame");
+            add_range(layer + 0x98, 4, "animation layer speed");
+            add_range(layer + 0x9C, 4, "animation layer blend progress");
+            const u32 sequence = m.mem.read<u32>(layer + 0x50);
+            if (sequence) {
+                add_range(sequence, 16, "animation sequence root");
+                add_range(sequence + 0x10, 16, "animation sequence root delta");
+            }
+            layer = m.mem.read<u32>(layer + 0x48);
+        }
+        if (layer) throw std::runtime_error("--watch-drone-anim layer chain exceeds 64 entries");
+        std::fprintf(stderr,
+                     "watching slot %d Drone animation writes at frame %u (obj=%08x drone=%08x anim=%08x)\n",
+                     watch_drone_anim_slot, watch_drone_frame, object, drone, anim);
+        m.mem.set_watch([&m, watch_drone_anim_slot, watch_drone_frame,
+                         ranges = std::move(ranges), kFrameStart](
+                            u32 address, u32 size, bool is_write) {
+            if (!is_write || m.mem.read<u32>(kFrameStart) != watch_drone_frame) return;
+            for (const WatchRange& range : ranges) {
+                if (u64(address) >= u64(range.address) + range.size
+                    || u64(address) + size <= range.address)
+                    continue;
+                std::fprintf(stderr, "ANIM_WRITE frame=%u slot=%d field=%s addr=%08x size=%u old=",
+                             watch_drone_frame, watch_drone_anim_slot, range.label, address, size);
+                for (u32 i = 0; i < size && i < 16; ++i)
+                    std::fprintf(stderr, "%02x", m.mem.read<u8>(address + i));
+                const u32 pc = m.cpu.cur_pc, ra = u32(m.cpu.r[31].d[0]);
+                std::fprintf(stderr, " pc=%08x ra=%08x", pc, ra);
+                if (auto symbol = m.symbol_at(pc))
+                    std::fprintf(stderr, " <%s+0x%x>", symbol->name.c_str(), pc - symbol->value);
+                if (ra >= 8) {
+                    if (auto symbol = m.symbol_at(ra - 8))
+                        std::fprintf(stderr, " caller=%s+0x%x", symbol->name.c_str(),
+                                     ra - symbol->value - 8);
+                }
+                std::fputc('\n', stderr);
+            }
+        });
     }
     if (watch_human_hp_slot < -1 || watch_human_hp_slot >= 4)
         throw std::runtime_error("--watch-human-hp slot must be in 0..3");
@@ -2950,6 +3040,7 @@ void usage() {
                  "       nfmips <elf> init [--check] [--dump-out f] [--steps N]\n"
                  "       nfmips <elf> trace <sym|addr> [args] [--steps N] [--state p|--ram d]\n"
                  "       nfmips <elf> mp-oracle --state <p2s> --rows N [--pads <frame/port/input.txt>] [--give-weapon ID ...] [--watch-human-hp 0..3] [--trace-frame N --trace-slot 4..7] [--trace-rng]\n"
+                 "       nfmips <elf> float-selftest (EE/VU float model assertions)\n"
                  "       nfmips <elf> symbols [substr]\n"
                  "       nfmips <elf> diff [--count N] [--seed N] [--state p2s]\n"
                  "       nfmips <elf> diff-acc (DroneWeap_DoBulletAccuracy truth table, Bots diff)\n"
@@ -2978,12 +3069,14 @@ int main(int argc, char** argv) {
     }
     const std::string elf = av[0], cmd = av[1];
     try {
+        if (cmd == "float-selftest") return nf::ee::fp::self_test() ? 0 : 1;
         if (cmd == "mp-oracle") {
             std::string state, pads;
             int rows = 0, watch_human_hp_slot = -1, trace_slot = -1;
+            int watch_drone_anim_slot = -1;
+            u32 trace_frame = 0, watch_drone_frame = 0;
             bool trace_rng = false;
             std::vector<int> give_weapons;
-            u32 trace_frame = 0;
             for (size_t j = 2; j < av.size(); j++) {
                 if (av[j] == "--state" && j + 1 < av.size()) state = av[++j];
                 else if (av[j] == "--rows" && j + 1 < av.size()) rows = std::stoi(av[++j]);
@@ -2994,16 +3087,22 @@ int main(int argc, char** argv) {
                     trace_frame = u32(std::stoul(av[++j]));
                 else if (av[j] == "--trace-slot" && j + 1 < av.size())
                     trace_slot = std::stoi(av[++j]);
+                else if (av[j] == "--watch-drone-anim" && j + 1 < av.size())
+                    watch_drone_anim_slot = std::stoi(av[++j]);
+                else if (av[j] == "--watch-drone-frame" && j + 1 < av.size())
+                    watch_drone_frame = u32(std::stoul(av[++j]));
                 else if (av[j] == "--give-weapon" && j + 1 < av.size())
                     give_weapons.push_back(std::stoi(av[++j]));
                 else if (av[j] == "--trace-rng") trace_rng = true;
                 else throw std::runtime_error(
                     "mp-oracle wants --state <p2s> --rows N [--pads file] "
                     "[--give-weapon ID ...] [--watch-human-hp 0..3] "
+                    "[--watch-drone-anim 4..7 --watch-drone-frame N] "
                     "[--trace-frame N --trace-slot 4..7] [--trace-rng]");
             }
             return cmd_mp_oracle(elf, state, rows, pads, watch_human_hp_slot,
-                                 trace_frame, trace_slot, trace_rng, give_weapons);
+                                 trace_frame, trace_slot, trace_rng, give_weapons,
+                                 watch_drone_anim_slot, watch_drone_frame);
         }
         if (cmd == "call") {
             if (av.size() < 3) {

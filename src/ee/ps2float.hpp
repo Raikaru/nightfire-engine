@@ -1,11 +1,13 @@
 #pragma once
 
 // PS2 single-precision arithmetic (EE FPU, VU0), implemented in integer arithmetic so the result never depends on
-// the host FPU or its rounding mode. Model (docs/ee.md, "Arithmetic model"):
+// the host FPU or its rounding mode. EE COP1 ADD/SUB use PCSX2's one-guard-bit operand reduction before the Chop
+// operation; VU macro ADD/SUB use the direct Chop operation.
 //  * Values are IEEE-754 binary32 bit patterns without Inf/NaN: exponent 0 is zero (denormal inputs flush to a
 //    signed zero) and exponent 255 is treated as +-Fmax (0x7F7FFFFF) on input.
-//  * Every operation rounds toward zero (truncates) exactly once. Fused forms (MADD, MSUB, ...) are a truncated
-//    multiply followed by a truncated add, like the PCSX2 interpreters and the microVU/EE recompilers.
+//  * Most operations Chop toward zero. PCSX2's default EE DIV.S uses its separate nearest FPUDivFPCR; SQRT.S also
+//    temporarily uses nearest. The `div`/`sqrt_abs` helpers remain Chop for VU operations and EE RSQRT.S.
+//  * Fused forms (MADD, MSUB, ...) are a truncated multiply followed by the corresponding EE-FPU or VU add/sub.
 //  * Overflow returns +-Fmax and reports kOvf; results below the normal range flush to a signed zero and report
 //    kUnf.
 
@@ -25,13 +27,18 @@ constexpr u32 in(u32 f) {
     return f;
 }
 
-u32 add(u32 a, u32 b, u32& flags);
-u32 sub(u32 a, u32 b, u32& flags);
+u32 add(u32 a, u32 b, u32& flags); // EE COP1 ADD.S (one-guard-bit operand reduction)
+u32 sub(u32 a, u32 b, u32& flags); // EE COP1 SUB.S
+u32 vu_add(u32 a, u32 b, u32& flags);
+u32 vu_sub(u32 a, u32 b, u32& flags);
 u32 mul(u32 a, u32 b, u32& flags);
 // a / b for a normal, non-zero b (callers handle division by zero themselves).
 u32 div(u32 a, u32 b, u32& flags);
-// sqrt of a non-negative value (sign is ignored, zero returns +-0).
+// I-FPU DIV.S uses PCSX2's separate nearest-rounding FPUDivFPCR by default.
+u32 div_nearest(u32 a, u32 b, u32& flags);
+// sqrt of a non-negative value with VU/RSQRT Chop semantics or I-FPU SQRT.S round-to-nearest.
 u32 sqrt_abs(u32 x);
+u32 sqrt_nearest_abs(u32 x);
 
 u32 from_i32(s32 v);              // CVT.S / ITOF0, truncating
 s32 to_i32(u32 f);                // trunc toward zero with saturation at +-2^31 (CVT.W / FTOI0)
