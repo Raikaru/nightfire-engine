@@ -202,6 +202,16 @@ Tools: `tools/oracle/mp_addrs.py` (address map, single source of truth),
 `mp_record.py` (per-logic-frame match recorder -> JSONL),
 `mp_compare.py` (`summary`/`determinism`/`diff`),
 `mp_scenario.py` (scripted menu setup: slot 1 main menu -> configured match).
+
+`mp_frame_trace.py` phase-locks recorder reads to the end of `Game_Run`: the hook is at
+`0x001C98BC` (after `control_movement_object_handler`), code is in EE RAM at
+`0x01FE6000`, descriptors at `0x01FE8000`, and the snapshot ring spans
+`0x01FEA000..0x01FFFFFF`. Each configured sample copies the requested ranges plus
+`GS_DONE`, `GS_FRAME_START`, and `GS_FRAME` into a 16-byte-header slot, then publishes
+the ring head. Duplicate end-frame counters are skipped; full rings drop the new
+sample and increment overflow. `mp_record.py` drains these immutable frame snapshots
+instead of batching live source reads, preventing fields from adjacent logic frames
+being mixed. The default full recorder payload is 2204 bytes (32 slots in the ring).
 `mp_record.py` includes human-only `damage_flash` (BLData+0x8BC),
 `fade_total`/`fade_timer` (+0x918/+0x91C), `fade_colour` (+0x963),
 `pain_dir` (+0x967), and `pain_alpha` (+0x968). The fade timer and total

@@ -316,7 +316,7 @@ struct MpSession::Impl {
         audio->update();
     }
 
-    HudState hud_state(int slot, const Camera& cam, float vw, float vh) {
+    HudState hud_state(int slot, const Camera& cam, float aspect, float view_w, float view_h) {
         HudState hs;
         session->weapons().fill_hud(slot, hs);
         hs.controller_style = world->settings(slot).controller_style;
@@ -361,27 +361,8 @@ struct MpSession::Impl {
         hs.mp.health_bonus = ah.health_bonus;
         for (const ArenaHud::Blip& b : ah.blips)
             hs.mp.blips.push_back(HudBlip{b.x, b.y, b.z, b.color, b.kind, b.slot});
-        // Name tags float over heads in screen space (projected, y up). The raw
-        // camera-space blip coords feed the radar, never the labels: unprojected
-        // tags land anywhere on the canvas (e.g. over the health bar).
-        const Mat4 vp = renderer->view_projection(cam, vw / std::max(1.0f, vh));
-        for (const ArenaHud::Blip& b : ah.blips) {
-            if (b.name.empty()) continue;
-            const Vec3 hp{b.world[0], b.world[1] + 1.8f, b.world[2]};
-            const float cx = vp[0] * hp[0] + vp[4] * hp[1] + vp[8] * hp[2] + vp[12];
-            const float cy = vp[1] * hp[0] + vp[5] * hp[1] + vp[9] * hp[2] + vp[13];
-            const float cw = vp[3] * hp[0] + vp[7] * hp[1] + vp[11] * hp[2] + vp[15];
-            if (cw <= 0) continue;  // behind the camera
-            const float nx = cx / cw, ny = cy / cw;
-            if (nx < -1.0f || nx > 1.0f || ny < -1.0f || ny > 1.0f) continue;
-            HudNameTag tag;
-            tag.name = b.name;
-            tag.x = (nx * 0.5f + 0.5f) * vw;
-            tag.y = (ny * 0.5f + 0.5f) * vh;
-            tag.same_team = b.same_team;
-            tag.slot = b.slot;
-            hs.mp.name_tags.push_back(tag);
-        }
+        // HUD_RadarUpdate draws name tags in the view when MPSettings+0x1C4 enables them.
+        project_name_tags(ah, cam.eye, cam.yaw, cam.pitch, cam.fovy, aspect, view_w, view_h, hs.mp);
         return hs;
     }
 
@@ -577,24 +558,20 @@ struct MpSession::Impl {
             }
             glEnable(GL_DEPTH_TEST);
             glDisable(GL_BLEND);
-            // HUD for this viewer, clipped to its rectangle.
-            HudState hs = hud_state(i, cam, float(r.w), float(r.h));
+            // Draw the source-coordinate HUD on a full-window canvas, then clip it to this player's view.
+            const float view_w = float(r.w) * 512.0f / float(width);
+            const float view_h = float(r.h) * 448.0f / float(height);
+            HudState hs = hud_state(i, cam, r.aspect(), view_w, view_h);
             // Local play has a HUD per human slot; a network client one per local player (its views are the
             // consecutive global slots from network->slot()).
             const std::size_t h = network ? std::size_t(view) : std::size_t(i);
-            if (HudOverlay::extended(session->arena().settings().slot_count)) {
-                // Extended rule set: name tags become plates drawn by the overlay.
-                overlays[h].set_name_tags(std::move(hs.mp.name_tags), float(r.w), float(r.h));
-                hs.mp.name_tags.clear();
-            }
             for (const PendingMessage& pm : pending_messages) {
                 if (pm.message.slot != -1 && pm.message.slot != i) continue;
                 huds[h]->add_message(HudMessage{static_cast<HudMsgType>(int(pm.message.type)), 0xFFFFFFFF,
                                                 pm.message.text, pm.message.frames});
             }
             huds[h]->update(hs);
-            ui.begin(r.w, r.h, false);
-            glViewport(r.x, gl_y, r.w, r.h);
+            ui.begin(width, height, false);
             glScissor(r.x, gl_y, r.w, r.h);
             ui::select_prompts(i, InputContext::OnFoot);
             huds[h]->draw(ui, text);

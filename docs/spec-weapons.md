@@ -167,7 +167,7 @@ Offsets in bytes; “use” cites the function that proves it.
 | +192 | u32 | draw (raise) anim | `Player_SetWeaponAnimObj` state 3 |
 | +196 | u32 | holster (lower) anim (0 = skip lowering) | `Player_WeaponSelect` |
 | +200..+216 | u32[5] | misc anim hashes (reload variants, 3-D pickup states) | |
-| +220 | u32 | first-person weapon model gfx hash; 0 = no model | `Player_SetWeaponAnim`, `Player_EquipWeapon` (must be loaded) |
+| +220 | u32 | first-person weapon model gfx hash; 0 = no model | `Player_SetWeaponAnim`, `Player_EquipWeapon` (must be loaded); `Player_Init` patches weapon 1 at runtime (slot-2 MP Skyrail P2S: `0x050000B0`, Bond hands, instead of static `0x0500003D`) |
 | +224 | f32[3] | gun offset (hip) SP | `Player_SetWeaponAnimObj` state 0 |
 | +236 | f32[3] | gun offset when aiming (SP) / MP hip offset (row index `12*mp`) | |
 | +248 | f32[3] | shell-casing spawn offset | `Bullet_init_casing_ex` |
@@ -777,7 +777,7 @@ Driven every frame by `Player_SetWeaponAnimObj` (called from `Player_WeaponRecoi
 
 Gun position each frame: `weapon obj pos += recoil vec (a2)` plus offsets `def[+224..232]` (SP hip) blended toward `def[+236..244]` by `BLData+2316*2.2222223` while aiming; MP uses index `12*1` (second vector). `Player_PositionGun` transforms the local object offset, then adds `(0,-0.2,+0.5)` in object space to compute the rendered world position (`obj+0xC0`).
 The camera-relative gun placement keeps the weapon-table z sign: Skyrail MP slot 10 (frame 34999) gives `(P+0xC0) - viewer+0x120 translation = (+0.1996,+0.0854,-0.8807)` world units, which projects to approximately `(+0.0278,+0.0854,-0.9026)` on the player's right/up/forward axes. Do not negate this negative forward offset when placing the first-person rig.
-The first-person renderer uses the player's right/up/forward axes for both the gun offset and weapon-rig basis. When the rig has paired arm branches, it keeps the branch owning the rigid weapon parts and suppresses the other branch; rigs without rigid parts keep the right-hand branch.
+The first-person renderer uses the player's right/up/forward axes for both the gun offset and weapon-rig basis. On paired-arm rigs it keeps the skinned arm branch that owns the rigid weapon parts, suppresses the other arm branch, and draws only rigid parts attached to the kept branch (preventing the duplicate-hand/gun set from floating separately); rigs without rigid parts keep the right-hand branch.
 
 ### 6.2 `Player_Weapon` (per frame, 0x1A24C8)
 1. `obj+250 |= 0x20`.

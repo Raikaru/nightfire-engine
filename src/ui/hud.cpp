@@ -1413,11 +1413,12 @@ struct Hud::Impl {
         if (mp.radar_names) {
             for (const HudNameTag& tag : mp.name_tags) {
                 if (used >= slots) break;
+                const float w = measure.measure(tag.name, ui::apply_format({}, "\xFF\x02")).width;
+                if (w >= 100.0f || tag.x < w * 0.5f || tag.x > viewer.w - w * 0.5f) continue;
                 Spr& q = p.extra[used++];
                 q.text = tag.name;
                 q.s.format = "\xFF\x02";
                 q.s.flags = 0;
-                const float w = measure.measure(tag.name, ui::apply_format({}, q.s.format)).width;
                 q.s.x = std::int16_t((tag.x - w * 0.5f) + viewer.x0);
                 q.s.y = std::int16_t((viewer.h - std::clamp(tag.y, 12.0f, viewer.h - 12.0f)) + viewer.y0);
                 q.s.layer = 0x1E;

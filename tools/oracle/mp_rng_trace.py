@@ -169,7 +169,7 @@ def install(pine):
 
 
 def attach(pine):
-    """Attach to pnach-installed hooks without rewriting executable memory."""
+    """Attach to pnach hooks and rehydrate trampoline code after savestate loads."""
     functions = []
     for index, (name, entry, kind, result_class, first_words) in enumerate(FUNCTIONS):
         stub = CODE_BASE + index * 0x100
@@ -183,9 +183,16 @@ def attach(pine):
                 f"got {actual_entry.hex()}, expected {expected_entry.hex()}")
         actual_code = pine.read_block(stub, len(expected_code))
         if actual_code != expected_code:
-            raise RuntimeError(
-                f"{name} pnach trampoline mismatch at {stub:#x}: "
-                f"got {actual_code.hex()}, expected {expected_code.hex()}")
+            # Startup-only code patches are overwritten by savestate restore,
+            # while the per-frame entry jump remains active.
+            _write_ops(pine, [
+                (WRITE32, stub + 4*word_index, "<I", word)
+                for word_index, word in enumerate(words)
+            ])
+            actual_code = pine.read_block(stub, len(expected_code))
+            if actual_code != expected_code:
+                raise RuntimeError(
+                    f"{name} pnach trampoline restore failed at {stub:#x}")
         functions.append({"name": name, "entry": entry, "kind": kind,
                           "result": result_class, "stub": stub,
                           "original": struct.pack("<II", *first_words)})

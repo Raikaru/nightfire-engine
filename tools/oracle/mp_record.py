@@ -12,10 +12,10 @@ clips/reserves, pickups, switch channels, and live type-5 projectile objects
 with their BU_tag payloads; objective ext blobs at `--full-every` intervals or
 every accepted frame in `--seedable` mode.
 
-Speed design: batched PINE snapshots duplicate `GS_DONE` and `GS_FRAME_START`
-at both ends and accept only unchanged pairs; no fixed relationship between
-the counters is assumed. Pointer-dependent caches refresh on resync frames;
-dynamic-list walks are incremental and retried after a torn or invalid link.
+Speed design: the static `Game_Run` return hook copies each requested source
+range into a bounded EE ring after the logic update. PINE drains published
+snapshots; pointer-dependent ranges refresh on resync frames. Dynamic-list
+walks remain incremental and are retried after a torn or invalid link.
 "<frame offset> <vpad command...>".
 """
 
@@ -30,8 +30,8 @@ import struct
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mp_addrs as A
+import mp_frame_trace as F
 import mp_rng_trace as R
 from pine import Pine, WRITE32
 
@@ -431,6 +431,8 @@ def main():
     if args.rng_calls_preinstalled:
         rng_trace = R.attach(pine)
     first = last = None
+    frame_ring = None
+    frame_schema = None
     last_new = time.monotonic()
     records, missed, resyncs = [], 0, 0
     deadline = time.monotonic() + args.timeout
@@ -566,10 +568,24 @@ def main():
             refresh_projectile_cache(
                 pine, cache, pine.read32(A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT))
             continue
-        chunks = read_ranges_batched(pine, ranges)
+        schema = tuple(ranges)
+        if schema != frame_schema:
+            frame_ring = F.configure_ranges(pine, ranges)
+            frame_schema = schema
+            print(f"  ... frame ring: {frame_ring['payload_size']} bytes, "
+                  f"{frame_ring['capacity']} slots", flush=True)
+        snapshot = F.read_next(pine, frame_ring, timeout=1.0)
+        if snapshot is None:
+            continue
+        frame_meta, chunks = snapshot
         bytag = {}
         for (kind, s), ch in zip(tags, chunks):
             bytag.setdefault((kind, s), ch)
+        if (struct.unpack("<I", bytag[("done", 0)])[0] != frame_meta["done"]
+                or struct.unpack("<I", bytag[("frame", 0)])[0] != frame_meta["frame"]
+                or struct.unpack("<I", bytag[("timer_frame", 0)])[0]
+                != frame_meta["timer_frame"]):
+            raise RuntimeError("frame snapshot metadata does not match captured ranges")
         done0 = struct.unpack("<I", bytag[("done", 0)])[0]
         frame0 = struct.unpack("<I", bytag[("frame", 0)])[0]
         timer_frame0 = struct.unpack("<I", bytag[("timer_frame", 0)])[0]
