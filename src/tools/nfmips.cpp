@@ -2579,14 +2579,14 @@ struct OraclePad {
 
 int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                   const std::string& pad_script, int watch_human_hp_slot,
-                  u32 trace_frame, int trace_slot) {
+                  u32 trace_frame, int trace_slot, bool trace_rng) {
     if (state.empty() || rows < 1)
         throw std::runtime_error("mp-oracle needs --state <p2s> and --rows N");
     if ((trace_frame == 0) != (trace_slot == -1)
         || (trace_frame != 0 && (trace_slot < 4 || trace_slot > 7))
-        || (trace_frame != 0 && watch_human_hp_slot >= 0))
+        || (trace_frame != 0 && (watch_human_hp_slot >= 0 || trace_rng)))
         throw std::runtime_error(
-            "--trace-frame requires --trace-slot 4..7 and excludes --watch-human-hp");
+            "--trace-frame excludes --watch-human-hp and --trace-rng");
     std::map<u32, std::vector<OraclePad>> pads;
     if (!pad_script.empty()) {
         std::ifstream input(pad_script);
@@ -2752,6 +2752,40 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
     snapshot();   // P2S state is the first emitted post-Game_Run sample.
 
     const u32 entry = m.addr("Game_Run__Fv");
+    if (trace_rng) {
+        const u32 random_function = m.addr("Rand_Random__Fv");
+        struct PendingRandom {
+            u32 caller_return;
+            u32 caller;
+            u32 stack;
+            u32 frame;
+        };
+        std::vector<PendingRandom> pending;
+        m.set_instruction_observer([&](const nf::ee::Cpu& cpu, u32 pc, u32) {
+            const u32 stack = u32(cpu.r[29].d[0]);
+            for (auto it = pending.begin(); it != pending.end();) {
+                if (pc == it->caller_return && stack == it->stack) {
+                    const auto symbol = m.symbol_at(it->caller);
+                    std::fprintf(stderr, "RNG_CALL frame=%u caller=%08x result=%08x",
+                                 it->frame, it->caller, cpu.r[2].w[0]);
+                    if (symbol)
+                        std::fprintf(stderr, " <%s+0x%x>", symbol->name.c_str(),
+                                     it->caller - symbol->value);
+                    std::fputc('\n', stderr);
+                    it = pending.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            if (pc == random_function) {
+                const u32 caller_return = u32(cpu.r[31].d[0]);
+                pending.push_back({caller_return, caller_return - 8, stack,
+                                   m.mem.read<u32>(kFrameStart)});
+                std::fprintf(stderr, "RNG_ENTER frame=%u caller=%08x\n",
+                             m.mem.read<u32>(kFrameStart), caller_return - 8);
+            }
+        });
+    }
     for (int row = 1; row < rows; ++row) {
         const u32 before = m.mem.read<u32>(kFrameStart);
         const u32 timer_before = m.mem.read<u32>(kFrame);
@@ -2889,7 +2923,7 @@ void usage() {
                  "usage: nfmips <elf> call <sym|addr> [args] [--state p|--ram d] [--dump a[:n]] [--steps N]\n"
                  "       nfmips <elf> init [--check] [--dump-out f] [--steps N]\n"
                  "       nfmips <elf> trace <sym|addr> [args] [--steps N] [--state p|--ram d]\n"
-                 "       nfmips <elf> mp-oracle --state <p2s> --rows N [--pads <frame/port/input.txt>] [--watch-human-hp 0..3] [--trace-frame N --trace-slot 4..7]\n"
+                 "       nfmips <elf> mp-oracle --state <p2s> --rows N [--pads <frame/port/input.txt>] [--watch-human-hp 0..3] [--trace-frame N --trace-slot 4..7] [--trace-rng]\n"
                  "       nfmips <elf> symbols [substr]\n"
                  "       nfmips <elf> diff [--count N] [--seed N] [--state p2s]\n"
                  "       nfmips <elf> diff-acc (DroneWeap_DoBulletAccuracy truth table, Bots diff)\n"
@@ -2921,6 +2955,7 @@ int main(int argc, char** argv) {
         if (cmd == "mp-oracle") {
             std::string state, pads;
             int rows = 0, watch_human_hp_slot = -1, trace_slot = -1;
+            bool trace_rng = false;
             u32 trace_frame = 0;
             for (size_t j = 2; j < av.size(); j++) {
                 if (av[j] == "--state" && j + 1 < av.size()) state = av[++j];
@@ -2932,12 +2967,13 @@ int main(int argc, char** argv) {
                     trace_frame = u32(std::stoul(av[++j]));
                 else if (av[j] == "--trace-slot" && j + 1 < av.size())
                     trace_slot = std::stoi(av[++j]);
+                else if (av[j] == "--trace-rng") trace_rng = true;
                 else throw std::runtime_error(
                     "mp-oracle wants --state <p2s> --rows N [--pads file] "
-                    "[--watch-human-hp 0..3] [--trace-frame N --trace-slot 4..7]");
+                    "[--watch-human-hp 0..3] [--trace-frame N --trace-slot 4..7] [--trace-rng]");
             }
             return cmd_mp_oracle(elf, state, rows, pads, watch_human_hp_slot,
-                                 trace_frame, trace_slot);
+                                 trace_frame, trace_slot, trace_rng);
         }
         if (cmd == "call") {
             if (av.size() < 3) {

@@ -138,6 +138,8 @@ def main():
                     help="log writes to one MP human's BLData HP, including PC and $ra")
     ap.add_argument("--weapon-anim-raw", action="store_true",
                     help="capture the full human weapon-animation object range")
+    ap.add_argument("--trace-rng", action="store_true",
+                    help="print each Rand_Random caller and result to stderr")
     ap.add_argument("--timeout", type=float, default=1200.0)
     args = ap.parse_args()
     if args.rows < 1:
@@ -155,6 +157,8 @@ def main():
         command = [str(pathlib.Path(args.nfmips).resolve()), args.elf, "mp-oracle",
                    "--state", args.state, "--rows", str(args.rows)]
         command += command_watch_human_hp
+        if args.trace_rng:
+            command.append("--trace-rng")
         pad_span = None
         if args.inputs:
             pad_span = _write_pad_script(args.inputs, pad_script)

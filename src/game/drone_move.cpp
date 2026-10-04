@@ -14,12 +14,6 @@ namespace nf::drone {
 
 namespace {
 
-
-
-
-
-
-
 // +x of the object frame is the character's LEFT (the original's convention: CanStrafeLeft moves by +x).
 Vec3 to_world(const Vec3& local, float yaw) {
     const float s = std::sin(yaw), c = std::cos(yaw);
@@ -518,20 +512,12 @@ void move_step(Drone& d) {
         const float cos_yaw = weap::ps2_sin(nf::game::ee_math::add(d.yaw, 1.5707964f));
         w = {nf::game::ee_math::mul(sin_yaw, d.anim.step), 0.0f,
              nf::game::ee_math::mul(cos_yaw, d.anim.step)};
-        if (d.player_slot == 4)
-            std::fprintf(stderr, "TRIG %u %08x %08x\n", d.now(),
-                         std::bit_cast<std::uint32_t>(sin_yaw), std::bit_cast<std::uint32_t>(cos_yaw));
     } else if (!source_gate && !d.mv.disabled && d.mv.have_dest && (w[0] == 0.0f && w[2] == 0.0f) &&
                d.anim.step > 0.0f) {
         // Legacy/non-v5 no-root fallback; v5 uses the source Drone_Control gate above.
         w = {std::sin(d.yaw) * d.anim.step * d.sys->timing().FRAME_RATE_MUL, 0.0f,
              std::cos(d.yaw) * d.anim.step * d.sys->timing().FRAME_RATE_MUL};
     }
-    if (d.player_slot == 4 && source_fallback)
-        std::fprintf(stderr, "STEP %u %08x %08x %08x %08x %08x %08x\n", d.now(),
-                     std::bit_cast<std::uint32_t>(d.yaw), std::bit_cast<std::uint32_t>(d.anim.step),
-                     std::bit_cast<std::uint32_t>(w[0]), std::bit_cast<std::uint32_t>(w[2]),
-                     std::bit_cast<std::uint32_t>(before[0]), std::bit_cast<std::uint32_t>(before[2]));
     if (source_fallback) {
         d.pos[0] = nf::game::ee_math::add(d.pos[0], w[0]);
         d.pos[2] = nf::game::ee_math::add(d.pos[2], w[2]);
