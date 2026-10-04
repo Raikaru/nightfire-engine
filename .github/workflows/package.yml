@@ -48,7 +48,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}\vcpkg-bincache
-          key: vcpkg-bin-x64-windows-9e593bb1-ffmpeg-zlib-zstd-pkgconf
+          key: vcpkg-bin-x64-windows-9e593bb1-zlib-zstd-pkgconf
       - uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: '9e593bb18ea69cc5095e012465dcd675a822ed0d'
@@ -56,16 +56,41 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE/vcpkg-bincache" | Out-Null
-          & "$env:GITHUB_WORKSPACE/vcpkg/vcpkg.exe" install ffmpeg zlib zstd pkgconf --triplet x64-windows
+          & "$env:GITHUB_WORKSPACE/vcpkg/vcpkg.exe" install zlib zstd pkgconf --triplet x64-windows
+      - name: Install pinned LGPL FFmpeg
+        shell: pwsh
+        run: |
+          $tag = "autobuild-2026-09-30-13-08"
+          $asset = "ffmpeg-n8.1.3-9-g29e619e767-win64-lgpl-shared-8.1.zip"
+          $archive = "$env:RUNNER_TEMP\ffmpeg.zip"
+          Invoke-WebRequest "https://github.com/BtbN/FFmpeg-Builds/releases/download/$tag/$asset" -OutFile $archive
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($hash -ne "3e47bda1607740550141e37c0e49d1e5182b34699f15adfd137ee266d346811a") {
+            throw "Pinned FFmpeg archive SHA-256 mismatch: $hash"
+          }
+          $extract = "$env:RUNNER_TEMP\ffmpeg"
+          Expand-Archive -LiteralPath $archive -DestinationPath $extract
+          $env:FFMPEG_ROOT = Join-Path $extract "ffmpeg-n8.1.3-9-g29e619e767-win64-lgpl-shared-8.1"
+          $gpl = Join-Path $env:FFMPEG_ROOT "COPYING.GPLv3"
+          Invoke-WebRequest "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n8.1.3/COPYING.GPLv3" -OutFile $gpl
+          $licenseHash = (Get-FileHash -Algorithm SHA256 $gpl).Hash.ToLowerInvariant()
+          if ($licenseHash -ne "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903") {
+            throw "FFmpeg GPL license SHA-256 mismatch: $licenseHash"
+          }
+          if (!(Test-Path (Join-Path $env:FFMPEG_ROOT "lib\pkgconfig\libavcodec.pc"))) {
+            throw "Pinned FFmpeg archive has an unexpected layout"
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "FFMPEG_ROOT=$env:FFMPEG_ROOT"
       - name: Configure
         shell: pwsh
         run: |
-          $env:PKG_CONFIG_PATH = "$env:GITHUB_WORKSPACE/vcpkg/installed/x64-windows/lib/pkgconfig"
+          $env:PKG_CONFIG_PATH = "$env:FFMPEG_ROOT\lib\pkgconfig"
           $env:PKG_CONFIG_EXECUTABLE = "$env:GITHUB_WORKSPACE/vcpkg/installed/x64-windows/tools/pkgconf/pkgconf.exe"
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_TOOLCHAIN_FILE="$env:GITHUB_WORKSPACE/vcpkg/scripts/buildsystems/vcpkg.cmake"
+            -DCMAKE_TOOLCHAIN_FILE="$env:GITHUB_WORKSPACE/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -DFFMPEG_ROOT="$env:FFMPEG_ROOT"
       - name: Build
-        run: cmake --build build --parallel 2
+        run: cmake --build build --parallel 4
       - name: Create ZIP
         run: cpack --config build/CPackConfig.cmake -G ZIP --package-directory build
       - name: Create NSIS installer
@@ -215,7 +240,10 @@ jobs:
           "$RUNNER_TEMP/iso-smoke" "$RUNNER_TEMP/nightfire-usa.iso" "$HOME/data/nightfire"
           "$NFDUMP" "$HOME/data/nightfire" validate | tee "$RUNNER_TEMP/nfdump.log"
           grep -q 'failures 0' "$RUNNER_TEMP/nfdump.log"
-          xvfb-run -a "$NIGHTFIRE" "$HOME/data/nightfire" --page 0x40000002 --shot "$RUNNER_TEMP/nightfire-shots/main-menu.bmp"
+          xvfb-run -a "$NIGHTFIRE" "$HOME/data/nightfire" --page 0x40000002 --press wait90 --frames 30 --mute \
+            --shot "$RUNNER_TEMP/nightfire-shots/main-menu.bmp"
+          xvfb-run -a "$NIGHTFIRE" "$HOME/data/nightfire" --mp 07000024.bin --mode arena --bots 3 --frames 300 --mute \
+            --shot "$RUNNER_TEMP/nightfire-shots/mp-skyrail.bmp"
       - name: Reject a wrong file
         run: |
           printf 'not an ISO image\n' > "$RUNNER_TEMP/wrong-disc.iso"

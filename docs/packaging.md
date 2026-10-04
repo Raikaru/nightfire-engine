@@ -46,7 +46,9 @@ cmake --build build-win --parallel 2
 (cd build-win && cpack -G ZIP)
 ```
 
-Install a matching x86_64 MinGW-w64 compiler plus Windows-target dependencies (OpenGL/SDL3/FFmpeg/zlib/zstd) before configuring. Windows builds are not exercised by this Linux packaging workflow. On Windows, configuration is under `%APPDATA%\Nightfire\nightfire.cfg` and per-user data is under `%APPDATA%\Nightfire\data`.
+The Windows package workflow uses a pinned FFmpeg 8.1.3 LGPL shared build from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-09-30-13-08), verifies its SHA-256, and uses its `lib/pkgconfig` metadata and MSVC import libraries. `FFMPEG_ROOT` must point to the extracted package root (`include/`, `lib/`, `bin/`, `LICENSE.txt`); CMake installs the runtime DLLs and LGPL/GPL license texts with the package. The workflow still builds zlib, zstd, and pkgconf through vcpkg.
+
+The GitHub package workflow exercises native Windows builds; the MinGW cross build above remains a separate toolchain path. On Windows, configuration is under `%APPDATA%\\Nightfire\\nightfire.cfg` and per-user data is under `%APPDATA%\\Nightfire\\data`.
 
 ## macOS
 
