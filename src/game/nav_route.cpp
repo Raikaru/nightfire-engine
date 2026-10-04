@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "game/nav.hpp"
+#include "game/ee_math.hpp"
 
 namespace nf {
 
@@ -20,6 +21,15 @@ float sqdist2d(const Vec3& a, const Vec3& b) {
     return dx * dx + dz * dz;
 }
 float dist2d(const Vec3& a, const Vec3& b) { return std::sqrt(sqdist2d(a, b)); }
+
+float ee_length3(const Vec3& v) {
+    const float xx = nf::game::ee_math::mul(v[0], v[0]);
+    const float yy = nf::game::ee_math::mul(v[1], v[1]);
+    const float zz = nf::game::ee_math::mul(v[2], v[2]);
+    const float xy = nf::game::ee_math::add(xx, yy);
+    const float sum = nf::game::ee_math::add(xy, zz);
+    return std::bit_cast<float>(nf::ee::fp::sqrt_abs(std::bit_cast<nf::ee::u32>(sum)));
+}
 
 }  // namespace
 namespace {
@@ -246,8 +256,11 @@ unsigned NavNetwork::probe_blocked_sides(const CelPos& feet, const Vec3& right, 
 // ---- link creep ---------------------------------------------------------------------------------
 
 Vec3 NavNetwork::link_creep_dest(const NavRoute& r, int offset) const {
-    // LinkCreep_Dest @0x15b420: waypoint = start + step * (creep index + offset).
-    return r.seg_start + r.step_vec * float(r.creep_step + offset);
+    // LinkCreep_Dest @0x15b420: FPU multiply then VU0 vector add.
+    const float step = float(r.creep_step + offset);
+    return {nf::game::ee_math::add(r.seg_start[0], nf::game::ee_math::mul(r.step_vec[0], step)),
+            nf::game::ee_math::add(r.seg_start[1], nf::game::ee_math::mul(r.step_vec[1], step)),
+            nf::game::ee_math::add(r.seg_start[2], nf::game::ee_math::mul(r.step_vec[2], step))};
 }
 
 void NavNetwork::link_creep_for_nodes(NavRoute& r, int a, int b, bool from_end) {
@@ -284,11 +297,16 @@ void NavNetwork::link_creep_for_nodes(NavRoute& r, int a, int b, bool from_end) 
     r.creep_b = std::int16_t(b);
     r.seg_start = start;
     r.seg_end = end;
-    r.step_vec = end - start;
-    float mag = length(r.step_vec);
+    r.step_vec = {nf::game::ee_math::sub(end[0], start[0]),
+                  nf::game::ee_math::sub(end[1], start[1]),
+                  nf::game::ee_math::sub(end[2], start[2])};
+    float mag = ee_length3(r.step_vec);
     if (mag > kCreepStep) {
         r.creep_steps = std::uint16_t(int(float(int(mag) & 0xffff) * 2.5f));
-        r.step_vec = r.step_vec * (kCreepStep / mag);
+        const float scale = nf::game::ee_math::div(kCreepStep, mag);
+        r.step_vec = {nf::game::ee_math::mul(r.step_vec[0], scale),
+                      nf::game::ee_math::mul(r.step_vec[1], scale),
+                      nf::game::ee_math::mul(r.step_vec[2], scale)};
     } else {
         r.creep_steps = 1;
     }
@@ -321,11 +339,16 @@ bool NavNetwork::link_creep_calc_to_route_end(NavRoute& r) {
     // LinkCreep_CalcToRouteEnd: a single segment start -> goal (straight-line route).
     r.seg_start = r.start.pos;
     r.seg_end = r.goal.pos;
-    r.step_vec = r.goal.pos - r.start.pos;
-    float mag = length(r.step_vec);
+    r.step_vec = {nf::game::ee_math::sub(r.goal.pos[0], r.start.pos[0]),
+                  nf::game::ee_math::sub(r.goal.pos[1], r.start.pos[1]),
+                  nf::game::ee_math::sub(r.goal.pos[2], r.start.pos[2])};
+    float mag = ee_length3(r.step_vec);
     if (mag > kCreepStep) {
         r.creep_steps = std::uint16_t(int(float(int(mag) & 0xffff) * 2.5f));
-        r.step_vec = r.step_vec * (kCreepStep / mag);
+        const float scale = nf::game::ee_math::div(kCreepStep, mag);
+        r.step_vec = {nf::game::ee_math::mul(r.step_vec[0], scale),
+                      nf::game::ee_math::mul(r.step_vec[1], scale),
+                      nf::game::ee_math::mul(r.step_vec[2], scale)};
     } else {
         r.creep_steps = 1;
     }

@@ -175,6 +175,7 @@ void WeaponSystem::spawn_projectile(const Shooter& shooter, const WeaponDef& def
     if (def.base == 59) b.timer = def.id == 108 ? 900.0f : 60.0f * float(5 * (def.id - def.base) + 5);
     else if (def.id == 105) b.timer = 5.0f;
     else if (def.id == 55) b.timer = shooter.id >= 0 && shooter.id < World::kMaxPlayers ? 7777.0f : 420.0f;
+    b.spawned_this_tick = true;
     projectiles_.push_back(b);
 }
 
@@ -519,6 +520,11 @@ void WeaponSystem::step_projectiles(World& world, FrameTiming timing) {
     for (std::size_t i = 0; i < projectiles_.size(); ++i) {   // no spawning in here: references stay valid
         Projectile& b = projectiles_[i];
         b.previous_pos = b.pos;
+        // Bullet_init creates the state-0 object after the original's movement-object traversal for this frame.
+        if (b.spawned_this_tick) {
+            b.spawned_this_tick = false;
+            continue;
+        }
         if (!step_projectile(b, world, timing, victims)) b.delete_me = true;
     }
     std::erase_if(projectiles_, [](const Projectile& p) { return p.delete_me; });

@@ -46,8 +46,7 @@ bool weapon_raised(const Drone& d);
 
 // Difficulty index into the three-entry tuning arrays: 1 easy, 2 normal, 3/4 hard, else normal.
 int difficulty_index(int difficulty);
-// PS2Sinf replica (range reduction + polynomial, .sdata constants @0x2f3b20): max 2.4e-7 vs the
-// original over 2001 samples. Aim-wobble paths must use this, not host sinf.
+// PS2Sinf__Ff replica using the original COP1 range reduction and VU0 polynomial operation semantics.
 float ps2_sin(float x);
 
 }  // namespace nf::drone::weap

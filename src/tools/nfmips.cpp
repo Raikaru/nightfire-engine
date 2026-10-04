@@ -29,6 +29,7 @@
 #include "assets/elf.hpp"
 #include "assets/weapon_data.hpp"
 #include "ee/machine.hpp"
+#include "ee/disasm.hpp"
 #include "game/actions.hpp"
 
 namespace {
@@ -2577,10 +2578,15 @@ struct OraclePad {
 };
 
 int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
-                  const std::string& pad_script, int watch_human_hp_slot) {
+                  const std::string& pad_script, int watch_human_hp_slot,
+                  u32 trace_frame, int trace_slot) {
     if (state.empty() || rows < 1)
         throw std::runtime_error("mp-oracle needs --state <p2s> and --rows N");
-
+    if ((trace_frame == 0) != (trace_slot == -1)
+        || (trace_frame != 0 && (trace_slot < 4 || trace_slot > 7))
+        || (trace_frame != 0 && watch_human_hp_slot >= 0))
+        throw std::runtime_error(
+            "--trace-frame requires --trace-slot 4..7 and excludes --watch-human-hp");
     std::map<u32, std::vector<OraclePad>> pads;
     if (!pad_script.empty()) {
         std::ifstream input(pad_script);
@@ -2769,6 +2775,97 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                 m.mem.write_block(address + 8, event.sticks, sizeof(event.sticks));
             }
         }
+        bool trace_done = false;
+        if (next_frame == trace_frame) {
+            constexpr u32 kMpGame = 0x002A4980;
+            constexpr u32 kMpSlotStride = 0x30;
+            constexpr u32 kMpObject = 0x1C;
+            constexpr u32 kObjectPosition = 0x30;
+            const u32 object = m.mem.read<u32>(
+                kMpGame + u32(trace_slot) * kMpSlotStride + kMpObject);
+            if (!object)
+                throw std::runtime_error("trace slot has no MP object");
+            const u32 position = m.mem.ram_offset(object + kObjectPosition);
+            const u32 control = m.addr("Drone_Control__FP7obj_tag");
+            u32 return_pc = 0;
+            bool trace_active = false;
+            m.mem.set_watch([&](u32 address, u32 size, bool write) {
+                if (!write || !trace_active) return;
+                const u32 offset = m.mem.ram_offset(address);
+                if (offset == ~u32(0) || offset >= position + 12
+                    || u64(offset) + size <= position)
+                    return;
+                std::fprintf(stderr,
+                    "POS_STORE frame=%u slot=%d pc=%08x inst=%08x addr=%08x size=%u "
+                    "sp=%08x ra=%08x\n",
+                    next_frame, trace_slot, m.cpu.cur_pc, m.cpu.cur_inst, address,
+                    size, u32(m.cpu.r[29].d[0]), u32(m.cpu.r[31].d[0]));
+            });
+            m.set_instruction_observer(
+                [&](const nf::ee::Cpu& cpu, u32 pc, u32 inst) {
+                    if (!trace_active) {
+                        if (pc != control || cpu.r[4].w[0] != object) return;
+                        trace_active = true;
+                        return_pc = u32(cpu.r[31].d[0]);
+                        std::fprintf(stderr,
+                            "EE_TRACE_BEGIN frame=%u slot=%d object=%08x return=%08x\n",
+                            next_frame, trace_slot, object, return_pc);
+                    }
+                    if (pc == return_pc) {
+                        trace_active = false;
+                        trace_done = true;
+                        std::fprintf(stderr, "EE_TRACE_END frame=%u slot=%d\n",
+                                     next_frame, trace_slot);
+                        return;
+                    }
+                    const auto symbol = m.symbol_at(pc);
+                    std::fprintf(stderr,
+                        "EE_TRACE frame=%u slot=%d pc=%08x inst=%08x %-28s "
+                        "a0=%08x a1=%08x a2=%08x a3=%08x ra=%08x sp=%08x "
+                        "f0=%08x f1=%08x f2=%08x f3=%08x fcr31=%08x",
+                        next_frame, trace_slot, pc, inst,
+                        nf::ee::disassemble(inst, pc).c_str(),
+                        cpu.r[4].w[0], cpu.r[5].w[0], cpu.r[6].w[0], cpu.r[7].w[0],
+                        u32(cpu.r[31].d[0]), u32(cpu.r[29].d[0]),
+                        cpu.f[0], cpu.f[1], cpu.f[2], cpu.f[3], cpu.fcr31);
+                    if (symbol)
+                        std::fprintf(stderr, " <%s+0x%x>", symbol->name.c_str(),
+                                     pc - symbol->value);
+                    if ((inst >> 26) == 0x12 && (inst & 0x02000000)) {
+                        const unsigned fd = (inst >> 6) & 31;
+                        const unsigned fs = (inst >> 11) & 31;
+                        const unsigned ft = (inst >> 16) & 31;
+                        const auto& vd = cpu.vu0.vf[fd];
+                        const auto& vs = cpu.vu0.vf[fs];
+                        const auto& vt = cpu.vu0.vf[ft];
+                        std::fprintf(stderr,
+                            " vu-fs%u=%08x,%08x,%08x,%08x"
+                            " ft%u=%08x,%08x,%08x,%08x"
+                            " fd%u=%08x,%08x,%08x,%08x mac=%08x clip=%08x",
+                            fs, vs.w[0], vs.w[1], vs.w[2], vs.w[3],
+                            ft, vt.w[0], vt.w[1], vt.w[2], vt.w[3],
+                            fd, vd.w[0], vd.w[1], vd.w[2], vd.w[3],
+                            cpu.vu0.vi[nf::ee::Vu0::kMac],
+                            cpu.vu0.vi[nf::ee::Vu0::kClip]);
+                    }
+                    std::fputc('\n', stderr);
+                });
+        }
+        try {
+            m.call_keep(entry, {}, 200'000'000);
+        } catch (const std::exception& e) {
+            m.set_instruction_observer({});
+            m.mem.set_watch({});
+            std::fprintf(stderr, "Game_Run trap at %08x: %s\n", m.cpu.cur_pc, e.what());
+            std::fputs(m.disasm_range(m.cpu.cur_pc - 16, 8).c_str(), stderr);
+            throw;
+        }
+        m.set_instruction_observer({});
+        if (next_frame == trace_frame) {
+            m.mem.set_watch({});
+            if (!trace_done)
+                throw std::runtime_error("trace slot never entered Drone_Control");
+        }
         try {
             m.call_keep(entry, {}, 200'000'000);
         } catch (const std::exception& e) {
@@ -2792,7 +2889,7 @@ void usage() {
                  "usage: nfmips <elf> call <sym|addr> [args] [--state p|--ram d] [--dump a[:n]] [--steps N]\n"
                  "       nfmips <elf> init [--check] [--dump-out f] [--steps N]\n"
                  "       nfmips <elf> trace <sym|addr> [args] [--steps N] [--state p|--ram d]\n"
-                 "       nfmips <elf> mp-oracle --state <p2s> --rows N [--pads <frame/port/input.txt>] [--watch-human-hp 0..3]\n"
+                 "       nfmips <elf> mp-oracle --state <p2s> --rows N [--pads <frame/port/input.txt>] [--watch-human-hp 0..3] [--trace-frame N --trace-slot 4..7]\n"
                  "       nfmips <elf> symbols [substr]\n"
                  "       nfmips <elf> diff [--count N] [--seed N] [--state p2s]\n"
                  "       nfmips <elf> diff-acc (DroneWeap_DoBulletAccuracy truth table, Bots diff)\n"
@@ -2823,16 +2920,24 @@ int main(int argc, char** argv) {
     try {
         if (cmd == "mp-oracle") {
             std::string state, pads;
-            int rows = 0, watch_human_hp_slot = -1;
+            int rows = 0, watch_human_hp_slot = -1, trace_slot = -1;
+            u32 trace_frame = 0;
             for (size_t j = 2; j < av.size(); j++) {
                 if (av[j] == "--state" && j + 1 < av.size()) state = av[++j];
                 else if (av[j] == "--rows" && j + 1 < av.size()) rows = std::stoi(av[++j]);
                 else if (av[j] == "--pads" && j + 1 < av.size()) pads = av[++j];
                 else if (av[j] == "--watch-human-hp" && j + 1 < av.size())
                     watch_human_hp_slot = std::stoi(av[++j]);
-                else throw std::runtime_error("mp-oracle wants --state <p2s> --rows N [--pads file] [--watch-human-hp 0..3]");
+                else if (av[j] == "--trace-frame" && j + 1 < av.size())
+                    trace_frame = u32(std::stoul(av[++j]));
+                else if (av[j] == "--trace-slot" && j + 1 < av.size())
+                    trace_slot = std::stoi(av[++j]);
+                else throw std::runtime_error(
+                    "mp-oracle wants --state <p2s> --rows N [--pads file] "
+                    "[--watch-human-hp 0..3] [--trace-frame N --trace-slot 4..7]");
             }
-            return cmd_mp_oracle(elf, state, rows, pads, watch_human_hp_slot);
+            return cmd_mp_oracle(elf, state, rows, pads, watch_human_hp_slot,
+                                 trace_frame, trace_slot);
         }
         if (cmd == "call") {
             if (av.size() < 3) {

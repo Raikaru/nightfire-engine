@@ -1,21 +1,35 @@
 #pragma once
 
-#include <cmath>
+#include <bit>
+
+#include "ee/ps2float.hpp"
 
 namespace nf::game::ee_math {
 
-// COP1/VU0 .s arithmetic in the EE reference interpreter truncates each result toward zero.
-// Inputs are ordinary finite gameplay floats; binary64 holds their exact sum and product.
-inline float truncate(double exact) {
-    const float rounded = static_cast<float>(exact);
-    if ((exact < 0.0 && double(rounded) < exact) || (exact > 0.0 && double(rounded) > exact))
-        return std::nextafter(rounded, 0.0f);
-    return rounded;
+using FloatBits = nf::ee::u32;
+
+inline float add(float a, float b) {
+    FloatBits flags = 0;
+    const FloatBits result = nf::ee::fp::add(std::bit_cast<FloatBits>(a), std::bit_cast<FloatBits>(b), flags);
+    return std::bit_cast<float>(result);
 }
 
-inline float add(float a, float b) { return truncate(double(a) + double(b)); }
-inline float sub(float a, float b) { return truncate(double(a) - double(b)); }
-inline float mul(float a, float b) { return truncate(double(a) * double(b)); }
-inline float div(float a, float b) { return truncate(double(a) / double(b)); }
+inline float sub(float a, float b) {
+    FloatBits flags = 0;
+    const FloatBits result = nf::ee::fp::sub(std::bit_cast<FloatBits>(a), std::bit_cast<FloatBits>(b), flags);
+    return std::bit_cast<float>(result);
+}
+
+inline float mul(float a, float b) {
+    FloatBits flags = 0;
+    const FloatBits result = nf::ee::fp::mul(std::bit_cast<FloatBits>(a), std::bit_cast<FloatBits>(b), flags);
+    return std::bit_cast<float>(result);
+}
+
+inline float div(float a, float b) {
+    FloatBits flags = 0;
+    const FloatBits result = nf::ee::fp::div(std::bit_cast<FloatBits>(a), std::bit_cast<FloatBits>(b), flags);
+    return std::bit_cast<float>(result);
+}
 
 }  // namespace nf::game::ee_math

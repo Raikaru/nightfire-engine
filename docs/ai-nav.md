@@ -85,8 +85,9 @@ range-checks the ray parameter); we reproduce that literally. `BoundsTest` retur
   emitter reaches every node on each MP level.
 * NavPath `plain()` = `(flags & 0xd) == 0`; patrol paths (flag 4) start a loop route (mode 2), everything else mode 1;
   `InitAIPath` walks degree-2 chains away from the previous node (patrol starts with the second link unless path flag 0x10).
-* block 0x19 (612 blocks, 13328 records) lives in the level's **map** chunk only; `static_path_refs` exposes the u16 at
-  static offsets +0x40 (count), +0x42, +0x44 (index into the block list). Quaternions are unit length (max error 1.2e-7).
+* block 0x19 (612 blocks, 13328 records) lives in the level's **map** chunk only; `static_path_refs` exposes the u16 at static offsets +0x40 (count), +0x42, +0x44 (index into the block list). Quaternions are unit length (max error 1.2e-7).
+* `LinkCreep_ForNodes` subtracts endpoints and forms its direction with VU0 vector ops, then `Vec_Dist3D` squares lanes in VU0 and sums/square-roots through COP1.
+  `LinkCreep_Dest` scales each lane with COP1 and adds the origin with VU0. `nav_route.cpp` uses the shared EE float model at these boundaries to retain the source's per-operation truncation.
 
 ## Verification
 

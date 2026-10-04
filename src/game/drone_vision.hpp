@@ -7,11 +7,9 @@
 #include <cmath>
 
 #include "core/math.hpp"
-#include "game/ee_math.hpp"
 #include "game/drone.hpp"
 
 namespace nf::drone {
-namespace ee_math = nf::game::ee_math;
 
 class DroneSystem;
 
@@ -37,16 +35,12 @@ inline float atan2_approx(float x, float z) {
     } else {
         const float az = std::fabs(z), ax = std::fabs(x);
         if (ax < az) {
-            const float ratio = ee_math::div(ax, az);
-            const float slope = ee_math::sub(1.0596788f, ee_math::mul(ratio, 0.27131295f));
-            r = ee_math::mul(slope, ratio);
+            r = (1.0596788f - (ax / az) * 0.27131295f) * (ax / az);
         } else {
-            const float ratio = ee_math::div(az, ax);
-            const float slope = ee_math::sub(1.0596788f, ee_math::mul(ratio, 0.27131295f));
-            r = ee_math::sub(1.5707964f, ee_math::mul(slope, ratio));
+            r = 1.5707964f - (1.0596788f - (az / ax) * 0.27131295f) * (az / ax);
         }
     }
-    if (z < 0.0f) r = ee_math::sub(3.1415927f, r);
+    if (z < 0.0f) r = 3.1415927f - r;
     if (x < 0.0f) r = -r;
     return r;
 }

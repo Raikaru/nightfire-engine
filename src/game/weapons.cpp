@@ -865,11 +865,7 @@ void WeaponSystem::weapon_firing(int slot, PlayerWeapons& p, World& world, Frame
         if (!held) p.fire_blocked = false;
         held = pressed = false;
     }
-    // BLData+2360 ticks down 1 per logic frame (unscaled, like the original's --timer in the collision
-    // handler): 3 frames of flicker per shot (7 for id 51), each drawing 3 shared-stream flicker values.
-    if (p.muzzle_frames > 0) --p.muzzle_frames;
     if (p.current == kNoWeapon) return;
-
     const int need = d.rounds_per_shot;
     auto try_reload = [&](bool edge) {
         if (p.anim_state != WeaponAnim::Idle) return false;
@@ -902,12 +898,15 @@ void WeaponSystem::weapon_firing(int slot, PlayerWeapons& p, World& world, Frame
         p.shots_left = d.fire_count[std::size_t(std::min<int>(p.weapon[std::size_t(p.current)].mode_index, 3))];
         p.cycle_start = p.shots_left;
     }
-    if (p.cooldown > 0.0f) p.cooldown -= timing.mul();
     const bool state_ok = p.anim_state == WeaponAnim::Idle || p.anim_state == WeaponAnim::FireHold ||
                           (p.anim_state == WeaponAnim::Firing && !d.has(wf1::kNoRetrigger));
-    if (p.cooldown > 0.0f || !state_ok || !gate) return;
-    if (p.shots_left <= 0) return;
+    // The original returns from states other than idle, firing (9), and fire-hold (11) before ticking cooldown.
+    if (!state_ok) return;
+    if (p.cooldown > 0.0f) p.cooldown -= timing.mul();
+    if (p.cooldown > 0.0f || !gate) return;
+    if (p.shots_left < 0) return;
     --p.shots_left;
+    if (p.shots_left < 0) return;
     if (!round_to_fire(p, p.current, need, need)) return;
     p.cooldown = std::max(1.0f, float(d.fire_interval));
     if (!(p.anim_state == WeaponAnim::Firing && (d.flags1 & (wf1::kRepeatFire | wf1::kHoldFire)) != 0)) set_firing_anim(p, d);
@@ -1145,6 +1144,8 @@ void WeaponSystem::tick_player(int slot, World& world, FrameTiming timing) {
     update_datum0(p);   // Player_WeaponFiring datum-0 entity override, every frame (suppressor/LEDs/digits)
     weapon_input(slot, p, world, timing);
     weapon_firing(slot, p, world, timing);
+    // Player_WeaponFiring runs before the collision-handler muzzle countdown in the original.
+    if (p.muzzle_frames > 0) --p.muzzle_frames;
     advance_anim(slot, p, world);
     // Player_Weapon's aim state as the player code sees it: no walking while aiming, look speed divided by the zoom.
     pl.zoom = p.zoom;
