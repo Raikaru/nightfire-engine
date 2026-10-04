@@ -906,67 +906,45 @@ is non-null. `Drone+0x3e0` is written by the current `Collide_Update` pass, so
 the host applies its current cylinder-query push-out rather than restoring a
 sampled vector from the seed.
 
-`Drone_FeetOnPoint` also returns a signed foot-to-hit separation through its
-fifth argument. When collbody `+0x60` bit 8 is set and that separation exceeds
-`-0.1`, `Drone_CollisionHandler` subtracts one eighth of it from object Y.
-The host uses source `Drone+0xa0` height and the captured `+0x400` endpoint
-when available. `FeetResult::nearest` retains the first ray hit even when the
-host ground-range/material filters reject it; this supplies the output delta.
-Direct P2S execution at Team Arena frame 13544 confirmed the `-0.0106039` store
-despite gravity being skipped. On the v5 dense Team seed at frame 13544, bot
-slot 5 Y now matches at 13545; remaining residuals are bot slot 6 Y (+0.0089)
-and Z (+0.0040) for each of frames 13545–13554.
+In the `obj+0xd0 == null` path, `Drone_FeetOnPoint` returns
+`f20 = obj.y - Drone+0xa0 - hit.y`. An accepted hit candidate sets collbody
+bit 8 when `HITTEST+0x9c` is nonzero or a selected hit-list entry exists and
+`f20 < 0.2`. That path's handler tail snaps Y by `-f20/8` only when bit 8 is
+set and `f20 > -0.1`. The `obj+0xd0 != null` branch calls FeetOnPoint without
+an output pointer, applies its current collision/object push, and exits through
+a separate branch before the snap tail.
+
+The host uses the source `Drone+0xa0` height (`anim.root_height - 0.02`) for
+both the feet ray and snap delta; `FeetResult::nearest` supplies the signed
+output even when generic host range/material filters reject it. On aligned Team
+logical frame 13637, P2S captured entry Y `10.9747677`, source height
+`0.971904635`, `f20=0.102118492`, and selected HITDATA `0x01fc2480`; `HITTEST+0x9c`
+was zero, while collbody flags became `0x0008` through that selected hit. The
+source exit Y was `10.9620028`, a `-0.0127649` snap (`-f20/8`) with no gravity
+velocity. A separate direct P2S call observed `f20=0.185566902` and a
+`-0.02319622` Y snap.
+
 
 An earlier pre-Control P2S hit at Y `3.9454253` was stale for the host's
 post-Control ray. After `Drone_Control` then `Drone_CollisionHandler`, P2S
 returned hit Y `3.95749831` and separation `0.0119822`; the host query on the
-same ray returned Y `3.9574995` (about 1.2 μm different). The observed p6
-residual is therefore not evidence of a collision-mesh decode mismatch.
+same ray returned Y `3.9574995` (about 1.2 μm different). This confirms the
+source and host select the same ray surface at this probe. The p6 residual
+seen in seeded comparisons was fixed by skipping the feet snap on the non-null
+`obj+0xd0` push path.
 
 The phase-aligned P2S ray selects source leaf box `0x009572b0`, triangle range
 `[177,234)`, vertex chunk 41. Only triangle 231 in that range intersects the
-ray; its material is 12 and its vertex indices are `(102,117,114)`. Source
+ray; its material is 12 and its vertex indices are `(102,117)`. Source
 decompression (scale `1/1024`, offset `(-8.48975468, 7.08238935, 33.36190414)`)
 reproduces host placement 12 / triangle 231's three world vertices within
-`1e-6`; mesh decoding is not the cause of this residual.
+`1e-6`, further confirming that mesh decoding is not the p6 residual source.
 
-A v5 Arena seed at frame 14727 produced 5/10 position-divergent frames: bot slot
-5 Y differed by 1.1–1.6 mm at frames 14729–14733, and slot 6 Y by +3.4 mm at
-frame 14730. The other five frames matched within the 1 mm comparator tolerance.
+The `Drone+0x3e0` writer is `Collide_Update` → `Collide_Intersect`: `sqc2 vf5, 0x10(HITTEST)` stores at `Drone+0x3d0+0x10`. The source Team p6 response was `(-0.00086185, 0.01037366, 0.00402999)` and Arena p6 was `(-0.00007928, 0.02278954, 0.00621574)`. The host reconstructs the collision capsule from the Control-entry position and current radius/height, then applies the freshly computed push after movement. At Team frame 13489, host push Y `.00922307` differs from source `.00922546349` by about 2.4 μm. The raw `Drone+0x3f0/+0x400` fields are stale relative to the current Control-entry position and are not current HITTEST endpoints.
 
-When a v5 snapshot has non-null `obj+0xd0`, source `Drone_CollisionHandler`
-uses the collision push and skips the generic feet snap. A full `Game_Run`
-watch traced the `Drone+0x3e0` writer to `Collide_Update` →
-`Collide_Intersect`: `sqc2 vf5, 0x10(HITTEST)` stores at `Drone+0x3d0+0x10`.
-The Team p6 response was `(-0.00086185, 0.01037366, 0.00402999)` and Arena
-p6 was `(-0.00007928, 0.02278954, 0.00621574)`. The host now reconstructs the
-collision capsule from the Control-entry position and current height, then
-applies its freshly computed push after movement; this matches the Team 10
-frame probe and Arena p6 frame probe. The raw `Drone+0x3f0/+0x400` fields are
-not the current HITTEST endpoints (they are stale relative to the
-Control-entry position) and must not be used as collision endpoints.
+The Team v5 seed-each window, logical frames 13326–13666 (341 aligned frames), now has 0/341 divergent fields at the 1 mm comparator tolerance. Slot 5's late descent was corrected by using source `Drone+0xa0` height (`anim.root_height - 0.02`) for its feet ray and snap delta; the source branch's push/snap exclusion also prevents an erroneous extra feet correction on non-null `obj+0xd0` hit lists.
 
-A Team v5 seed-each window, frames 13326–13666 (341 aligned frames), now has
-30 divergent frames, all p5 Y at 13637–13666 (+10.1 to +21.0 mm). Earlier p5
-and all p6 fields match. Source and host positions match through frame 13636;
-at 13637 the source drops 12.8 mm while the host drops 2.7 mm, then their
-per-frame descent is nearly aligned and the residual settles near 21 mm.
-Source p5 D0 is null and collbody bit 8 is set on the late path. Direct P2S
-`Drone_Control`→`Drone_CollisionHandler` at checkpoint 13652 measured
-`Drone_FeetOnPoint` output `0.185566902` and applied a `-0.02319622` Y snap.
-The one-tick descent onset discrepancy remains unresolved; a missing source
-gravity/vertical-velocity input is under investigation.
-
-A v5 Arena seed at frame 14727 produced 5/10 position-divergent frames: bot slot
-5 Y differed by 1.1–1.6 mm at frames 14729–14733, and slot 6 Y by +3.4 mm at
-frame 14730. The other five frames matched within the 1 mm comparator tolerance.
-
-A separate Arena p5 check at 14729→30 finds non-null `obj+0xd0`: the source
-uses its collision-push branch, and the feet output (~`4.8e-5`) would be only
-about 6 μm if divided by eight, far below the 1.6 mm p5 residual. The host
-gates its generic feet snap off for that branch, so the residual is not a
-host-only feet correction. Team's 10-frame seed at 13544→13554 and the
-source-derived Team p6 collision response are now exact.
+The two Arena v5 windows have only slot 5 Y residuals after the same source collision corrections: outputs 14730–14791 (62 frames) diverge on 29 frames (up to 2.2 mm), and outputs 14794–14932 (139 frames) diverge on 66 frames (up to 2.2 mm). Slot 6 is exact in both windows. At p5 frame 14730, source and host collision pushes are both effectively zero, but the host still finishes about 1.6 mm low. The observed animation root-height change differs by about that amount; this points to a pre-collision movement/animation phase residual, not an unexplained collision push.
 
 
 Restoring an in-progress bot state clears the runtime fresh-drone flag so the

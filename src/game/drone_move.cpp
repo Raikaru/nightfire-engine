@@ -567,17 +567,18 @@ void collision_step(Drone& d, const Vec3& pre_control_pos) {
         }
     }
 
-    float source_feet_delta = 0.0f;
+    float source_feet_delta = 1.0f;
+    bool source_hit_list_present = false;
     bool source_feet_delta_valid = false;
-    bool current_hit_list_present = false;
     const float h = d.stand_height;
-    const float collision_height = d.is_bot() && d.character
-                                       ? d.character->root_height() + d.anim.source_root_height_offset - 0.02f
-                                       : h;
+    const float source_feet_height = d.is_bot() && d.character
+                                        ? d.character->root_height() + d.anim.source_root_height_offset - 0.02f
+                                        : h;
+    const float collision_height = source_feet_height;
     if (!source_collision_valid || source_collision_due) {
         CylinderQuery q;
         if (d.is_bot() && d.character) {
-            // The source collision capsule is derived from the body position at Control entry.
+            // The source collision radius is set from char_class above.
             q.a = {pre_control_pos[0], pre_control_pos[1] + d.radius, pre_control_pos[2]};
             q.b = {pre_control_pos[0], pre_control_pos[1] + d.radius - collision_height, pre_control_pos[2]};
             q.radius = d.radius;
@@ -587,17 +588,18 @@ void collision_step(Drone& d, const Vec3& pre_control_pos) {
             q.radius = d.radius;
         }
         const CylinderResult r = world.cylinder(q);
-        current_hit_list_present = !r.hits.empty();
-        // The source capsule was constructed from the body position at Control entry.
-        const Vec3 feet_top = r.b;
-        const FeetResult feet = world.feet_on_point(d.pos, feet_top, {0, 1, 0}, collision_height, r.contact);
+        source_hit_list_present = !r.hits.empty();
+        const FeetResult feet = world.feet_on_point(d.pos, r.b, {0, 1, 0}, source_feet_height, r.contact);
         d.on_ground = feet.on_ground;
-        if (source_collision_valid && source_collision_due && !d.mv.disabled && feet.nearest) {
-            source_feet_delta = (d.pos[1] - collision_height) - feet.nearest->point[1];
+        if (source_collision_valid && source_collision_due && !d.mv.disabled) {
+            d.on_ground = r.contact != 0;
             source_feet_delta_valid = true;
+            if (feet.nearest) {
+                source_feet_delta = (d.pos[1] - source_feet_height) - feet.nearest->point[1];
+                if (source_feet_delta < 0.2f) d.on_ground = true;
+            }
         }
         d.ground_normal_y = feet.ground_normal_y;
-        // Collide_Update's current hit list drives its freshly computed push-out.
         if (!r.hits.empty()) d.pos += r.push_out;
     } else {
         // NDrone2_DoCollision returned false: source skips the feet probe and hit push.
@@ -607,7 +609,8 @@ void collision_step(Drone& d, const Vec3& pre_control_pos) {
     d.anim.source_collision_valid = false;
     // Drone_CollisionHandler applies NDrone2_DoGravity after collision and feet resolution.
     if (!d.mv.disabled && (!source_collision_valid || source_gravity_due)) {
-        if (!d.on_ground || d.ground_normal_y < 0.5f) {
+        if (!d.on_ground ||
+            (!(source_collision_valid && source_collision_due) && d.ground_normal_y < 0.5f)) {
             d.fall_velocity[1] -= 9.8f * timing.rec();
         } else {
             d.fall_velocity = {};
@@ -615,8 +618,8 @@ void collision_step(Drone& d, const Vec3& pre_control_pos) {
         d.fall_velocity[1] = std::clamp(d.fall_velocity[1], -45.0f, 45.0f);
         d.pos = d.pos + d.fall_velocity * timing.rec();
     }
-    // The current collision hit list suppresses the host's generic feet snap.
-    if (source_feet_delta_valid && d.on_ground && source_feet_delta > -0.1f && !current_hit_list_present) {
+    // The source push branch and the FeetOnPoint snap are mutually exclusive.
+    if (source_feet_delta_valid && !source_hit_list_present && d.on_ground && source_feet_delta > -0.1f) {
         d.pos[1] -= source_feet_delta * 0.125f;
     }
 
