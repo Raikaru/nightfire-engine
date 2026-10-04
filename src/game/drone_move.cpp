@@ -571,9 +571,10 @@ void collision_step(Drone& d, const Vec3& pre_control_pos) {
     bool source_hit_list_present = false;
     bool source_feet_delta_valid = false;
     const float h = d.stand_height;
-    const float source_feet_height = d.is_bot() && d.character
-                                        ? d.character->root_height() + d.anim.source_root_height_offset - 0.02f
-                                        : h;
+    const float source_feet_height =
+        d.is_bot() && d.character
+            ? (d.character->root_height() + d.anim.source_root_height_offset) * d.anim.source_root_height_scale - 0.02f
+            : h;
     const float collision_height = source_feet_height;
     if (!source_collision_valid || source_collision_due) {
         CylinderQuery q;
