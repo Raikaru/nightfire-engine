@@ -4,6 +4,8 @@
 #include <cctype>
 #include <charconv>
 #include <cstring>
+#include <locale>
+#include <sstream>
 
 namespace nf {
 
@@ -360,6 +362,19 @@ BanksIni parse_banks_ini(std::string_view text) {
     return ini;
 }
 
+namespace {
+// Apple's libc++ deletes the floating-point std::from_chars overloads; parse with the classic locale instead.
+bool parse_float(std::string_view text, float& out) {
+    std::istringstream in{std::string(text)};
+    in.imbue(std::locale::classic());
+    float value = 0.0f;
+    in >> value;
+    if (in.fail() || in.peek() != std::char_traits<char>::eof()) return false;
+    out = value;
+    return true;
+}
+}  // namespace
+
 std::vector<MixPreset> parse_mix_ini(std::string_view text) {
     std::vector<MixPreset> out;
     for (std::string_view line : lines_of(text)) {
@@ -370,8 +385,7 @@ std::vector<MixPreset> parse_mix_ini(std::string_view text) {
         std::string_view rhs = trim(line.substr(eq + 1));
         auto comma = rhs.find(',');
         std::string_view vol = trim(rhs.substr(0, comma));
-        auto [vend, vec] = std::from_chars(vol.data(), vol.data() + vol.size(), m.volume);
-        if (vec != std::errc() || vend != vol.data() + vol.size()) throw FormatError("mix ini: bad volume in '" + std::string(line) + "'");
+        if (!parse_float(vol, m.volume)) throw FormatError("mix ini: bad volume in '" + std::string(line) + "'");
         if (comma != std::string_view::npos) {
             std::string_view grp = trim(rhs.substr(comma + 1));
             // `Characters = 0.800,`: the group is optional, default 0.
