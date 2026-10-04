@@ -22,6 +22,8 @@
 
 namespace nf {
 
+class GameRng;
+
 // A skinned vertex after the VU0 skinning microprogram's input stage: bind-pose position blended between
 // two bones, pos' = w * (M[bone0] * pos) + (1 - w) * (M[bone1] * pos), with M = Palette::skin.
 struct SkinnedVertex {
@@ -334,14 +336,15 @@ public:
     void update_locomotion(float speed, float max_speed, float strafe_speed = 0, float max_strafe_speed = 1,
                            float mul = 1.0f);
 
-    // Snapshot of the layer list for tests and debugging (oldest first; facial layers excluded).
+    // Snapshot of the layer list for traces and tests (oldest first; facial layers excluded).
     struct LayerInfo {
         std::uint32_t script;      // script (06xxxxxx) or sequence hash the layer plays
-        float frame, speed;        // sAnimScript +0x90 / +0x98
-        float blend_time, blend_duration;   // +0xA8 / +0xAC
+        float frame, previous_frame, speed; // sAnimScript +0x90 / +0x94 / +0x98
+        float blend_time, blend_duration, weight; // +0xA8 / +0xAC, effective layer weight
         int direction;             // +1 / -1 fading out
         bool distance_driven, phase_locked, strafe;
         float pair_weight;         // +0x88 (Distance layers)
+        Vec3 root_delta;           // AnimSeqTick's per-layer last_root_delta
     };
 
     struct LayerSnapshot {
@@ -355,6 +358,16 @@ public:
     // Restores source animation cursors and sampled-root predecessors between ticks.
     bool restore_layers(const std::vector<LayerSnapshot>& layers, float distance_accumulator);
     std::vector<LayerInfo> layer_infos() const;
+    template <typename F>
+    void for_each_layer_info(F&& visitor) const {
+        for (const auto& layer : layers_) {
+            const std::uint32_t script = layer.script ? layer.script->hash : layer.seq->hash;
+            visitor(LayerInfo{script, layer.frame, layer.previous_frame, layer.speed, layer.blend_time,
+                              layer.blend_duration, layer.weight(), layer.direction,
+                              layer.drive == Drive::Distance, layer.drive == Drive::Phase, layer.strafe,
+                              layer.pair_weight, layer.root_delta});
+        }
+    }
 
     // Root motion (AnimSeqTick): the root bone's translation change per tick, blended across layers like the
     // pose; the pose's own root translation is zeroed so the mesh stays on the object (the game moves the
@@ -381,11 +394,16 @@ public:
     // Events crossed since the last call (frames in (previous tick, this tick], wrapping over a loop).
     std::vector<AnimEvent> take_events();
 
+    // Gameplay supplies its stream so AnimProcessScriptCmds side effects occur during the animation tick,
+    // even when audio/rendering is disabled. Asset inspection leaves this unset.
+    void set_game_rng(GameRng* rng) { game_rng_ = rng; }
+
     // One 1/30 s step of every layer. `mul` is FRAME_RATE_MUL (1 at 60 fps, 2 at 30 fps): Time-layer frame
     // advance and blend fade steps scale with it (AnimScriptTick / AnimFrameResolve); Distance/Phase layers are
     // rate-independent. Defaults preserve the old single-rate behavior.
     void tick(float mul = 1.0f);
     void advance(float seconds, float mul = 1.0f);   // whole ticks of accumulated real time
+
     // Scrubbing: puts the newest body layer at `frame` (wrapped/clamped like a tick would).
     void set_frame(float frame);
     // EE-differential seeding: puts every body layer playing `script` at `frame` (same wrap/clamp); a Distance
@@ -420,7 +438,7 @@ private:
         const AnimScript* script = nullptr;    // timeline, or null for a bare sequence
         const AnimSeq* seq = nullptr;          // bare sequence / first sequence (for length)
         float length = 1;
-        float frame = 1, speed = 1;
+        float frame = 1, previous_frame = 1, speed = 1;
         bool loop = true, ended = false;
         Drive drive = Drive::Time;
         std::uint32_t id = 0;                  // creation stamp (script+0x84): older layers resolve first
@@ -463,6 +481,7 @@ private:
 
     const CharacterBank& bank_;
     const SkinDef& skin_;
+    GameRng* game_rng_ = nullptr;
     const Skeleton& skeleton_;
     std::vector<Layer> layers_;                // body layers, oldest first
     std::array<std::optional<Layer>, 3> facial_layers_;

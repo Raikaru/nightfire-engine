@@ -25,9 +25,10 @@ public:
     void set_category(int category);
     // One logic frame with the frame's walk velocity (body space, x = left, z = forward) and FRAME_RATE_MUL `mul`
     // (frame rate 60 / mul). Returns the new foot height.
-    float update(bool crouched, const Vec3& velocity, float mul);
+    float update(bool crouched, const Vec3& velocity, float mul, GameRng* rng = nullptr);
 
     const CharacterInstance& character() const { return character_; }
+    std::vector<AnimEvent> take_events();
 
 private:
     void select_set();

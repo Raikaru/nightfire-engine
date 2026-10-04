@@ -14,6 +14,8 @@
 #include "app/net_client.hpp"
 #include "app/net_prediction.hpp"
 
+#include "core/rng.hpp"
+
 #include "assets/character.hpp"
 #include "assets/bin_archive.hpp"
 #include "assets/cutscene.hpp"
@@ -617,14 +619,13 @@ struct MpSession::Impl {
             body.set_category(category);
             if (replicated) {
                 const Vec3 velocity{replicated->velocity[0], replicated->velocity[1], replicated->velocity[2]};
-                body.update(replicated->substate == std::uint8_t(SubState::Crouch), velocity, timing.mul());
+                body.update(replicated->substate == std::uint8_t(SubState::Crouch), velocity, timing.mul(),
+                            j < direct.options.humans ? &game_rng() : nullptr);
             } else {
-                body.update(q.substate == SubState::Crouch, q.velocity, timing.mul());
+                body.update(q.substate == SubState::Crouch, q.velocity, timing.mul(),
+                            j < direct.options.humans ? &game_rng() : nullptr);
             }
-            // Event drain: character() is exposed const (Movement's local-player accessor); the
-            // animator object itself is ours and mutable, so the cast only recovers that.
-            CharacterInstance& character = const_cast<CharacterInstance&>(body.character());
-            for (const AnimEvent& e : character.take_events()) {
+            for (const AnimEvent& e : body.take_events()) {
                 if (e.kind != AnimEventKind::Sound || e.arg == 0) continue;
                 audio::PlayOptions o;
                 o.position = q.pos;

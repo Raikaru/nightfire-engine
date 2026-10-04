@@ -126,13 +126,28 @@ void MpTraceSink::dump(const World& world, const ArenaSystem& arena, const Weapo
             std::fprintf(out_, "%s{\"pos\":[%.4f,%.4f,%.4f],\"yaw\":%.6f,\"type\":%u,\"hp\":%.3f,\"arm\":0.0,"
                                "\"weap\":%d,\"alive\":%s,\"mp_status\":%u,\"dead\":%s,\"out\":%s,"
                                "\"state\":%d,\"active_goal\":%d,\"goal_type\":%d,\"goal_kind\":%d,"
-                               "\"goal_target\":%d,\"vel\":[%.5f,%.5f,%.5f],\"fall_vel\":[%.5f,%.5f,%.5f]}",
+                               "\"goal_target\":%d,\"vel\":[%.5f,%.5f,%.5f],\"fall_vel\":[%.5f,%.5f,%.5f],"
+                               "\"anim\":{\"layers\":[",
                          s ? "," : "", botdrone->pos[0], botdrone->pos[1], botdrone->pos[2], botdrone->yaw,
                          type, botdrone->health, botdrone->weapon, botdrone->health > 0.0f ? "true" : "false",
                          static_cast<unsigned>(arena.status(s)), arena.dead(s) ? "true" : "false",
                          out ? "true" : "false", botdrone->state(), active_goal, goal_type, goal_kind, goal_target,
                          botdrone->velocity[0], botdrone->velocity[1], botdrone->velocity[2],
                          botdrone->fall_velocity[0], botdrone->fall_velocity[1], botdrone->fall_velocity[2]);
+            bool first_layer = true;
+            if (botdrone->character) {
+                botdrone->character->for_each_layer_info([&](const CharacterInstance::LayerInfo& layer) {
+                    std::fprintf(out_, "%s{\"script_id\":%u,\"frame\":%.9g,\"previous_frame\":%.9g,"
+                                       "\"speed\":%.9g,\"weight\":%.9g,\"blend_time\":%.9g,"
+                                       "\"blend_duration\":%.9g,\"sequence\":{\"last_root_delta\":["
+                                       "%.9g,%.9g,%.9g,0.0]}}",
+                                 first_layer ? "" : ",", layer.script, layer.frame, layer.previous_frame,
+                                 layer.speed, layer.weight, layer.blend_time, layer.blend_duration,
+                                 layer.root_delta[0], layer.root_delta[1], layer.root_delta[2]);
+                    first_layer = false;
+                });
+            }
+            std::fputs("]}}", out_);
         } else {
             const PlayerWeapons* state = weapons.state(s);
             std::fprintf(out_, "%s{\"pos\":[%.4f,%.4f,%.4f],\"yaw\":%.6f,\"type\":%u,\"state\":%d,"

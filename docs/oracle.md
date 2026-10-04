@@ -584,6 +584,7 @@ state/timer/carrier/damager/capturer fields use oracle `pos_0x40` for kinds 0,
 1 and 3; unverified target HP and draw masks are not compared.
 oracle `in_air`; it omits oracle object yaw because the engine projectile state
 exposes direction instead.
+For bot slots, it compares animation layers in oldest-to-newest order by script id, frame and previous frame, speed, effective weight, blend time/duration, and each layer's last root delta.
 PINE savestate slots 10+ belong to the MP oracle (1-9 are Movement-2's); the
 slot number is stored by PCSX2, and JSONL recordings/logs are kept in
 `~/.cache/mp-oracle-tmp/`.

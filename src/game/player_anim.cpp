@@ -55,15 +55,18 @@ void PlayerAnimator::select_set() {
     character_.set_anim_set(&find_set(sets_, crouched_ ? names.second : names.first), kDistanceScale, true);
 }
 
-float PlayerAnimator::update(bool crouched, const Vec3& velocity, float mul) {
+float PlayerAnimator::update(bool crouched, const Vec3& velocity, float mul, GameRng* rng) {
     if (crouched != crouched_) {
         crouched_ = crouched;
         select_set();
     }
+    character_.set_game_rng(rng);
     character_.update_locomotion(velocity[2], mul * 0.1f, velocity[0], mul * 0.075f, mul);
     character_.advance(mul / 60.0f, mul);   // the tick itself steps fades/frames by FRAME_RATE_MUL
     return character_.foot_height(model_min_y_);
 }
+
+std::vector<AnimEvent> PlayerAnimator::take_events() { return character_.take_events(); }
 
 std::uint32_t single_player_skin(std::uint32_t level_id) {
     switch (level_id) {

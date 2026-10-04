@@ -1,5 +1,7 @@
 #include "assets/character.hpp"
 
+#include "core/rng.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -1092,6 +1094,7 @@ void CharacterInstance::tick_layer(Layer& l, float mul, bool body) {
         f = std::clamp(f, 1.0f, l.length);
     }
     l.frame = f;
+    l.previous_frame = f;
     if (!body) return;
     const int current = int(f);
     if (l.script) emit_events(l, l.prev_int, current);
@@ -1138,6 +1141,7 @@ void CharacterInstance::emit_events(const Layer& l, int previous, int current) {
         e.frame = int(c.words[0]);
         e.footstep_type = (l.script->hash == 0x06000099 || l.script->hash == 0x060000AE) ? 1 : 2;
         if (c.op == kScriptSound) {
+            if (game_rng_) (void)game_rng_->rand_int(500);   // AnimProcessScriptCmds sound pitch: Rand_Rand(500).
             e.kind = AnimEventKind::Sound;
             e.arg = c.words[1];
         } else {
@@ -1185,6 +1189,7 @@ bool CharacterInstance::restore_layers(const std::vector<LayerSnapshot>& snapsho
         layer.id = snapshot.id;
         layer.primary = snapshot.primary;
         layer.frame = snapshot.frame;
+        layer.previous_frame = snapshot.previous_frame;
         layer.speed = snapshot.speed;
         layer.loop = snapshot.loop;
         layer.ended = snapshot.ended;
@@ -1222,11 +1227,8 @@ bool CharacterInstance::restore_layers(const std::vector<LayerSnapshot>& snapsho
 
 std::vector<CharacterInstance::LayerInfo> CharacterInstance::layer_infos() const {
     std::vector<LayerInfo> out;
-    for (const auto& l : layers_) {
-        const std::uint32_t id = l.script ? l.script->hash : l.seq->hash;
-        out.push_back({id, l.frame, l.speed, l.blend_time, l.blend_duration, l.direction, l.drive == Drive::Distance,
-                       l.drive == Drive::Phase, l.strafe, l.pair_weight});
-    }
+    out.reserve(layers_.size());
+    for_each_layer_info([&out](const LayerInfo& info) { out.push_back(info); });
     return out;
 }
 
@@ -1325,6 +1327,7 @@ void CharacterInstance::set_frame(float frame) {
         frame = 1 + std::fmod(std::fmod(frame - 1, span) + span, span);
     }
     l.frame = std::clamp(frame, 1.0f, l.length);
+    l.previous_frame = l.frame;
     dirty_ = true;
 }
 
@@ -1354,6 +1357,7 @@ bool CharacterInstance::set_layer_frame(std::uint32_t script, float frame) {
             l.distance = std::fmod(0.5f * (lo + hi) - set_phase_base_ + total, total);
         }
         l.frame = f;
+        l.previous_frame = f;
         l.prev_int = int(f);
         l.have_root = false;   // next tick re-seeds prev_root instead of emitting a false delta
         if (l.drive == Drive::Distance) {
@@ -1362,6 +1366,7 @@ bool CharacterInstance::set_layer_frame(std::uint32_t script, float frame) {
             for (auto& o : layers_)
                 if (o.primary == l.id && o.length > 1) {
                     o.frame = std::clamp(1 + phase * (o.length - 1), 1.0f, o.length);
+                    o.previous_frame = o.frame;
                     o.prev_int = int(o.frame);
                     o.have_root = false;
                 }

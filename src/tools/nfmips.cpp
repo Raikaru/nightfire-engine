@@ -2679,7 +2679,11 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
             select_args.i(object);
             m.call_keep("Player_WeaponSelect__FP7obj_tag", select_args);
         }
-        std::fprintf(stderr, "GAVE_WEAPON slot=0 id=%d bl=%08x\n", weapon, bl_data);
+        const u8 current_after = m.mem.read<u8>(weapon_owner + 0x62);
+        const u8 selected_after = m.mem.read<u8>(weapon_owner + 0x63);
+        std::fprintf(stderr,
+                     "GAVE_WEAPON slot=0 id=%d bl=%08x owner_current=%u owner_selected=%u\n",
+                     weapon, bl_data, unsigned(current_after), unsigned(selected_after));
     }
     if ((watch_drone_anim_slot == -1) != (watch_drone_frame == 0)
         || (watch_drone_anim_slot != -1

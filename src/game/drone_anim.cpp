@@ -1,6 +1,8 @@
 // DroneAnim_*: anim-state requests -> character clips. See drone_anim.hpp for the table layout.
 #include "game/drone_anim.hpp"
 
+#include "core/rng.hpp"
+
 #include <algorithm>
 #include <cstring>
 
@@ -239,13 +241,9 @@ void prepare_source_animation_tick(Drone& d) {
         return;
     }
 
-    const float root_height = d.character
-                                  ? (d.character->root_height() + a.source_root_height_offset) *
-                                        a.source_root_height_scale
-                                  : 0.0f;
     const bool do_animation =
-        d.char_class == 0x0c || root_height == 0.0f || a.source_object_anim || a.source_force_anim ||
-        (a.cur_flags & 4u) == 0;
+        d.char_class == 0x0c || a.source_gate_root_height == 0.0f || a.source_object_anim ||
+        a.source_force_anim || (a.cur_flags & 4u) == 0;
     a.source_update_due = do_animation || a.source_anim_stamp == d.now();
 }
 
@@ -305,6 +303,7 @@ void anim_update(Drone& d) {
         a.source_update_due = true;
         return;
     }
+    d.character->set_game_rng(&game_rng());
     d.character->tick(d.sys->timing().FRAME_RATE_MUL);
     if (source_gate) a.source_anim_stamp = d.now();
     Vec3 root_motion = d.character->root_motion();

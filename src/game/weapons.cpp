@@ -1,6 +1,8 @@
 #include "game/actions.hpp"
 #include "game/drone_system.hpp"
 #include "game/weapons.hpp"
+#include "core/rng.hpp"
+
 
 #include <algorithm>
 
@@ -474,7 +476,10 @@ void WeaponSystem::advance_anim(int slot, PlayerWeapons& p, const World& world) 
             p.anim->set_frame(p.reverse_frame);
             continue;
         }
-        if (p.anim_script != 0 && !p.anim->finished()) p.anim->tick();
+        if (p.anim_script != 0 && !p.anim->finished()) {
+            p.anim->set_game_rng(&game_rng());
+            p.anim->tick();
+        }
         const float after = p.anim->frame();
         float before = p.anim_frame_prev;
         if (after < before) before = 0;   // a looping script wrapped
