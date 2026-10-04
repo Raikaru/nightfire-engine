@@ -390,8 +390,6 @@ public:
         bool source_collision_due = true; // v5 NDrone2_DoCollision result for this restored bot snapshot
         bool source_collision_valid = false; // v5 eligibility snapshot, consumed by collision_step once
         bool source_gravity_due = true; // v5 NDrone2_DoGravity result for this restored bot snapshot
-        bool source_hit_list_present = false; // v5 obj+0xD0 non-null: source collision-handler push branch
-        Vec3 source_collision_push{}; // v5 Drone+0x3E0 response consumed by that branch
         float step = 0;                 // +0x58c scalar fallback when AnimObjectUpdate is skipped
     } anim;
     // NDrone2 locomotion state (steering target, route, per-tick displacement).
@@ -419,9 +417,6 @@ public:
         TargetRef goal_target;
         float applied_height = 1.0327658653f;   // stand_height already folded into pos.y (feet stay planted)
         Vec3 reach_check_pos{};       // DroneReachCheckPos: last Can* probe destination (feet space), for the KOTH hill veto
-        bool seeded_capsule_valid = false;
-        Vec3 seeded_capsule_a_offset{}, seeded_capsule_b_offset{}; // oracle-restored body-local collision endpoints
-        float seeded_capsule_radius = 0.4f;
     } mv;
     DroneLook look;
     std::unique_ptr<CharacterInstance> character;   // owned by the drone; created by DroneSystem::spawn

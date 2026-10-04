@@ -25,7 +25,14 @@ namespace {
 
 constexpr float kSpawnHeight = 1.6f;   // MP_RegisterSpawnPoint stores the floor point + 1.6
 
-std::string fmt(const char* f, ...) __attribute__((format(printf, 1, 2)));
+#if defined(__GNUC__) || defined(__clang__)
+#define NF_BOT_PRINTF_FORMAT(format_index, first_argument) \
+    __attribute__((format(printf, format_index, first_argument)))
+#else
+#define NF_BOT_PRINTF_FORMAT(format_index, first_argument)
+#endif
+std::string fmt(const char* f, ...) NF_BOT_PRINTF_FORMAT(1, 2);
+#undef NF_BOT_PRINTF_FORMAT
 std::string fmt(const char* f, ...) {
     char buf[320];
     va_list ap;
@@ -609,18 +616,6 @@ BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
     d.fly_velocity = {raw_f32(drone_raw, 0x480), raw_f32(drone_raw, 0x484),
                       raw_f32(drone_raw, 0x488)};
     d.fall_velocity = d.fly_velocity;
-    const float sin_yaw = std::sin(d.yaw), cos_yaw = std::cos(d.yaw);
-    const auto capsule_offset = [&](std::size_t offset) {
-        const Vec3 delta{raw_f32(drone_raw, offset) - d.pos[0],
-                         raw_f32(drone_raw, offset + 4) - d.pos[1],
-                         raw_f32(drone_raw, offset + 8) - d.pos[2]};
-        return Vec3{delta[0] * cos_yaw - delta[2] * sin_yaw, delta[1],
-                    delta[0] * sin_yaw + delta[2] * cos_yaw};
-    };
-    d.mv.seeded_capsule_valid = true;
-    d.mv.seeded_capsule_a_offset = capsule_offset(0x3f0);
-    d.mv.seeded_capsule_b_offset = capsule_offset(0x400);
-    d.mv.seeded_capsule_radius = raw_f32(drone_raw, 0x45c);
     d.obj_type = raw_u8(obj_raw, 0xff);
     d.smi.cur = raw_i32(drone_raw, 0x10c);
     d.smi.prev = raw_i32(drone_raw, 0x110);
