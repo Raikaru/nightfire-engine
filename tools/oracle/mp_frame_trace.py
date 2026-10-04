@@ -295,7 +295,9 @@ def read_next(pine, state, timeout=2.0):
             state["overflow"] = overflow
             return {"done": done, "frame": frame_start, "timer_frame": timer_frame,
                     "head": head, "tail": tail, "overflow_delta": delta}, chunks
-        time.sleep(0.001)
+        # Poll at 100 Hz rather than issuing a PINE round-trip every millisecond
+        # while waiting; the snapshot ring absorbs normal scheduling jitter.
+        time.sleep(0.01)
     return None
 
 

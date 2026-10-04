@@ -266,6 +266,7 @@ public:
 
     // ---- System ----
     void before_player_update(World&, FrameTiming timing) override;
+    MultiplayerPhase multiplayer_phase() const override { return MultiplayerPhase::MpUpdate; }
     void tick(World& world, FrameTiming timing) override;
     void after_tick(World& world, FrameTiming timing) override;
     // Seed replay supplies the exact MPGame clocks for this frame before later systems tick.

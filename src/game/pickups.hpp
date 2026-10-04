@@ -108,8 +108,7 @@ public:
                             std::size_t index = SIZE_MAX);
 
 
-    // Pickup_Update for every pickup. Dynamic life is PICKUPINFO+0x2E's countdown, decremented after touch tests;
-    // map respawn uses GameState+0x34. Arena's update runs before BotSystem/DroneSystem, matching MP_Update order.
+    // Called by ArenaSystem::after_tick after all system tick callbacks; participants have moved before the touch scan.
     void update(const CollisionWorld& collision, const std::vector<PickupToucher>& touchers,
                 std::uint64_t timer_frame, float rate, float dt, std::vector<PickupEvent>& events);
 
@@ -122,7 +121,7 @@ private:
     };
     ModelRef find_model(std::uint32_t hash) const;
     // Pickup_Create for one resolved pickup; `model` is the celglist it is drawn with.
-    void add(const CollisionWorld& collision, const PickupPlacement& placement, ModelRef model, bool own_scale, const Vec3& pos,
+    void add(const CollisionWorld& collision, const PickupPlacement& placement, ModelRef model, const Vec3& pos,
              int category, int item, int amount, int sound, int respawn, int set_slot, float scale_override);
     // Pickup_Handler: true when the toucher took the item (fills `event`).
     bool handle(Pickup& p, const PickupToucher& who, PickupEvent& event) const;

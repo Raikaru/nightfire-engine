@@ -25,19 +25,21 @@ constexpr float kTouchMargin = 1.1f;            // Pickup_Update: (obj+0x8C + 1.
 constexpr unsigned kTouchLosMask = 0x721;       // Collide_LineOfSight mask 1825
 constexpr unsigned kFloorProbeMask = 0x70C;     // build_PointOnFloor pick (1804)
 
-// Rotation-only matrix of the placement (Pickup_CreateFromSet passes a quaternion and no matrix, so the object has no scale).
+// View_RotTransMatrix (control_create_object's Euler path), used by map pickups.
 Mat4 rotation_of(const StaticInstance& s) {
-    auto [x, y, z, w] = s.quat;
+    const float sx = std::sin(s.euler[0]), cx = std::cos(s.euler[0]);
+    const float sy = std::sin(s.euler[1]), cy = std::cos(s.euler[1]);
+    const float sz = std::sin(s.euler[2]), cz = std::cos(s.euler[2]);
     Mat4 m = identity();
-    m[0] = 1 - 2 * (y * y + z * z);
-    m[1] = 2 * (x * y + z * w);
-    m[2] = 2 * (x * z - y * w);
-    m[4] = 2 * (x * y - z * w);
-    m[5] = 1 - 2 * (x * x + z * z);
-    m[6] = 2 * (y * z + x * w);
-    m[8] = 2 * (x * z + y * w);
-    m[9] = 2 * (y * z - x * w);
-    m[10] = 1 - 2 * (x * x + y * y);
+    m[0] = cy * cz;
+    m[1] = sz;
+    m[2] = -cz * sy;
+    m[4] = sx * sy - cx * cy * sz;
+    m[5] = cx * cz;
+    m[6] = cy * sx + cx * sy * sz;
+    m[8] = cx * sy + cy * sx * sz;
+    m[9] = -cz * sx;
+    m[10] = cx * cy - sx * sy * sz;
     return m;
 }
 
@@ -64,9 +66,8 @@ PickupField::ModelRef PickupField::find_model(std::uint32_t hash) const {
     return {};
 }
 
-void PickupField::add(const CollisionWorld& collision, const PickupPlacement& placement, ModelRef model, bool own_scale,
-                      const Vec3& pos, int category, int item, int amount, int sound, int respawn, int set_slot,
-                      float scale_override) {
+void PickupField::add(const CollisionWorld& collision, const PickupPlacement& placement, ModelRef model, const Vec3& pos,
+                      int category, int item, int amount, int sound, int respawn, int set_slot, float scale_override) {
     const StaticInstance& s = level_.map()->chunk.statics[placement.instance];
     Pickup p;
     p.instance = placement.instance;
@@ -75,8 +76,9 @@ void PickupField::add(const CollisionWorld& collision, const PickupPlacement& pl
     // build_PointOnFloor under the placement (Pickup_Create copies the hit into obj+0x30).
     p.pos = pos;
     if (auto floor = collision.point_on_floor(pos, 3.0f)) p.pos = *floor;
-    p.model_to_world = own_scale ? instance_transform(s) : rotation_of(s);
-    for (int k = 0; k < 3; ++k) p.model_to_world[12 + k] = p.pos[std::size_t(k)];
+    p.model_to_world = rotation_of(s);
+    // The source matrix uses Pickup_Create's input position; obj+0x30 may separately hold a floor hit.
+    for (int k = 0; k < 3; ++k) p.model_to_world[12 + k] = pos[std::size_t(k)];
     p.scale_override = scale_override;
     // Control_BuildWorldSph: the model's bounding sphere carried through the object matrix.
     const nf::Model& m = level_.chunks()[model.chunk].chunk.models[model.index];
@@ -105,7 +107,7 @@ PickupField::PickupField(Level& level, const CollisionWorld& collision, const st
         if (pp.category == int(PickupCategory::Bonus)) continue;   // PlrStats_HasGoldMedal: a save-file reward, never in a fresh match
         const int sound = pp.sound == 0 ? -1 : pp.sound;
         if (pp.category < int(PickupCategory::SetSlot0) || pp.category > int(PickupCategory::SetSlot0) + 4) {
-            add(collision, pp, own[pp.instance], true, pp.pos, pp.category, pp.item, pp.amount, sound, pp.respawn_units, -1, 1.0f);
+            add(collision, pp, own[pp.instance], pp.pos, pp.category, pp.item, pp.amount, sound, pp.respawn_units, -1, 1.0f);
             continue;
         }
         // Pickup_CreateFromSet: id from PickupMatrix[set][slot]; item / amount / model / respawn come from the weapon's row,
@@ -115,7 +117,7 @@ PickupField::PickupField(Level& level, const CollisionWorld& collision, const st
         const PickupWeaponInfo info = weapon_(id), base = weapon_(info.base);
         const ModelRef model = find_model(base.model_hash);
         if (model.chunk == SIZE_MAX) continue;
-        add(collision, pp, model, false, pp.pos, int(PickupCategory::Weapon), info.base, 2 * base.clip_size, kSetSound,
+        add(collision, pp, model, pp.pos, int(PickupCategory::Weapon), info.base, 2 * base.clip_size, kSetSound,
             kSetRespawnUnits, slot, 1.0f);
         if (id == kAmmoBoxWeapon) {
             const PickupWeaponInfo ammo = weapon_(kAmmoBoxItem);
@@ -124,7 +126,7 @@ PickupField::PickupField(Level& level, const CollisionWorld& collision, const st
             Vec3 at = pp.pos;
             at[0] += 0.1f;
             at[2] += 0.1f;
-            add(collision, pp, box, false, at, int(PickupCategory::Ammo), kAmmoBoxItem, ammo.clip_size, -1, kSetRespawnUnits, slot, 0.5f);
+            add(collision, pp, box, at, int(PickupCategory::Ammo), kAmmoBoxItem, ammo.clip_size, -1, kSetRespawnUnits, slot, 0.5f);
         }
     }
     static_count_ = pickups_.size();

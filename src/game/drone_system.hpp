@@ -192,6 +192,7 @@ public:
     float hurt_drone(int id, const DroneHit& hit);
 
     void tick(World& world, FrameTiming timing) override;
+    void before_object_update(World& world, FrameTiming timing) override;
     void after_tick(World& world, FrameTiming timing) override;
 
     // Internal: transition loop (called by Drone::set_state).
@@ -219,6 +220,7 @@ private:
     AlertRecord alert_record_;
     int next_id_ = 1;
     int delivery_depth_ = 0;
+    bool object_prelude_done_ = false;
 };
 
 }  // namespace nf::drone

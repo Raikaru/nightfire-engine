@@ -78,7 +78,6 @@ RoomMap::RoomMap(const Level& level, const CollisionWorld& world) {
         float radius, level;
     };
     std::vector<Surface> surfaces;
-    std::vector<float> radius;                        // per room: cel+0x8C
     std::unordered_map<std::size_t, std::size_t> room_of_model;   // map-chunk model -> room (first in file order)
     const auto& placements = level.placements();
     for (std::size_t pi = 0; pi < placements.size(); ++pi) {
@@ -102,7 +101,8 @@ RoomMap::RoomMap(const Level& level, const CollisionWorld& world) {
         r.max = box.max;
         r.water = cls == celflag::kWaterRoom ? box.max[1] : kNoWater;   // parseentity_fixup_entity: cel+0x90
         if (p.chunk == map_chunk) room_of_model.emplace(p.model, rooms_.size());
-        radius.push_back(model.params[3]);
+        r.sphere_center = transform_point(p.transform, {model.params[0], model.params[1], model.params[2]});
+        r.sphere_radius = model.params[3];   // parseentity_transform_bounding_box copies model radius unchanged to cel+0x8C
         rooms_.push_back(std::move(r));
     }
 
@@ -115,7 +115,7 @@ RoomMap::RoomMap(const Level& level, const CollisionWorld& world) {
         float best_dist = 4000.0f;
         for (std::size_t i = rooms_.size(); i-- > 0;) {
             const Room& r = rooms_[i];
-            if (it->radius > radius[i] || !contains(int(i), it->centre)) continue;
+            if (it->radius > r.sphere_radius || !contains(int(i), it->centre)) continue;
             const auto solid = solid_of.find(r.placement);
             if (solid == solid_of.end()) continue;
             const CollisionWorld::Solid geometry = world.solid(solid->second);
@@ -214,145 +214,18 @@ int RoomMap::track(int room, const Vec3& from, const Vec3& to, const CollisionWo
     return contains(room, to) ? room : find(to, world);
 }
 
-int RoomMap::track_view(int room, const Vec3& from, const Vec3& to) const {
-    if (room >= 0 && std::size_t(room) < rooms_.size()) {
-        for (const Portal& portal : rooms_[std::size_t(room)].portals)
-            if (crosses_portal(portal, from, to)) return portal.dest;
-        if (contains(room, to)) return room;
-    }
-    for (std::size_t i = rooms_.size(); i-- > 0;)
-        if (contains(int(i), to)) return int(i);
-    return kNone;
-}
-
-bool RoomMap::view_can_reach(int from, int target, const Vec3& eye, const Vec3& right, const Vec3& up,
+bool RoomMap::cell_in_view(int target, const Vec3& eye, const Vec3& right, const Vec3& up,
                              const Vec3& forward, float tan_half_x, float tan_half_y) const {
-    if (from == target || rooms_.empty() || from == kNone || target == kNone) return true;
-    if (from < 0 || target < 0 || std::size_t(from) >= rooms_.size() || std::size_t(target) >= rooms_.size())
-        return false;
-    // View_AddCels also admits cells whose source bounding sphere intersects the camera frustum,
-    // even when portal clipping did not add the cell to the current recurse chain.
-    const Room& target_room = rooms_[std::size_t(target)];
-    const Vec3 cell_center = (target_room.min + target_room.max) * 0.5f;
-    const float cell_radius = length((target_room.max - target_room.min) * 0.5f);
-    const Vec3 cell_delta = cell_center - eye;
-    const float cell_depth = dot(cell_delta, forward);
-    const float x_margin = cell_radius * std::sqrt(1.0f + tan_half_x * tan_half_x);
-    const float y_margin = cell_radius * std::sqrt(1.0f + tan_half_y * tan_half_y);
-    if (cell_depth * tan_half_x + x_margin >= std::abs(dot(cell_delta, right)) &&
-        cell_depth * tan_half_y + y_margin >= std::abs(dot(cell_delta, up)))
-        return true;
+    if (target < 0 || std::size_t(target) >= rooms_.size()) return false;
 
-    struct Plane {
-        Vec3 normal{};
-        float d = 0.0f;
-    };
-    struct Frame {
-        int room = kNone;
-        std::size_t next_portal = 0;
-        std::size_t plane_count = 0;
-        std::array<Plane, 10> planes{};
-    };
-    constexpr std::size_t kCelLimit = 64;    // Vision_AddCelToDraw's VisCelCount capacity.
-    constexpr std::size_t kPlaneLimit = 46;  // Vision_Recurse refuses portal depth >= 0x2e.
-    const auto make_plane = [&](const Vec3& normal) { return Plane{normal, -dot(normal, eye)}; };
-    std::array<Frame, kPlaneLimit> stack{};
-    Frame& root = stack[0];
-    root.room = from;
-    root.plane_count = 5;
-    root.planes[0] = make_plane(forward * tan_half_x + right);
-    root.planes[1] = make_plane(forward * tan_half_x - right);
-    root.planes[2] = make_plane(forward * tan_half_y + up);
-    root.planes[3] = make_plane(forward * tan_half_y - up);
-    root.planes[4] = {forward * -1.0f, dot(forward, eye) + 200.0f};
-
-    std::array<int, kCelLimit> visible{};
-    visible[0] = from;
-    std::size_t visible_count = 1;
-    std::size_t depth = 1;
-    int recurse_count = 1;
-    while (depth != 0) {
-        Frame& frame = stack[depth - 1];
-        const Room& room = rooms_[std::size_t(frame.room)];
-        if (frame.next_portal == room.portals.size()) {
-            --depth;
-            continue;
-        }
-
-        const Portal& portal = room.portals[frame.next_portal++];
-        std::array<Vec3, 52> first{};
-        std::array<Vec3, 52> second{};
-        std::array<Vec3, 52>* input = &first;
-        std::array<Vec3, 52>* output = &second;
-        for (std::size_t i = 0; i < portal.quad.size(); ++i) (*input)[i] = portal.quad[i];
-        std::size_t point_count = portal.quad.size();
-        for (std::size_t plane = 0; plane < frame.plane_count && point_count != 0; ++plane) {
-            std::size_t clipped_count = 0;
-            Vec3 previous = (*input)[point_count - 1];
-            float previous_distance = dot(frame.planes[plane].normal, previous) + frame.planes[plane].d;
-            for (std::size_t i = 0; i < point_count; ++i) {
-                const Vec3 current = (*input)[i];
-                const float current_distance = dot(frame.planes[plane].normal, current) + frame.planes[plane].d;
-                const bool previous_inside = previous_distance >= 0.0f;
-                const bool current_inside = current_distance >= 0.0f;
-                if (previous_inside != current_inside) {
-                    const float t = previous_distance / (previous_distance - current_distance);
-                    (*output)[clipped_count++] = previous + (current - previous) * t;
-                }
-                if (current_inside) (*output)[clipped_count++] = current;
-                previous = current;
-                previous_distance = current_distance;
-            }
-            std::swap(input, output);
-            point_count = clipped_count;
-        }
-        if (point_count == 0) continue;
-
-        bool already_visible = false;
-        for (std::size_t i = 0; i < visible_count; ++i)
-            if (visible[i] == portal.dest) {
-                already_visible = true;
-                break;
-            }
-        const bool added = !already_visible && visible_count < visible.size();
-        if (added) visible[visible_count++] = portal.dest;
-        if (portal.dest == target && (already_visible || added)) return true;
-        if (point_count < 3 || recurse_count >= 100 || depth == stack.size()) continue;
-        ++recurse_count;
-
-        Frame& child = stack[depth++];
-        child.room = portal.dest;
-        child.next_portal = 0;
-        child.plane_count = 0;
-        Vec3 center{};
-        for (std::size_t i = 0; i < point_count; ++i) center += (*input)[i];
-        center = center * (1.0f / float(point_count));
-        for (std::size_t i = 0; i < point_count && child.plane_count + 1 < child.planes.size(); ++i) {
-            const Vec3 a = (*input)[i] - eye;
-            const Vec3 b = (*input)[(i + 1) % point_count] - eye;
-            Vec3 normal = cross(a, b);
-            const float magnitude = length(normal);
-            if (magnitude <= 1.0e-6f) continue;
-            normal = normal * (1.0f / magnitude);
-            float d = -dot(normal, eye);
-            if (dot(normal, center) + d < 0.0f) normal = normal * -1.0f, d = -d;
-            child.planes[child.plane_count++] = {normal, d};
-        }
-        Vec3 portal_normal = cross(portal.quad[1] - portal.quad[0], portal.quad[2] - portal.quad[0]);
-        const float portal_magnitude = length(portal_normal);
-        if (portal_magnitude <= 1.0e-6f) {
-            --depth;
-            continue;
-        }
-        portal_normal = portal_normal * (1.0f / portal_magnitude);
-        float portal_d = -dot(portal_normal, portal.quad[0]);
-        const Room& destination = rooms_[std::size_t(portal.dest)];
-        const Vec3 destination_center = (destination.min + destination.max) * 0.5f;
-        if (dot(portal_normal, destination_center) + portal_d < 0.0f)
-            portal_normal = portal_normal * -1.0f, portal_d = -portal_d;
-        child.planes[child.plane_count++] = {portal_normal, portal_d};
-    }
-    return false;
+    // Vision_InView tests cel+0x80/+0x8C against the four viewer side planes.
+    const Room& cel = rooms_[std::size_t(target)];
+    const Vec3 delta = cel.sphere_center - eye;
+    const float depth = dot(delta, forward);
+    const float horizontal_margin = cel.sphere_radius * std::sqrt(1.0f + tan_half_x * tan_half_x);
+    const float vertical_margin = cel.sphere_radius * std::sqrt(1.0f + tan_half_y * tan_half_y);
+    return depth * tan_half_x + horizontal_margin >= std::abs(dot(delta, right)) &&
+           depth * tan_half_y + vertical_margin >= std::abs(dot(delta, up));
 }
 
 // --- Player: water -------------------------------------------------------------------------------------------

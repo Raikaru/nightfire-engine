@@ -828,12 +828,16 @@ def main():
         if frame0 != frame1 or timer_frame0 != timer_frame1 or done0 != done1:
             continue
         objective_ptrs = []
+        transition_missing = []
         if args.seedable:
             objective_ptrs = objective_addresses(
                 [bytag[("objx", name)] for name, _, _ in FULL_BLOBS])
             if objective_ptrs != cache["objective_ptrs"]:
                 cache["objective_ptrs"] = objective_ptrs
-                continue
+                objective_ptrs = []
+                transition_missing.extend(("objectives", "bot_goal_targets"))
+        changed_animation_slots = set()
+        changed_route_slots = set()
         if args.seedable:
             pointer_changed = False
             for slot in range(n_humans):
@@ -851,6 +855,8 @@ def main():
                     if args.weapon_anim_raw:
                         refresh_animation_slot(
                             pine, cache, slot, obj=target, kind="human")
+                        changed_animation_slots.add(slot)
+                    transition_missing.append(f"pl[{slot}].weapon_anim_state")
                     pointer_changed = True
             for k in range(4):
                 state = cache["bot_anim"].get(k)
@@ -861,12 +867,14 @@ def main():
                 if state is None:
                     if valid_ee_pointer(owner, 0x120):
                         refresh_animation_slot(pine, cache, k)
+                        changed_animation_slots.add(k + 4)
                         pointer_changed = True
                     continue
                 head = struct.unpack("<I", bytag[("anim_list_head", k)])[0]
                 if (owner != state["owner"] or head != state["head"]
                         or state["obj"] != cache["objs"][4 + k]):
                     refresh_animation_slot(pine, cache, k)
+                    changed_animation_slots.add(k + 4)
                     pointer_changed = True
                     continue
                 for index, layer in enumerate(state["layers"]):
@@ -879,6 +887,7 @@ def main():
                         if index + 1 < len(state["layers"]) else 0)
                     if next_ptr != expected_next or seq_ptr != layer["seq_primary"]:
                         refresh_animation_slot(pine, cache, k)
+                        changed_animation_slots.add(k + 4)
                         pointer_changed = True
                         break
             if args.weapon_anim_raw:
@@ -893,6 +902,7 @@ def main():
                         if valid_ee_pointer(owner, 0x120):
                             refresh_animation_slot(
                                 pine, cache, slot, obj=target, kind="human")
+                            changed_animation_slots.add(slot)
                             pointer_changed = True
                         continue
                     head = struct.unpack(
@@ -901,6 +911,7 @@ def main():
                             or state["obj"] != target):
                         refresh_animation_slot(
                             pine, cache, slot, obj=target, kind="human")
+                        changed_animation_slots.add(slot)
                         pointer_changed = True
                         continue
                     for index, layer in enumerate(state["layers"]):
@@ -916,6 +927,7 @@ def main():
                                 or seq_ptr != layer["seq_primary"]):
                             refresh_animation_slot(
                                 pine, cache, slot, obj=target, kind="human")
+                            changed_animation_slots.add(slot)
                             pointer_changed = True
                             break
             for k in range(4):
@@ -933,9 +945,14 @@ def main():
                         cache["route_nodes"].pop(k, None)
                     else:
                         cache["route_nodes"][k] = descriptor
+                    changed_route_slots.add(k + 4)
                     pointer_changed = True
             if pointer_changed:
-                continue
+                transition_missing.extend(
+                    f"pl[{slot}].anim" for slot in sorted(changed_animation_slots))
+                transition_missing.extend(
+                    f"bot_ai_paths[{slot}].route_node_raw"
+                    for slot in sorted(changed_route_slots))
  
         if last is not None and frame0 == last:
             time.sleep(0.005)
@@ -1032,8 +1049,16 @@ def main():
             "<I", bytag[("golden_effect", 0)])[0]
         rec["golden_effect_active"] = rec["golden_effect_handle"] != 0
         rec["state_missing"] = ["transient_hit_zone"]
+        if transition_missing:
+            rec["partial"] = True
+            rec["resync"] = 1
+            rec["state_missing"].extend(transition_missing)
+            resyncs += 1
         rec["projectiles_available"] = True
         if args.seedable:
+            rec["seed_version"] = 5
+            rec["state_complete"] = False
+        if args.seedable and "bot_goal_targets" not in transition_missing:
             changed_goal_targets = []
             goal_target_changes = []
             for k, refs in cache["goal_refs"].items():
@@ -1114,8 +1139,6 @@ def main():
                     goal_targets.append(ref)
             rec["bot_goal_targets"] = goal_targets
             rec["bot_goal_target_changed"] = goal_target_changes
-            rec["seed_version"] = 5
-            rec["state_complete"] = False
 
         parts = []
         for s, o in enumerate(objs):
@@ -1170,10 +1193,11 @@ def main():
                 blr = bytag[("bl_raw", s)]
                 entry["bl_raw"] = blr.hex()
                 anim_raw = bytag.get(("weapon_anim_raw", s))
-                if anim_raw is not None:
+                if anim_raw is not None and s not in changed_animation_slots:
                     entry["weapon_anim_raw"] = anim_raw.hex()
                 anim_state_raw = bytag.get(("weapon_anim_state", s))
-                if anim_state_raw is not None:
+                if anim_state_raw is not None and (
+                        f"pl[{s}].weapon_anim_state" not in transition_missing):
                     entry["weapon_anim_state"] = struct.unpack("<h", anim_state_raw)[0]
                 entry["vel"] = list(struct.unpack_from("<3f", blr, 0x10))
                 entry["fall_vel"] = list(struct.unpack_from("<3f", blr, 0x50))
@@ -1240,17 +1264,18 @@ def main():
                     ])
                 entry["other"] = oth
                 anim_state = cache["bot_anim"].get(k)
-                if anim_state:
+                if anim_state and s not in changed_animation_slots:
                     entry["anim"] = animation_record(bytag, k, anim_state)
             if s < n_humans and args.weapon_anim_raw:
                 anim_state = cache["human_anim"].get(s)
-                if anim_state:
+                if anim_state and s not in changed_animation_slots:
                     entry["anim"] = animation_record(
                         bytag, s, anim_state, "human_anim")
             parts.append(entry)
         rec["pl"] = parts
         if args.seedable:
             path_changed = False
+            changed_path_slots = set()
             for k in range(4):
                 drone_raw = bytag.get(("dr_raw", k))
                 if drone_raw is None:
@@ -1262,6 +1287,7 @@ def main():
                 if valid_ee_pointer(address, AI_PATH_RAW_SIZE):
                     if path.get("address") != address or path_raw is None:
                         refresh_ai_path_slot(pine, cache, k)
+                        changed_path_slots.add(k + 4)
                         path_changed = True
                     else:
                         children = ai_path_child_pointers(path_raw)
@@ -1269,14 +1295,21 @@ def main():
                             cache["ai_paths"][k] = {
                                 "address": address, "children": children, "valid": True,
                             }
+                            changed_path_slots.add(k + 4)
                             path_changed = True
                 elif path.get("address") != address or path.get("valid"):
                     cache["ai_paths"][k] = {
                         "address": address, "children": {}, "valid": False,
                     }
+                    changed_path_slots.add(k + 4)
                     path_changed = True
             if path_changed:
-                continue
+                if not rec.get("partial"):
+                    resyncs += 1
+                rec["partial"] = True
+                rec["resync"] = 1
+                rec["state_missing"].extend(
+                    f"bot_ai_paths[{slot}]" for slot in sorted(changed_path_slots))
             route_node_descriptors = {}
             route_node_raws = {}
             for k in range(4):
@@ -1291,11 +1324,18 @@ def main():
                 size = count * 2
                 route_node_descriptors[k] = (address, count, size)
                 route_node_raws[k] = (
-                    b"" if size == 0 else bytag.get(("route_nodes", k)))
+                    None if k + 4 in changed_route_slots else
+                    (b"" if size == 0 else bytag.get(("route_nodes", k))))
 
             ai_path_rows = []
             for k in range(4):
                 drone = cache["drone"].get(k)
+                if k + 4 in changed_path_slots:
+                    ai_path_rows.append({
+                        "bot_slot": k + 4, "present": True, "complete": False,
+                        "frame": frame0, "timer_frame": timer_frame0,
+                    })
+                    continue
                 if not drone or ("dr_raw", k) not in bytag:
                     ai_path_rows.append({
                         "bot_slot": k + 4, "present": False, "complete": False,
@@ -1353,6 +1393,8 @@ def main():
                     "ai_path_raw": path_raw.hex() if path_raw is not None else None,
                     "pointees": pointees,
                 }
+                if k + 4 in changed_route_slots:
+                    row.pop("route_node_raw")
                 ai_path_rows.append(row)
                 if path_raw is not None:
                     cache["ai_paths"][k] = {
@@ -1360,9 +1402,10 @@ def main():
                         "children": pointers,
                         "valid": True,
                     }
-                if not complete:
+                if (not complete and k + 4 not in changed_path_slots
+                        and k + 4 not in changed_route_slots):
                     rec["state_missing"].append("bot_ai_path_pointees")
-                if not route_nodes_complete:
+                if not route_nodes_complete and k + 4 not in changed_route_slots:
                     rec["state_missing"].append("bot_ai_route_nodes")
             rec["bot_ai_paths"] = ai_path_rows
 
@@ -1554,12 +1597,17 @@ def main():
                 p is None or not p.get("weapon_timers", {}).get("weapon_anim")
                 or "weapon_anim_state" in p
                 for p in rec["pl"][:n_humans])
-            if not weapon_anim_state_ready:
+            if (not weapon_anim_state_ready and not any(
+                    f"pl[{slot}].weapon_anim_state" in rec["state_missing"]
+                    for slot in range(n_humans))):
                 rec["state_missing"].append("weapon_anim_state")
-            bot_animation_ready = all(
-                p is None or p.get("anim", {}).get("layers_complete") is True
-                for p in rec["pl"][4:8])
-            if not bot_animation_ready:
+            incomplete_animation_slots = [
+                slot for slot, player in enumerate(rec["pl"][4:8], 4)
+                if player is not None
+                and player.get("anim", {}).get("layers_complete") is not True
+                and f"pl[{slot}].anim" not in rec["state_missing"]
+            ]
+            if incomplete_animation_slots:
                 rec["state_missing"].append("bot_animation_layers")
             bot_collision_ready = all(
                 p is None or "cb_raw" in p for p in rec["pl"][4:8])
