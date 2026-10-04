@@ -386,7 +386,11 @@ public:
         bool source_gate_valid = false; // one-tick v5 AnimObjectUpdate eligibility from source Drone_Control
         bool source_update_due = true;  // NDrone2_DoAnimation or frame-stamp equality
         float source_root_yaw = 0;
-        float source_root_height_offset = 0; // v5 recorded sAnimObject+0x60 offset over the sampled root pose
+        float source_root_height_offset = 0; // v5 sAnimObject+0x60 offset before the root-height scale
+        float source_root_height_scale = 1.0f; // AnimFrameResolve multiplier, gated by MP and skin skeleton id
+        float source_callback_height = 0; // DroneAnim_PreTransCallback previous Drone+0xA0 root-height baseline
+        bool source_callback_y_enabled = true; // source Drone+0x1a == 0
+        bool source_callback_height_valid = false;
         bool source_collision_due = true; // v5 NDrone2_DoCollision result for this restored bot snapshot
         bool source_collision_valid = false; // v5 eligibility snapshot, consumed by collision_step once
         bool source_gravity_due = true; // v5 NDrone2_DoGravity result for this restored bot snapshot
