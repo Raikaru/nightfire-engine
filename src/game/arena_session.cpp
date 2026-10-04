@@ -144,14 +144,24 @@ void HumanBody::respawn(const Vec3& pos, float yaw, const MpLoadout& loadout) {
     l.health = loadout.health;
     l.start_weapon = loadout.start_weapon;
     l.grapple = loadout.grapple;
+    if (const PlayerWeapons* state = weapons_.state(slot_)) l.sleeve = state->sleeve;
     weapons_.respawn(slot_, pos, yaw, l);
 }
 
 // ---- session ---------------------------------------------------------------------------------------------------------
 
+unsigned ArenaSession::sleeve_for_character(int character) const {
+    if (mp_data_) {
+        if (const MpCharacter* selected = mp_data_->find_character(std::uint32_t(character)))
+            return selected->skin.kind;
+    }
+    return 4;
+}
+
 ArenaSession::ArenaSession(World& world, WeaponTable table, const MatchOptions& options, const StringTable* strings,
-                           std::string_view tuning_vars_txt, const std::function<void(ArenaSession&)>& before_start)
-    : world_(world), options_(options) {
+                           std::string_view tuning_vars_txt, const std::function<void(ArenaSession&)>& before_start,
+                           const MpData* mp_data)
+    : world_(world), options_(options), mp_data_(mp_data) {
     DamageTuning tuning;
     tuning.mode = GameMode::Multiplayer;
     tuning.difficulty = 1;   // P_MPCONFIRM forces difficulty 1 in multiplayer
@@ -185,6 +195,7 @@ ArenaSession::ArenaSession(World& world, WeaponTable table, const MatchOptions& 
         l.health = 100.0f + float(settings.slots[std::size_t(i)].health_bonus);
         l.start_weapon = arena_->weapon_set_row()[0];
         l.grapple = settings.grapple;
+        l.sleeve = sleeve_for_character(settings.slots[std::size_t(i)].character);
         weapons_->spawn_player(i, l);
         bodies_[std::size_t(i)] = std::make_unique<HumanBody>(world_, *weapons_, i);
         arena_->register_body(i, bodies_[std::size_t(i)].get());
@@ -257,6 +268,7 @@ HumanBody& ArenaSession::ensure_human_actor(int slot, std::string_view name, boo
             loadout.health = 100.0f + float(participant.health_bonus);
             loadout.start_weapon = arena_->weapon_set_row()[0];
             loadout.grapple = settings.grapple;
+            loadout.sleeve = sleeve_for_character(participant.character);
             weapons_->spawn_player(slot, loadout);
         }
         bodies_[std::size_t(slot)] = std::make_unique<HumanBody>(world_, *weapons_, slot);

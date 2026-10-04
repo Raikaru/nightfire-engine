@@ -247,6 +247,20 @@ std::uint32_t u32_at(const std::vector<std::byte>& b, std::size_t off) {
     return std::uint32_t(byte_at(b, off)) | (std::uint32_t(byte_at(b, off + 1)) << 8) | (std::uint32_t(byte_at(b, off + 2)) << 16) | (std::uint32_t(byte_at(b, off + 3)) << 24);
 }
 float f32_at(const std::vector<std::byte>& b, std::size_t off) { return std::bit_cast<float>(u32_at(b, off)); }
+float f32_hex_at(const Json& hex, std::size_t offset) {
+    const std::string_view bytes = hex.string();
+    const std::size_t first = offset * 2;
+    if (first + 8 > bytes.size()) throw std::runtime_error("MP seed: short mpg hex data");
+    std::uint32_t bits = 0;
+    for (std::size_t i = 0; i < 4; ++i) {
+        unsigned int byte = 0;
+        const char* begin = bytes.data() + first + i * 2;
+        const auto [end, error] = std::from_chars(begin, begin + 2, byte, 16);
+        if (error != std::errc{} || end != begin + 2) throw std::runtime_error("MP seed: invalid mpg hex data");
+        bits |= std::uint32_t(byte) << (i * 8);
+    }
+    return std::bit_cast<float>(bits);
+}
 Vec3 vec3_at(const std::vector<std::byte>& b, std::size_t off) { return {f32_at(b, off), f32_at(b, off + 4), f32_at(b, off + 8)}; }
 std::uint64_t frame_number(const Json& row) { return uint_number(row.at("frame")); }
 
@@ -373,11 +387,15 @@ void MpSeedImporter::configure(MatchLaunch& launch) const {
     launch.bot_characters = bot_chars.str();
 }
 
-bool MpSeedImporter::input_for(std::uint64_t frame, PadInputs& pads, float& rate) const {
+bool MpSeedImporter::input_for(std::uint64_t frame, PadInputs& pads, float& rate, float& elapsed,
+                              float& total_elapsed) const {
     auto it = impl_->rows.find(frame);
     if (it == impl_->rows.end()) return false;
     const Json& r = it->second;
     rate = float_number(r.at("rate"));
+    const Json& mpg = r.at("mpg");
+    elapsed = f32_hex_at(mpg, 0x190);
+    total_elapsed = f32_hex_at(mpg, 0x19c);
     const auto& controllers = r.at("pad_all").array();
     if (controllers.size() != 4) throw std::runtime_error("MP seed: expected four recorded controller pads");
     for (std::size_t s = 0; s < 4; ++s) {

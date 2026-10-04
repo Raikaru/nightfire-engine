@@ -155,8 +155,8 @@ def pnach_lines():
     # The target and CODE_BASE share the top four J-format address bits.
     jump = 0x08000000 | ((CODE_BASE >> 2) & 0x03FFFFFF)
     code = b"".join(struct.pack("<I", word) for word in frame_hook_words())
-    lines = [f"patch=2,EE,{CODE_BASE:08X},bytes,{code.hex().upper()}"]
-    lines += [f"patch=2,EE,{ENTRY:08X},word,{jump:08X}",
+    lines = [f"patch=1,EE,{CODE_BASE:08X},bytes,{code.hex().upper()}"]
+    lines += [f"patch=1,EE,{ENTRY:08X},word,{jump:08X}",
               f"patch=0,EE,{CONFIG_BASE:08X},word,00000000",
               f"patch=0,EE,{CONFIG_BASE+4:08X},word,00000000",
               f"patch=0,EE,{CONFIG_BASE+8:08X},word,00000000",

@@ -183,6 +183,17 @@ AI_ROUTE_NODE_POINTER_OFFSET = 0x950
 def valid_ee_pointer(addr, size):
     return (EE_RAM_START <= addr and addr + size <= EE_RAM_END and not addr & 3)
 
+def objective_addresses(blobs):
+    addresses = set()
+    for raw in blobs:
+        for offset in range(0, len(raw), 0x90):
+            back_pointer = struct.unpack_from("<I", raw, offset + 0x84)[0]
+            if back_pointer >= 0xE0:
+                address = back_pointer - 0xE0
+                if valid_ee_pointer(address, 0x138):
+                    addresses.add(address)
+    return sorted(addresses)
+
 
 def ai_path_child_pointers(raw):
     return {
@@ -211,55 +222,7 @@ def refresh_ai_paths(pine, cache):
         refresh_ai_path_slot(pine, cache, k)
 
 
-def read_ai_path_updates(pine, updates, frame, done):
-    """Read new path graphs only while the requested logic-frame counters stay fixed."""
-    guards = pine.read_ranges([(A.GS_DONE, 4), (A.GS_FRAME_START, 4)])
-    if (struct.unpack("<I", guards[0])[0] != done
-            or struct.unpack("<I", guards[1])[0] != frame):
-        return {}
-    tags = []
-    ranges = []
-    for k, address in updates.items():
-        if valid_ee_pointer(address, AI_PATH_RAW_SIZE):
-            tags.append(("path", k))
-            ranges.append((address, AI_PATH_RAW_SIZE))
-    graph_chunks = read_ranges_batched(pine, ranges)
-    graph = {tag[1]: raw for tag, raw in zip(tags, graph_chunks)}
-    child_ranges = []
-    child_tags = []
-    for k, raw in graph.items():
-        for offset, pointer in ai_path_child_pointers(raw).items():
-            if valid_ee_pointer(pointer, AI_PATH_CHILD_RAW_SIZE):
-                child_ranges.append((pointer, AI_PATH_CHILD_RAW_SIZE))
-                child_tags.append((k, offset, pointer))
-    child_chunks = read_ranges_batched(pine, child_ranges) if child_ranges else []
-    after = pine.read_ranges([(A.GS_DONE, 4), (A.GS_FRAME_START, 4)])
-    if (struct.unpack("<I", after[0])[0] != done
-            or struct.unpack("<I", after[1])[0] != frame):
-        return {}
-    result = {k: {"raw": raw, "pointees": {}} for k, raw in graph.items()}
-    for (k, offset, pointer), raw in zip(child_tags, child_chunks):
-        result[k]["pointees"][offset] = (pointer, raw)
-    return result
 
-def read_route_node_updates(pine, updates, frame, done):
-    """Read per-drone route node buffers only while the requested frame stays fixed."""
-    guards = pine.read_ranges([(A.GS_DONE, 4), (A.GS_FRAME_START, 4)])
-    if (struct.unpack("<I", guards[0])[0] != done
-            or struct.unpack("<I", guards[1])[0] != frame):
-        return {}
-    tags = []
-    ranges = []
-    for k, (address, size) in updates.items():
-        if valid_ee_pointer(address, size):
-            tags.append(k)
-            ranges.append((address, size))
-    chunks = read_ranges_batched(pine, ranges) if ranges else []
-    after = pine.read_ranges([(A.GS_DONE, 4), (A.GS_FRAME_START, 4)])
-    if (struct.unpack("<I", after[0])[0] != done
-            or struct.unpack("<I", after[1])[0] != frame):
-        return {}
-    return {k: raw for k, raw in zip(tags, chunks)}
 
 
 
@@ -294,6 +257,23 @@ def refresh_projectile_cache(pine, cache, head, initial=False):
         cursor = struct.unpack_from("<I", raw, A.OBJ_LIST_NEXT)[0]
     cache["dynamic_head"] = head
     return added
+def rehydrate_trace_hooks(pine):
+    """Restore both phase and RNG trampolines atomically after LOADSTATE."""
+    ops = [(WRITE32, F.CONFIG_BASE, "<I", 0)]
+    ops.extend((WRITE32, F.CODE_BASE + 4 * i, "<I", word)
+               for i, word in enumerate(F.frame_hook_words()))
+    ops.extend(((WRITE32, F.ENTRY, "<I", F.jump_word()),
+                (WRITE32, F.ENTRY + 4, "<I", F.ENTRY_ORIGINAL[1])))
+    for index, (_, entry, kind, result_class, first_words) in enumerate(R.FUNCTIONS):
+        stub = R.CODE_BASE + index * 0x100
+        _, words = R._trampoline(entry, kind, result_class, first_words, stub)
+        ops.extend((WRITE32, stub + 4 * i, "<I", word)
+                   for i, word in enumerate(words))
+        ops.extend(((WRITE32, entry, "<I", R._j(0x02, stub)),
+                    (WRITE32, entry + 4, "<I", 0)))
+    R._write_ops(pine, ops)
+
+
 
 
 def main():
@@ -337,41 +317,45 @@ def main():
     freeze_obj = 0
     face_pose = None
     face_obj = 0
+    rng_trace = None
     if args.load_slot is not None:
         before = pine.read32(A.GS_FRAME_START)
         pine.load_state(args.load_slot)
         start = time.monotonic()
         while abs(pine.read32(A.GS_FRAME_START) - before) <= 20 and time.monotonic() - start < 4.0:
-            time.sleep(0.05)
-        if args.freeze_bot is not None:
-            freeze_obj = pine.read32(
-                A.MPGAME + args.freeze_bot * A.MP_SLOT_STRIDE + A.MPG_OBJ)
-            if not freeze_obj or pine.read_block(freeze_obj + A.OBJ_TYPE, 1)[0] != 2:
-                raise RuntimeError(f"slot {args.freeze_bot} does not contain a live bot")
-            freeze_pose = (
-                struct.unpack("<3f", pine.read_block(freeze_obj + A.OBJ_POS, 12)),
-                struct.unpack("<f", pine.read_block(freeze_obj + A.OBJ_YAW, 4))[0],
-            )
-            freeze_object_pose(pine, freeze_obj, freeze_pose)
-            if args.face_bot is not None:
-                face_obj = pine.read32(A.MPGAME + A.MPG_OBJ)
-                if not face_obj or pine.read_block(face_obj + A.OBJ_TYPE, 1)[0] != 3:
-                    raise RuntimeError("slot 0 does not contain a live human player")
-                face_pose = ((freeze_pose[0][0], freeze_pose[0][1],
-                              freeze_pose[0][2] - 8.0), 0.0)
-                freeze_object_pose(pine, face_obj, face_pose)
-                bl = pine.read32(face_obj + A.OBJ_BL)
-                if bl:
-                    pine.write(WRITE32, bl + A.BL_PITCH, 0)
+            time.sleep(0.001)
+        rehydrate_trace_hooks(pine)
+    if args.rng_calls_preinstalled:
+        rng_trace = R.attach(pine)
+    if args.freeze_bot is not None:
+        freeze_obj = pine.read32(
+            A.MPGAME + args.freeze_bot * A.MP_SLOT_STRIDE + A.MPG_OBJ)
+        if not freeze_obj or pine.read_block(freeze_obj + A.OBJ_TYPE, 1)[0] != 2:
+            raise RuntimeError(f"slot {args.freeze_bot} does not contain a live bot")
+        freeze_pose = (
+            struct.unpack("<3f", pine.read_block(freeze_obj + A.OBJ_POS, 12)),
+            struct.unpack("<f", pine.read_block(freeze_obj + A.OBJ_YAW, 4))[0],
+        )
+        freeze_object_pose(pine, freeze_obj, freeze_pose)
+        if args.face_bot is not None:
+            face_obj = pine.read32(A.MPGAME + A.MPG_OBJ)
+            if not face_obj or pine.read_block(face_obj + A.OBJ_TYPE, 1)[0] != 3:
+                raise RuntimeError("slot 0 does not contain a live human player")
+            face_pose = ((freeze_pose[0][0], freeze_pose[0][1],
+                          freeze_pose[0][2] - 8.0), 0.0)
+            freeze_object_pose(pine, face_obj, face_pose)
+            bl = pine.read32(face_obj + A.OBJ_BL)
+            if bl:
+                pine.write(WRITE32, bl + A.BL_PITCH, 0)
     n_humans = struct.unpack("<I", pine.read_block(A.MPSETTINGS + A.MPS_HUMANS, 4))[0]
-    rng_trace = None
     if args.rng_calls:
         rng_trace = R.install(pine)
         atexit.register(R.uninstall, pine, rng_trace)
     out = open(args.out, "w", buffering=1)
     cache = {"objs": [0] * 8, "bl": {}, "cb": {}, "drone": {}, "pinfo": {}, "pkcount": -1,
              "ports": [], "dynamic_head": 0, "dynamic_members": set(),
-             "dynamic_scan_ok": True, "projectiles": {}, "goal_refs": {}, "ai_paths": {}}
+             "dynamic_scan_ok": True, "projectiles": {}, "goal_refs": {}, "ai_paths": {},
+             "objective_ptrs": [], "route_nodes": {}, "weapon_anim_targets": {}}
     def resolve(pine):
         """(Re)resolve all pointer caches with unguarded reads; caller retries."""
         settings = pine.read_block(A.PLAYER_SETTING, A.PLAYER_SETTING_STRIDE * 4)
@@ -384,10 +368,30 @@ def main():
                 od = pine.read_block(objs[s], 0x100)
                 cache["bl"][s] = struct.unpack_from("<I", od, A.OBJ_BL)[0]
                 cache["cb"][s] = struct.unpack_from("<I", od, A.OBJ_COLL)[0]
+        cache["weapon_anim_targets"] = {}
+        if args.seedable:
+            for slot, bl in cache["bl"].items():
+                if not valid_ee_pointer(bl + 0x7E8, 4):
+                    continue
+                target = pine.read32(bl + 0x7E8)
+                if valid_ee_pointer(target, 0x100) and not target & 0xF:
+                    cache["weapon_anim_targets"][slot] = target
         for k in range(4):
             if objs[4 + k]:
                 cache["drone"][k] = struct.unpack("<I", pine.read_block(
                     A.BOT_VARS + k * A.BOT_VARS_STRIDE + A.BOT_DRONE + 4, 4))[0]
+        cache["route_nodes"] = {}
+        if args.seedable:
+            for k, drone in cache["drone"].items():
+                if not valid_ee_pointer(drone, A.DRONE_RAW_SIZE):
+                    continue
+                raw = pine.read_block(drone, A.DRONE_RAW_SIZE)
+                route = raw[AI_ROUTE_OFFSET:AI_ROUTE_OFFSET + AI_ROUTE_RAW_SIZE]
+                address = struct.unpack_from("<I", raw, AI_ROUTE_NODE_POINTER_OFFSET)[0]
+                count = struct.unpack_from("<H", route, 0x82)[0]
+                size = count * 2
+                if size == 0 or valid_ee_pointer(address, size):
+                    cache["route_nodes"][k] = (address, count, size)
         mpk = pine.read_block(A.MPPICKUPS, 64 * A.MPPICKUP_STRIDE)
         pinfo = {}
         for i in range(64):
@@ -397,6 +401,10 @@ def main():
                 info = struct.unpack("<I", pine.read_block(obj + A.PICKUPINFO_OFF, 4))[0]
                 pinfo[obj] = (info, [round(v, 2) for v in pos[:3]], i)
         cache["pinfo"] = pinfo
+        if args.seedable:
+            blobs = read_ranges_batched(
+                pine, [(addr, size) for _, addr, size in FULL_BLOBS])
+            cache["objective_ptrs"] = objective_addresses(blobs)
         goal_refs = {}
         for k in cache["drone"]:
             bv = A.BOT_VARS + k * A.BOT_VARS_STRIDE
@@ -428,8 +436,6 @@ def main():
  
     refresh_projectile_cache(
         pine, cache, pine.read32(A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT), initial=True)
-    if args.rng_calls_preinstalled:
-        rng_trace = R.attach(pine)
     first = last = None
     frame_ring = None
     frame_schema = None
@@ -476,6 +482,13 @@ def main():
                 if cache["bl"].get(s):
                     tags.append(("bl_raw", s))
                     ranges.append((cache["bl"][s], A.BL_RAW_SIZE))
+                    target = cache["weapon_anim_targets"].get(s)
+                    if target:
+                        tags.append(("weapon_anim_state", s))
+                        ranges.append((target + 0xF4, 2))
+                        if args.weapon_anim_raw:
+                            tags.append(("weapon_anim_raw", s))
+                            ranges.append((target, 0x100))
                 if cache["cb"].get(s):
                     tags.append(("cb_raw", s))
                     ranges.append((cache["cb"][s], A.CB_RAW_SIZE))
@@ -483,6 +496,10 @@ def main():
                 bv = A.BOT_VARS + k * A.BOT_VARS_STRIDE
                 tags += [("dr_raw", k), ("bv_raw", k)]
                 ranges += [(d, A.DRONE_RAW_SIZE), (bv, A.BOT_VARS_STRIDE)]
+                route_node = cache["route_nodes"].get(k)
+                if route_node and route_node[2]:
+                    tags.append(("route_nodes", k))
+                    ranges.append((route_node[0], route_node[2]))
         for s, o in enumerate(cache["objs"]):
             if o:
                 tags.append(("obj", s))
@@ -552,6 +569,9 @@ def main():
             for name, addr, size in FULL_BLOBS:
                 tags.append(("objx", name))
                 ranges.append((addr, size))
+            for obj in cache["objective_ptrs"]:
+                tags.append(("mp_object_raw", obj))
+                ranges.append((obj, 0x138))
         tags.append(("projectile_head1", 0))
         ranges.append((A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT, 4))
         # tentatively assume this frame number for the full blobs
@@ -596,52 +616,44 @@ def main():
             continue
         objective_ptrs = []
         if args.seedable:
-            object_set = set()
-            for name, _, _ in FULL_BLOBS:
-                ext = bytag[("objx", name)]
-                for offset in range(0, len(ext), 0x90):
-                    back_pointer = struct.unpack_from("<I", ext, offset + 0x84)[0]
-                    if back_pointer >= 0xE0:
-                        object_set.add(back_pointer - 0xE0)
-            objective_ptrs = sorted(object_set)
-            object_ranges = [(obj, 0x138) for obj in objective_ptrs]
-            object_ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4)]
-            object_chunks = read_ranges_batched(pine, object_ranges)
-            for obj, raw in zip(objective_ptrs, object_chunks):
-                bytag[("mp_object_raw", obj)] = raw
-            object_done, object_frame = (
-                struct.unpack("<I", raw)[0] for raw in object_chunks[-2:])
-            if object_frame != frame0 or object_done != done0:
-                time.sleep(0.005)
+            objective_ptrs = objective_addresses(
+                [bytag[("objx", name)] for name, _, _ in FULL_BLOBS])
+            if objective_ptrs != cache["objective_ptrs"]:
+                cache["objective_ptrs"] = objective_ptrs
                 continue
         if args.seedable:
-            anim_targets = []
+            pointer_changed = False
             for slot in range(n_humans):
                 bl_raw = bytag.get(("bl_raw", slot))
                 if bl_raw is None:
                     continue
                 target = struct.unpack_from("<I", bl_raw, 0x7E8)[0]
-                if (0x00100000 <= target and target + 0xF6 <= 0x02000000
-                        and not target & 0xF):
-                    anim_targets.append((slot, target))
-            if anim_targets:
-                state_ranges = [(target + 0xF4, 2) for _, target in anim_targets]
-                state_ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4)]
-                state_chunks = read_ranges_batched(pine, state_ranges)
-                state_done, state_frame = (
-                    struct.unpack("<I", raw)[0] for raw in state_chunks[-2:])
-                if state_frame == frame0 and state_done == done0:
-                    for (slot, _), raw in zip(anim_targets, state_chunks[:-2]):
-                        bytag[("weapon_anim_state", slot)] = raw
-            if args.weapon_anim_raw and anim_targets:
-                anim_ranges = [(target, 0x100) for _, target in anim_targets]
-                anim_ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4)]
-                anim_chunks = read_ranges_batched(pine, anim_ranges)
-                anim_done, anim_frame = (
-                    struct.unpack("<I", raw)[0] for raw in anim_chunks[-2:])
-                if anim_frame == frame0 and anim_done == done0:
-                    for (slot, _), raw in zip(anim_targets, anim_chunks[:-2]):
-                        bytag[("weapon_anim_raw", slot)] = raw
+                if not (valid_ee_pointer(target, 0x100) and not target & 0xF):
+                    target = 0
+                if target != cache["weapon_anim_targets"].get(slot, 0):
+                    if target:
+                        cache["weapon_anim_targets"][slot] = target
+                    else:
+                        cache["weapon_anim_targets"].pop(slot, None)
+                    pointer_changed = True
+            for k in range(4):
+                drone_raw = bytag.get(("dr_raw", k))
+                if drone_raw is None:
+                    continue
+                route = drone_raw[AI_ROUTE_OFFSET:AI_ROUTE_OFFSET + AI_ROUTE_RAW_SIZE]
+                address = struct.unpack_from("<I", drone_raw, AI_ROUTE_NODE_POINTER_OFFSET)[0]
+                count = struct.unpack_from("<H", route, 0x82)[0]
+                size = count * 2
+                descriptor = ((address, count, size)
+                              if size == 0 or valid_ee_pointer(address, size) else None)
+                if descriptor != cache["route_nodes"].get(k):
+                    if descriptor is None:
+                        cache["route_nodes"].pop(k, None)
+                    else:
+                        cache["route_nodes"][k] = descriptor
+                    pointer_changed = True
+            if pointer_changed:
+                continue
  
         if last is not None and frame0 == last:
             time.sleep(0.005)
@@ -917,23 +929,36 @@ def main():
                 entry["other"] = oth
             parts.append(entry)
         rec["pl"] = parts
-        ai_path_refresh = set()
         if args.seedable:
-            path_updates = {}
-            for k, drone in cache["drone"].items():
-                drone_raw = bytag[("dr_raw", k)]
+            path_changed = False
+            for k in range(4):
+                drone_raw = bytag.get(("dr_raw", k))
+                if drone_raw is None:
+                    continue
                 address = struct.unpack_from(
                     "<I", drone_raw, AI_PATH_POINTER_OFFSET)[0]
                 path = cache["ai_paths"].get(k, {})
-                cached_raw = bytag.get(("ai_path_raw", k))
-                if (valid_ee_pointer(address, AI_PATH_RAW_SIZE)
-                        and (path.get("address") != address or cached_raw is None
-                             or ai_path_child_pointers(cached_raw) != path["children"])):
-                    path_updates[k] = address
-            updated_paths = read_ai_path_updates(
-                pine, path_updates, frame0, done0) if path_updates else {}
-            route_node_requests = {}
+                path_raw = bytag.get(("ai_path_raw", k))
+                if valid_ee_pointer(address, AI_PATH_RAW_SIZE):
+                    if path.get("address") != address or path_raw is None:
+                        refresh_ai_path_slot(pine, cache, k)
+                        path_changed = True
+                    else:
+                        children = ai_path_child_pointers(path_raw)
+                        if children != path["children"]:
+                            cache["ai_paths"][k] = {
+                                "address": address, "children": children, "valid": True,
+                            }
+                            path_changed = True
+                elif path.get("address") != address or path.get("valid"):
+                    cache["ai_paths"][k] = {
+                        "address": address, "children": {}, "valid": False,
+                    }
+                    path_changed = True
+            if path_changed:
+                continue
             route_node_descriptors = {}
+            route_node_raws = {}
             for k in range(4):
                 if ("dr_raw", k) not in bytag:
                     continue
@@ -945,14 +970,8 @@ def main():
                 count = struct.unpack_from("<H", route_raw, 0x82)[0]
                 size = count * 2
                 route_node_descriptors[k] = (address, count, size)
-                if size:
-                    route_node_requests[k] = (address, size)
-            route_node_updates = read_route_node_updates(
-                pine, route_node_requests, frame0, done0) if route_node_requests else {}
-            route_node_raws = {
-                k: (b"" if size == 0 else route_node_updates.get(k))
-                for k, (_, _, size) in route_node_descriptors.items()
-            }
+                route_node_raws[k] = (
+                    b"" if size == 0 else bytag.get(("route_nodes", k)))
 
             ai_path_rows = []
             for k in range(4):
@@ -969,16 +988,8 @@ def main():
                 route_raw = drone_raw[
                     AI_ROUTE_OFFSET:AI_ROUTE_OFFSET + AI_ROUTE_RAW_SIZE]
                 path = cache["ai_paths"].get(k, {})
-                update = updated_paths.get(k)
-                if update is not None:
-                    path_raw = update["raw"]
-                    child_samples = update["pointees"]
-                elif path.get("address") == address:
-                    path_raw = bytag.get(("ai_path_raw", k))
-                    child_samples = {}
-                else:
-                    path_raw = None
-                    child_samples = {}
+                path_raw = (bytag.get(("ai_path_raw", k))
+                            if path.get("address") == address else None)
                 route_node_address, route_node_count, route_node_size = route_node_descriptors[k]
                 route_node_raw = route_node_raws.get(k)
                 route_nodes_complete = (
@@ -995,11 +1006,7 @@ def main():
                     valid = valid_ee_pointer(pointer, AI_PATH_CHILD_RAW_SIZE)
                     raw = None
                     if valid:
-                        sampled = child_samples.get(offset)
-                        if sampled is not None and sampled[0] == pointer:
-                            raw = sampled[1]
-                        elif (path.get("address") == address
-                              and path.get("children", {}).get(offset) == pointer):
+                        if path.get("children", {}).get(offset) == pointer:
                             raw = bytag.get(("ai_path_child_raw", (k, offset)))
                         if raw is None:
                             complete = False
@@ -1033,15 +1040,11 @@ def main():
                         "children": pointers,
                         "valid": True,
                     }
-                elif address != path.get("address"):
-                    ai_path_refresh.add(k)
                 if not complete:
                     rec["state_missing"].append("bot_ai_path_pointees")
                 if not route_nodes_complete:
                     rec["state_missing"].append("bot_ai_route_nodes")
             rec["bot_ai_paths"] = ai_path_rows
-            if path_updates and not updated_paths:
-                ai_path_refresh.update(path_updates)
 
         projectile_gap = not cache["dynamic_scan_ok"]
         projectiles = []
@@ -1249,8 +1252,6 @@ def main():
             rec["checkpoint"] = checkpoint_meta
         records.append(rec)
         out.write(json.dumps(rec) + "\n")
-        for k in ai_path_refresh:
-            refresh_ai_path_slot(pine, cache, k)
         if len(records) % 200 == 0:
             print(f"  ... {len(records)} frames (frame {frame0})", flush=True)
         rel = frame0 - first

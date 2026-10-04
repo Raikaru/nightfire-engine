@@ -778,6 +778,8 @@ Driven every frame by `Player_SetWeaponAnimObj` (called from `Player_WeaponRecoi
 Gun position each frame: `weapon obj pos += recoil vec (a2)` plus offsets `def[+224..232]` (SP hip) blended toward `def[+236..244]` by `BLData+2316*2.2222223` while aiming; MP uses index `12*1` (second vector). `Player_PositionGun` transforms the local object offset, then adds `(0,-0.2,+0.5)` in object space to compute the rendered world position (`obj+0xC0`).
 The camera-relative gun placement keeps the weapon-table z sign: Skyrail MP slot 10 (frame 34999) gives `(P+0xC0) - viewer+0x120 translation = (+0.1996,+0.0854,-0.8807)` world units, which projects to approximately `(+0.0278,+0.0854,-0.9026)` on the player's right/up/forward axes. Do not negate this negative forward offset when placing the first-person rig.
 The first-person renderer uses the player's right/up/forward axes for both the gun offset and weapon-rig basis. On paired-arm rigs it keeps the skinned arm branch that owns the rigid weapon parts, suppresses the other arm branch, and draws only rigid parts attached to the kept branch (preventing the duplicate-hand/gun set from floating separately); rigs without rigid parts keep the right-hand branch.
+MP players take that sleeve index from their selected `MP_skins` row (`MpCharacter::skin.kind`, +8); respawns retain the slot's chosen character sleeve.
+In single-player `Player_Init` selects sleeve index 1; the weapon system seeds that index for SP-created players, while MP sessions replace it with the character's table value.
 
 ### 6.2 `Player_Weapon` (per frame, 0x1A24C8)
 1. `obj+250 |= 0x20`.

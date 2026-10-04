@@ -209,9 +209,11 @@ Tools: `tools/oracle/mp_addrs.py` (address map, single source of truth),
 `0x01FEA000..0x01FFFFFF`. Each configured sample copies the requested ranges plus
 `GS_DONE`, `GS_FRAME_START`, and `GS_FRAME` into a 16-byte-header slot, then publishes
 the ring head. Duplicate end-frame counters are skipped; full rings drop the new
-sample and increment overflow. `mp_record.py` drains these immutable frame snapshots
-instead of batching live source reads, preventing fields from adjacent logic frames
-being mixed. The default full recorder payload is 2204 bytes (32 slots in the ring).
+sample and increment overflow. `mp_record.py` drains these immutable end-of-frame
+snapshots instead of batching live source reads, preventing fields from adjacent
+logic frames being mixed. Slot capacity depends on the configured payload size.
+Loading a P2S restores the original RAM and erases hook code, so the recorder
+rehydrates its frame and preinstalled RNG hooks before resuming capture.
 `mp_record.py` includes human-only `damage_flash` (BLData+0x8BC),
 `fade_total`/`fade_timer` (+0x918/+0x91C), `fade_colour` (+0x963),
 `pain_dir` (+0x967), and `pain_alpha` (+0x968). The fade timer and total
@@ -220,15 +222,17 @@ These offsets are derived from ACTION.ELF pseudocode/disassembly and are not
 yet live-probed; bot hit-zone and flash fields are not mapped.
 
 Use `python3 tools/oracle/mp_record.py OUT.jsonl --load-slot SLOT --seedable
---frames N` for a seedable per-logic-frame capture. Seedable reads batch their
-ranges with duplicated `GS_DONE`/`GS_FRAME_START` counters and accepts the
-sample only when each counter is unchanged across the batched read; no fixed
-offset between them is assumed. Each accepted row carries `seed_version: 3`,
-the separately sampled GameState+0x34 `timer_frame`, four RNG words, four
-controller inputs (`pad_all`), MP settings/game state, the eight `mp_roster`
-records, indexed `pk[]` pickup records, every objective extension blob
-(`objx`), and `objectives[]` records resolved from `MP_OBJ_EXT+0x84`
-back-pointers (`MPOBJECT* - 0xE0` gives the root object). Pickup rows include
+--frames N` for a seedable per-logic-frame capture. Seedable reads come from
+the end-of-`Game_Run` frame ring; objective blobs, weapon-animation objects,
+bot route-node buffers, and AI path graphs are included in its immutable
+snapshot. Dynamic pointers are checked against the sampled records; when a
+pointer changes, the recorder refreshes that range schema and skips the
+transition sample. Each accepted row carries `seed_version: 4`, the separately
+sampled GameState+0x34 `timer_frame`, four RNG words, four controller inputs
+(`pad_all`), MP settings/game state, the eight `mp_roster` records, indexed
+`pk[]` pickup records, every objective extension blob (`objx`), and
+`objectives[]` records resolved from `MP_OBJ_EXT+0x84` back-pointers
+(`MPOBJECT* - 0xE0` gives the root object).
 position, state, category/item, amount, timestamp, lifetime countdown,
 radar-hidden state, and four `visit_until` values from MPpickups+0x80. Valid
 human weapon-animation pointers add the pointed-to `+0xF4` enum as
@@ -239,14 +243,13 @@ retained as `assassin_ptr`, `target_ptr`, and `golden_target_ptr`.
 actor; no remaining-effect tick value is mapped.
 
 For frame-keyed P2S anchors, pass `--checkpoint-dir DIR` (default interval 60
-logic frames; `--checkpoint-every N` changes it). The recorder accepts a
-snapshot only when the duplicated `GS_DONE` and `GS_FRAME_START` values match
-at both ends of the batched read; no fixed relationship between these counters
-is assumed. For each checkpoint it waits for both values to remain unchanged
-within one PINE transaction, saves the temporary `--checkpoint-slot` (default
-250), then copies PCSX2's game-ID/slot `.p2s` into `DIR/frame-<sample>.p2s`
-with a JSON sidecar containing requested/sample frames and counter values
-before and after the PINE save. Reserve that PINE slot: each checkpoint
+logic frames; `--checkpoint-every N` changes it). Each ring sample includes the
+`GS_DONE` and `GS_FRAME_START` counters captured by the `Game_Run` end hook;
+their fixed offset is not assumed. For each checkpoint the recorder waits for
+both values to remain unchanged within one PINE transaction, saves the temporary
+`--checkpoint-slot` (default 250), then copies PCSX2's game-ID/slot `.p2s` into
+`DIR/frame-<sample>.p2s`, with a JSON sidecar containing requested/sample frames
+and counter values before and after the PINE save. Reserve that PINE slot: each checkpoint
 overwrites it. The counters locate the save relative to recorded rows; they do
 not claim that the asynchronous file was copied while the game was paused.
 Example:
@@ -263,8 +266,12 @@ pnach before loading the savestate, then use `--rng-calls-preinstalled`. The
 recorder verifies the pnach entry words and trampoline bodies, waits through
 three forward logic frames after the load to avoid a stale ring snapshot, and
 then consumes new events without removing the persistent hooks. Each accepted
-row's `rng_calls[]` records sampled frame, function, caller return address and
-result bits; `rng_trace` reports ring overflow and lost-event counts.
+row's `rng_calls[]` records each event's logic frame, function, caller return
+address, and result bits. Because PINE drains events after consuming a frame
+snapshot, an event tagged for frame N may be stored on the row for N-1; `mp_compare.py`
+aligns calls by the event's own frame. `rng_trace` reports ring overflow and lost-event counts.
+
+`--mp-seed` replay applies the next row's raw `MPGame+0x190/+0x19c` clocks in `ArenaSystem::tick`, before bot updates and the end-of-frame pickup pass. Source clock deltas can differ from the fixed logic-rate step; pickup visit locks therefore use the recorded current-frame clock.
 
 The sampled source paths are distinct: `Env_Update` calls `Rand_Rand(20000)`
 once per live-world frame before player updates; `Player_Update` decrements
@@ -286,9 +293,9 @@ last-damager and capturer fields; kinds 3/8 retain a candidate signed value at
 because their meanings vary by object kind. Object reads are counter-bracketed
 with the frame snapshot.
 `--weapon-anim-raw` optionally follows each human's `BLData+0x7E8` pointer and
-adds the 0x100-byte `weapon_anim_raw` object to `pl[]` only when its
-frame-counter-bracketed read stays on the sampled logic frame. This is an
-opt-in research field and is not required for `seed_ready`.
+adds the 0x100-byte `weapon_anim_raw` object plus its `+0xF4` state to `pl[]`
+from the same immutable frame snapshot. This is an opt-in research field and
+is not required for `seed_ready`.
 Bot snapshots also emit `bot_goal_targets[]` per bot and goal slot. Goal target
 addresses on a `MPpickups` record boundary (`0x2A4B50`, 64 entries, stride
 `0xA0`) carry the stable `pickup_index`; `pk[]` supplies the typed pickup
