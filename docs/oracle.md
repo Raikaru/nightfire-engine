@@ -245,6 +245,10 @@ are participant-slot indices (or `-1`); corresponding raw pointer values are
 retained as `assassin_ptr`, `target_ptr`, and `golden_target_ptr`.
 `golden_effect_handle` and `golden_effect_active` expose the GoldenEye effect
 actor; no remaining-effect tick value is mapped.
+Bot goal targets pointing to an objective descriptor (rather than directly to
+the root object) are resolved through the descriptor's first pointer plus
+`0x30`; `bot_goal_targets[].objective_index` therefore stays available for CTF
+seed reconstruction.
 
 For deterministic offline replay from an existing PCSX2 savestate, use
 `ee_oracle.py STATE.p2s OUT.jsonl --rows N [--inputs REC.jsonl]`. It runs the
@@ -262,9 +266,15 @@ python3 tools/oracle/ee_oracle.py frame-00013326.p2s replay.jsonl \
 ```
 
 The headless caller returns success for kernel semaphore/event-flag services
-64–79 and SIF-DMA service 119; these have no separate EE workers in this
-frame-at-a-time run. Unknown syscall services still trap rather than silently
-passing.
+64–79, coherent-memory `FlushCache` service 100, SIF-DMA services 118–119, and
+DECI2 service 124 (`Deci2Call`). It also bypasses `sceTtyWrite`'s debug-console
+wait, which would otherwise block without an IOP completion. Unknown syscall
+services still trap rather than silently passing. `--watch-human-hp 0..3` logs
+writes overlapping the selected human's BLData+0x894, including the EE
+PC/instruction, `$ra`, and saved stack words at SP+0x10, +0x90, +0xa0, and
++0xd0. A mapped SP+0xd0 value is reported as a possible HITDATA pointer with
+raw fields at +0x50, +0x52, +0x58, and +0x08; interpret it with the caller
+chain because the offset is specific to nested hit-handling frames.
 
 Bot animation is recorded under `pl[4..7].anim`, when the `obj_tag` has a valid
 animation owner. `owner_ptr` is read from `obj_tag+0xDC`; the actual
@@ -928,10 +938,26 @@ movement but retains those pre-Control HITTEST endpoints. The raw
 `+0x3f0`/`+0x400` values are stale for the current collision pass and are not
 used as endpoints.
 
-`Drone_CollisionHandler` gates collision/feet processing with `NDrone2_DoCollision`,
-then calls `NDrone2_DoGravity` separately. Seed restore carries both source
-predicates so a false result does not run a host collision or gravity step that
-the source skips.
+`Drone_CollisionHandler` gates collision/feet processing with
+`NDrone2_DoCollision`, then calls `NDrone2_DoGravity` separately. The v5
+import enables source-compatible gates that are recomputed each tick from
+`Drone+0x4f8`, class `+0xd8`, forced-animation `+0x538`, near-player distances
+`+0x154`, `obj+0xfc`, and animation flags `+0x570`. These are per-tick
+predicates, not seed-only state: `NDrone2_Collision` and the feet snap continue
+to run or skip according to the current source gate after the import frame.
+
+The seeded animation-control predicate is not a one-shot flag: each bot Control
+tick recomputes `NDrone2_DoAnimation` from the source `0x80000` flag, class,
+animation root height, object/forced-animation state, and current animation
+flags. `AnimObjectUpdate` is due when that predicate is true or the source
+animation stamp (`Drone+0x580`) equals the current game frame. The host carries
+the source fields from the seed and reevaluates both predicates on every tick,
+so lockstep execution follows the same animation/root-motion gate as reseeding
+each frame.
+
+`NDrone2_SetAngleToDest` and `NDrone2_SetAngleToObj` call
+`ATAN2_APPROX__Fff`; the host uses `atan2_approx` for these movement-heading
+setters rather than the exact `atan2` helper used for other bearing paths.
 
 After the feet probe, the original adds current `Drone+0x3e0` when `obj+0xd0`
 is non-null. `Drone+0x3e0` is written by the current `Collide_Update` pass, so

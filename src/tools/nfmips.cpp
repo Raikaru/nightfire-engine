@@ -2577,7 +2577,7 @@ struct OraclePad {
 };
 
 int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
-                  const std::string& pad_script) {
+                  const std::string& pad_script, int watch_human_hp_slot) {
     if (state.empty() || rows < 1)
         throw std::runtime_error("mp-oracle needs --state <p2s> and --rows N");
 
@@ -2605,12 +2605,17 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
     hook_sp_copy(m);
     m.cpu.on_syscall = [](nf::ee::Cpu& cpu, u32 code) {
         const u32 service = cpu.r[3].w[0];
-        // Game_Run's semaphore/event-flag and SIF-DMA calls do not have EE
-        // workers in this headless, frame-at-a-time oracle.
-        if (code != 0 || !((service >= 64 && service <= 79) || service == 119)) return false;
+        // Game_Run's semaphore/event-flag, cache-flush, SIF-DMA, and DECI2
+        // services have no asynchronous workers in this interpreter.
+        if (code != 0 || !((service >= 64 && service <= 79) ||
+                          service == 100 || (service >= 118 && service <= 119) ||
+                          service == 124)) return false;
         cpu.r[2].w[0] = 0;
         return true;
     };
+    // Game_Run's sceTtyWrite only emits DECI2 debug-console output and can
+    // otherwise spin waiting for an IOP-side completion.
+    if (m.symbol("sceTtyWrite")) hook_noop(m, "sceTtyWrite");
     for (const char* sound : {"Sound_Play__FUifsUi", "Sound_Play3D__FUiP7_VECTORfffsUii"})
         if (m.symbol(sound)) hook_noop(m, sound);
     // Preserve scripted tSlot data while running the game's real input mapper.
@@ -2625,6 +2630,89 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
     constexpr u32 kTslotStride = 0x180;
     constexpr u32 kPadInput = 0x120;
     constexpr u32 kRamSize = nf::ee::Memory::kRamSize;
+    if (watch_human_hp_slot < -1 || watch_human_hp_slot >= 4)
+        throw std::runtime_error("--watch-human-hp slot must be in 0..3");
+    if (watch_human_hp_slot >= 0) {
+        constexpr u32 kMpGame = 0x002A4980;
+        constexpr u32 kMpSlotStride = 0x30;
+        constexpr u32 kMpObject = 0x1C;
+        constexpr u32 kObjectBlData = 0xE0;
+        constexpr u32 kBlHealth = 0x894;
+        const u32 object = m.mem.read<u32>(
+            kMpGame + u32(watch_human_hp_slot) * kMpSlotStride + kMpObject);
+        if (!object) throw std::runtime_error("HP watch slot has no MP object");
+        const u32 bl_data = m.mem.read<u32>(object + kObjectBlData);
+        const u32 hp_address = bl_data + kBlHealth;
+        const u32 hp_offset = m.mem.ram_offset(hp_address);
+        if (!bl_data || hp_offset == ~u32(0))
+            throw std::runtime_error("HP watch slot has no valid BLData health address");
+        std::fprintf(stderr, "watching slot %d human HP at %08x\n",
+                     watch_human_hp_slot, hp_address);
+        m.mem.set_watch([&m, watch_human_hp_slot, hp_address, hp_offset](
+                            u32 address, u32 size, bool is_write) {
+            if (!is_write) return;
+            const u32 offset = m.mem.ram_offset(address);
+            if (offset == ~u32(0) || offset >= hp_offset + 4
+                || u64(offset) + size <= hp_offset)
+                return;
+            const u32 frame = m.mem.read<u32>(0x002A37A4);
+            const u32 sp = u32(m.cpu.r[29].d[0]);
+            const u32 stack_saved_ra_10 = m.mem.ram_offset(sp + 0x10) != ~u32(0)
+                ? m.mem.read<u32>(sp + 0x10) : 0;
+            const u32 stack_saved_ra_90 = m.mem.ram_offset(sp + 0x90) != ~u32(0)
+                ? m.mem.read<u32>(sp + 0x90) : 0;
+            const u32 stack_saved_ra_a0 = m.mem.ram_offset(sp + 0xa0) != ~u32(0)
+                ? m.mem.read<u32>(sp + 0xa0) : 0;
+            const u32 hitdata_pointer = m.mem.ram_offset(sp + 0xd0) != ~u32(0)
+                ? m.mem.read<u32>(sp + 0xd0) : 0;
+            const bool hitdata_valid = hitdata_pointer
+                && u64(hitdata_pointer) + 0x5c <= 0xffffffffu
+                && m.mem.ram_offset(hitdata_pointer + 0x5c) != ~u32(0);
+            const u16 hit_type = hitdata_valid ? m.mem.read<u16>(hitdata_pointer + 0x50) : 0;
+            const u16 hit_attacker = hitdata_valid ? m.mem.read<u16>(hitdata_pointer + 0x52) : 0;
+            const u32 hit_source = hitdata_valid ? m.mem.read<u32>(hitdata_pointer + 0x58) : 0;
+            const u32 hit_damage = hitdata_valid ? m.mem.read<u32>(hitdata_pointer + 0x08) : 0;
+            const u32 pc = m.cpu.cur_pc;
+            const u32 ra = u32(m.cpu.r[31].d[0]);
+            const auto pc_symbol = m.symbol_at(pc);
+            const auto ra_symbol = ra >= 8 ? m.symbol_at(ra - 8) : std::nullopt;
+            const auto stack_symbol_10 = stack_saved_ra_10 >= 8
+                ? m.symbol_at(stack_saved_ra_10 - 8) : std::nullopt;
+            const auto stack_symbol_90 = stack_saved_ra_90 >= 8
+                ? m.symbol_at(stack_saved_ra_90 - 8) : std::nullopt;
+            const auto stack_symbol_a0 = stack_saved_ra_a0 >= 8
+                ? m.symbol_at(stack_saved_ra_a0 - 8) : std::nullopt;
+            std::fprintf(stderr, "HP write frame=%u slot=%d addr=%08x size=%u old=%08x "
+                                 "pc=%08x inst=%08x sp=%08x sp+10=%08x sp+90=%08x sp+a0=%08x sp+d0=%08x",
+                         frame, watch_human_hp_slot, address, size,
+                         m.mem.read<u32>(hp_address), pc, m.cpu.cur_inst, sp,
+                         stack_saved_ra_10, stack_saved_ra_90, stack_saved_ra_a0,
+                         hitdata_pointer);
+            if (hitdata_valid)
+                std::fprintf(stderr, " hit[type=%04x attacker=%04x source=%08x damage=%08x]",
+                             hit_type, hit_attacker, hit_source, hit_damage);
+            else
+                std::fprintf(stderr, " hitdata=invalid");
+            if (pc_symbol)
+                std::fprintf(stderr, " %s+0x%x", pc_symbol->name.c_str(),
+                             pc - pc_symbol->value);
+            std::fprintf(stderr, " ra=%08x", ra);
+            if (ra_symbol)
+                std::fprintf(stderr, " %s+0x%x", ra_symbol->name.c_str(),
+                             ra - ra_symbol->value - 8);
+            if (stack_symbol_10)
+                std::fprintf(stderr, " caller=%s+0x%x", stack_symbol_10->name.c_str(),
+                             stack_saved_ra_10 - stack_symbol_10->value - 8);
+            if (stack_symbol_90 && stack_symbol_90->name != "_end")
+                std::fprintf(stderr, " caller+90=%s+0x%x", stack_symbol_90->name.c_str(),
+                             stack_saved_ra_90 - stack_symbol_90->value - 8);
+            if (stack_symbol_a0)
+                std::fprintf(stderr, " caller+a0=%s+0x%x", stack_symbol_a0->name.c_str(),
+                             stack_saved_ra_a0 - stack_symbol_a0->value - 8);
+            std::fputc('\n', stderr);
+        });
+    }
+
 
     auto write_u32 = [](u32 value) {
         const u8 bytes[] = {u8(value), u8(value >> 8), u8(value >> 16), u8(value >> 24)};
@@ -2697,7 +2785,7 @@ void usage() {
                  "usage: nfmips <elf> call <sym|addr> [args] [--state p|--ram d] [--dump a[:n]] [--steps N]\n"
                  "       nfmips <elf> init [--check] [--dump-out f] [--steps N]\n"
                  "       nfmips <elf> trace <sym|addr> [args] [--steps N] [--state p|--ram d]\n"
-                 "       nfmips <elf> mp-oracle --state <p2s> --rows N [--pads <frame/port/input.txt>]\n"
+                 "       nfmips <elf> mp-oracle --state <p2s> --rows N [--pads <frame/port/input.txt>] [--watch-human-hp 0..3]\n"
                  "       nfmips <elf> symbols [substr]\n"
                  "       nfmips <elf> diff [--count N] [--seed N] [--state p2s]\n"
                  "       nfmips <elf> diff-acc (DroneWeap_DoBulletAccuracy truth table, Bots diff)\n"
@@ -2728,14 +2816,16 @@ int main(int argc, char** argv) {
     try {
         if (cmd == "mp-oracle") {
             std::string state, pads;
-            int rows = 0;
+            int rows = 0, watch_human_hp_slot = -1;
             for (size_t j = 2; j < av.size(); j++) {
                 if (av[j] == "--state" && j + 1 < av.size()) state = av[++j];
                 else if (av[j] == "--rows" && j + 1 < av.size()) rows = std::stoi(av[++j]);
                 else if (av[j] == "--pads" && j + 1 < av.size()) pads = av[++j];
-                else throw std::runtime_error("mp-oracle wants --state <p2s> --rows N [--pads file]");
+                else if (av[j] == "--watch-human-hp" && j + 1 < av.size())
+                    watch_human_hp_slot = std::stoi(av[++j]);
+                else throw std::runtime_error("mp-oracle wants --state <p2s> --rows N [--pads file] [--watch-human-hp 0..3]");
             }
-            return cmd_mp_oracle(elf, state, rows, pads);
+            return cmd_mp_oracle(elf, state, rows, pads, watch_human_hp_slot);
         }
         if (cmd == "call") {
             if (av.size() < 3) {

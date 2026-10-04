@@ -33,7 +33,7 @@ void publish_move(Drone& d, const NavMove& m) {
         d.mv.arrive_radius = 0.3f;
         const Vec3 f = d.nav_pos();
         d.mv.dest_dist = dist2d(f, m.waypoint);
-        d.mv.dest_angle = heading_of(m.waypoint[0] - d.pos[0], m.waypoint[2] - d.pos[2]);
+        d.mv.dest_angle = atan2_approx(m.waypoint[0] - d.pos[0], m.waypoint[2] - d.pos[2]);
     }
 }
 
@@ -117,14 +117,14 @@ void stop(Drone& d) {
 // ---- facing -----------------------------------------------------------------------------------------------------------
 void set_angle_to_dest(Drone& d, float offset) {
     if (d.flags & flag::kSawPlayer) return;
-    d.mv.dest_angle = heading_of(d.mv.dest[0] - d.pos[0], d.mv.dest[2] - d.pos[2]) + offset;
+    d.mv.dest_angle = atan2_approx(d.mv.dest[0] - d.pos[0], d.mv.dest[2] - d.pos[2]) + offset;
 }
 
 void set_angle_to_obj(Drone& d, const TargetRef& t, float offset, bool force) {
     if (!t.valid()) return;
     if ((d.flags & flag::kSawPlayer) && !force) return;
     const Vec3 tp = target_pos(*d.sys, t);
-    d.mv.dest_angle = heading_of(tp[0] - d.pos[0], tp[2] - d.pos[2]) + offset;
+    d.mv.dest_angle = atan2_approx(tp[0] - d.pos[0], tp[2] - d.pos[2]) + offset;
 }
 
 void face_yaw(Drone& d, float yaw) { d.mv.dest_angle = yaw; }
@@ -539,6 +539,27 @@ void apply_animation_root_motion(Drone& d, const Vec3& root_delta, float yaw) {
 }
 
 void collision_step(Drone& d, const Vec3& pre_control_pos) {
+    if (d.anim.source_collision_supported) {
+        bool near_player = false;
+        for (int slot = 0; slot < 4; ++slot) {
+            const Player* player = d.sys->world().player(slot);
+            if (!player) continue;
+            const Vec3 delta = player->pos - d.pos;
+            near_player |= std::sqrt(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]) < 2.0f;
+        }
+        const std::uint32_t flags = d.flags;
+        const bool mode_allows_collision = (flags & 0x200u) == 0 || d.sys->config().level_id == 0x700004au;
+        const bool collision_predicate =
+            (flags & 0x20u) != 0 &&
+            (d.char_class == 0x0c ||
+             (d.char_class != 0x13 &&
+              (d.anim.source_force_anim || near_player || d.anim.source_object_anim || (d.anim.cur_flags & 2u) == 0)));
+        d.anim.source_collision_due = mode_allows_collision && collision_predicate;
+        d.anim.source_gravity_due =
+            (flags & 0x80u) != 0 &&
+            ((flags & 0x4u) != 0 || (mode_allows_collision && collision_predicate));
+        d.anim.source_collision_valid = true;
+    }
     const bool source_collision_valid = d.anim.source_collision_valid;
     const bool source_collision_due = d.anim.source_collision_due;
     const bool source_gravity_due = d.anim.source_gravity_due;
@@ -607,7 +628,6 @@ void collision_step(Drone& d, const Vec3& pre_control_pos) {
         d.on_ground = false;
         d.ground_normal_y = 1.0f;
     }
-    d.anim.source_collision_valid = false;
     // Drone_CollisionHandler applies NDrone2_DoGravity after collision and feet resolution.
     if (!d.mv.disabled && (!source_collision_valid || source_gravity_due)) {
         if (!d.on_ground ||
