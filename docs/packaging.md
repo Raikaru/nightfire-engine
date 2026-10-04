@@ -62,4 +62,6 @@ CMake marks `nightfire` as an application bundle and configures CPack's `DragNDr
 
 ## Disc data
 
-The current application accepts an extracted game directory as its first positional argument. With no directory argument it uses the saved `game_dir` setting; passing a directory updates that setting. Obtain your own disc and extract `ACTION.ELF`, `FILES.BIN`, and any optional data described in the README. `nfdump <gamedir> validate` is the data validation command. This release does not provide automatic ISO extraction or a graphical first-run setup wizard; first-run disc setup remains unimplemented.
+`nightfire` uses a first-run setup screen when no valid game data is configured. Choose the original PS2 ISO or a disc folder containing `SYSTEM.CNF`, `ACTION.ELF`, and `FILES.BIN`. The setup accepts the USA retail identifier `SLUS-20579`, extracts the two runtime files into the platform per-user data directory, runs `nfdump validate`, and saves the resulting path only after validation succeeds. A failed validation shows its error details and does not configure the data.
+
+Configuration uses `${XDG_CONFIG_HOME:-$HOME/.config}/nightfire/nightfire.cfg` on Linux, `%APPDATA%\\Nightfire\\nightfire.cfg` on Windows, and `~/Library/Application Support/Nightfire/nightfire.cfg` on macOS. Game files are stored under `${XDG_DATA_HOME:-$HOME/.local/share}/nightfire` on Linux, `%APPDATA%\\Nightfire\\data` on Windows, and `~/Library/Application Support/Nightfire/data` on macOS. Supplying `nightfire <gamedir>` remains supported and stores that directory for later launches.

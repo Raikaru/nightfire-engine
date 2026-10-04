@@ -7,7 +7,9 @@ against the game running in PCSX2 (`docs/oracle.md`).
 
 ## Game data
 
-Extract from your own disc into one directory:
+On first launch, the setup screen accepts your own Nightfire PS2 USA ISO or an extracted disc folder. It checks the disc's `SYSTEM.CNF` for SLUS-20579, extracts `ACTION.ELF` and `FILES.BIN` into the per-user data directory, then runs `nfdump validate` before saving the configuration. The extracted files remain in your user data directory; the ISO is opened read-only.
+
+For manual extraction (and optional audio/driving assets), use:
 
 ```
 7z e "007 - Nightfire (USA).iso" ACTION.ELF FILES.BIN -o<gamedir>
@@ -77,7 +79,7 @@ end-mission fail path, results with stats and the next mission), multiplayer are
 per-viewer HUD, animated remote bodies, pause, debriefing) or driving missions (chase camera, HUD, pause, win/lose
 banners), then returns to the frontend (mission wins chain into the next mission). Configuration lives under the
 platform user config directory (Linux: `$XDG_CONFIG_HOME/nightfire/nightfire.cfg` or `~/.config/nightfire/nightfire.cfg`;
-Windows: `%APPDATA%\\Nightfire\\nightfire.cfg`; macOS: `~/Library/Application Support/Nightfire/nightfire.cfg`).
+Windows: `%APPDATA%\Nightfire\nightfire.cfg`; macOS: `~/Library/Application Support/Nightfire/nightfire.cfg`).
 - `tools/oracle/`: PCSX2 PINE client, virtual pad, per-frame player + pad tracer, `compare.py` and
   `run_scenarios.sh` (replay vs oracle error report; `docs/oracle.md`).
 - `tools/xref/xref.py <ps2_symbol|substring>`: PS2 pseudocode side by side with the matched GameCube and

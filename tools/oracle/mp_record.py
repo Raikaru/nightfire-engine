@@ -54,7 +54,9 @@ def load_script(path):
     return sorted(steps, key=lambda s: s[0])
 
 def save_checkpoint(pine, output_dir, slot, requested_frame, sample_frame):
-    state_dir = pathlib.Path.home() / ".config" / "PCSX2" / "sstates"
+    config_home = pathlib.Path(os.environ.get(
+        "XDG_CONFIG_HOME", str(pathlib.Path.home() / ".config")))
+    state_dir = config_home / "PCSX2" / "sstates"
     state_pattern = f"{pine.game_id()}*.{slot}.p2s"
     states = list(state_dir.glob(state_pattern))
     if len(states) > 1:
@@ -130,6 +132,10 @@ def valid_checkpoint_args(ap, args):
         ap.error("--checkpoint-every must be positive")
     if not 0 <= args.checkpoint_slot <= 255:
         ap.error("--checkpoint-slot must be in 0..255")
+    if args.checkpoint_first is not None and args.checkpoint_first < 0:
+        ap.error("--checkpoint-first must be non-negative")
+    if args.checkpoint_first is not None and not args.checkpoint_dir:
+        ap.error("--checkpoint-first requires --checkpoint-dir")
     if args.checkpoint_dir:
         args.checkpoint_dir = os.path.abspath(os.path.expanduser(args.checkpoint_dir))
  
@@ -414,6 +420,8 @@ def main():
                     help="logic-frame interval between savestates (default: 60)")
     ap.add_argument("--checkpoint-slot", type=int, default=250,
                     help="temporary PCSX2 savestate slot copied into checkpoint-dir")
+    ap.add_argument("--checkpoint-first", type=int,
+                    help="absolute GameState+0x3c frame for the first checkpoint")
     ap.add_argument("--pine-slot", type=int, default=28011,
                     help="PINE slot for the PCSX2 instance (default: 28011)")
     args = ap.parse_args()
@@ -829,7 +837,8 @@ def main():
         checkpoint_meta = None
         if args.checkpoint_dir:
             if checkpoint_next is None:
-                checkpoint_next = frame0
+                checkpoint_next = (
+                    args.checkpoint_first if args.checkpoint_first is not None else frame0)
             if frame0 >= checkpoint_next:
                 checkpoint_meta = save_checkpoint(
                     pine, args.checkpoint_dir, args.checkpoint_slot, checkpoint_next, frame0)

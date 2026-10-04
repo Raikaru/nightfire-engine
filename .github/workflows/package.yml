@@ -1,0 +1,214 @@
+name: Packages
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgl-dev libzstd-dev zlib1g-dev libavformat-dev libavcodec-dev libswscale-dev libavutil-dev pkg-config xvfb libx11-dev libxext-dev libxrender-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libwayland-egl-backend-dev libegl1-mesa-dev libasound2-dev libudev-dev libpulse-dev libpipewire-0.3-dev
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Create tar.gz
+        run: (cd build && cpack -G TGZ)
+      - name: Install appimagetool
+        run: |
+          curl -fsSL -o appimagetool.AppImage https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool.AppImage
+          sudo mv appimagetool.AppImage /usr/local/bin/appimagetool
+      - name: Create AppImage
+        run: packaging/linux/build-appimage.sh build dist/nightfire-x86_64.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            build/*.tar.gz
+            dist/*.AppImage
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: '${{ github.workspace }}/vcpkg'
+          vcpkgGitCommitId: '2025.01.13'
+      - name: Install dependencies
+        shell: pwsh
+        run: vcpkg install ffmpeg zlib zstd pkgconf --triplet x64-windows
+      - name: Configure
+        shell: pwsh
+        run: |
+          $env:PKG_CONFIG_PATH = "$env:GITHUB_WORKSPACE/vcpkg/installed/x64-windows/lib/pkgconfig"
+          $env:PKG_CONFIG_EXECUTABLE = "$env:GITHUB_WORKSPACE/vcpkg/installed/x64-windows/tools/pkgconf/pkgconf.exe"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:GITHUB_WORKSPACE/vcpkg/scripts/buildsystems/vcpkg.cmake"
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Create ZIP
+        run: cpack --config build/CPackConfig.cmake -G ZIP --package-directory build
+      - name: Create NSIS installer
+        run: |
+          choco install nsis -y
+          cpack --config build/CPackConfig.cmake -G NSIS --package-directory build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          path: |
+            build/*.zip
+            build/*.exe
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install ninja pkg-config ffmpeg zstd
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Create DMG
+        run: (cd build && cpack -G DragNDrop)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-package
+          path: build/*.dmg
+
+  private-data:
+    runs-on: ubuntu-24.04
+    outputs:
+      available: ${{ steps.gate.outputs.available }}
+    steps:
+      - id: gate
+        env:
+          KEY: ${{ secrets.NF_DATA_DEPLOY_KEY }}
+        run: echo "available=$([ -n "$KEY" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  linux-disc-smoke:
+    needs: [linux, private-data]
+    if: needs.private-data.outputs.available == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install smoke-test tools
+        run: sudo apt-get update && sudo apt-get install -y xdotool zstd xvfb
+      - name: Read private ISO checksum
+        id: iso
+        uses: actions/checkout@v4
+        with:
+          repository: Raikaru/nightfire-ci-data
+          ssh-key: ${{ secrets.NF_DATA_DEPLOY_KEY }}
+          path: .private-data
+          sparse-checkout: iso/iso.sha1
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Set checksum cache key
+        id: checksum
+        run: echo "sha1=$(awk '{print $1}' .private-data/iso/iso.sha1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: iso-cache
+        with:
+          path: ${{ runner.temp }}/nightfire-usa.iso
+          key: nightfire-usa-iso-${{ steps.checksum.outputs.sha1 }}
+      - name: Fetch and reassemble private ISO
+        if: steps.iso-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: Raikaru/nightfire-ci-data
+          ssh-key: ${{ secrets.NF_DATA_DEPLOY_KEY }}
+          path: .private-data-parts
+          sparse-checkout: iso/nightfire-usa.iso.zst.part*
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Decompress and verify ISO
+        if: steps.iso-cache.outputs.cache-hit != 'true'
+        run: |
+          cat .private-data-parts/iso/nightfire-usa.iso.zst.part* | zstd -d -T0 -o "$RUNNER_TEMP/nightfire-usa.iso"
+          echo "${{ steps.checksum.outputs.sha1 }}  $RUNNER_TEMP/nightfire-usa.iso" | sha1sum --check
+          rm -rf .private-data-parts .private-data
+      - name: Verify cached ISO checksum
+        if: steps.iso-cache.outputs.cache-hit == 'true'
+        run: echo "${{ steps.checksum.outputs.sha1 }}  $RUNNER_TEMP/nightfire-usa.iso" | sha1sum --check
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: package
+      - name: Unpack Linux tarball
+        run: |
+          mkdir -p "$RUNNER_TEMP/nightfire-install"
+          tar -xzf "$(find package -type f -name '*.tar.gz' -print -quit)" -C "$RUNNER_TEMP/nightfire-install"
+          echo "NIGHTFIRE=$(find "$RUNNER_TEMP/nightfire-install" -type f -path '*/bin/nightfire' -print -quit)" >> "$GITHUB_ENV"
+          echo "NFDUMP=$(find "$RUNNER_TEMP/nightfire-install" -type f -path '*/bin/nfdump' -print -quit)" >> "$GITHUB_ENV"
+      - name: Capture first-run wizard
+        run: |
+          mkdir -p "$RUNNER_TEMP/wizard-home" "$RUNNER_TEMP/nightfire-shots"
+          HOME="$RUNNER_TEMP/wizard-home" XDG_CONFIG_HOME="$RUNNER_TEMP/wizard-home/config" \
+            XDG_DATA_HOME="$RUNNER_TEMP/wizard-home/data" \
+            xvfb-run -a "$NIGHTFIRE" --shot "$RUNNER_TEMP/nightfire-shots/wizard.bmp"
+      - name: Compile ISO smoke helper
+        run: |
+          cat > "$RUNNER_TEMP/iso-smoke.cpp" <<'EOF'
+          #include "assets/iso9660.hpp"
+          #include <exception>
+          #include <iostream>
+          #include <string>
+          int main(int argc, char** argv) {
+              try {
+                  if (argc == 3) {
+                      const nf::DiscIdentity disc = nf::identify_nightfire_disc(argv[1]);
+                      if (disc.boot_id != "SLUS20579") return 2;
+                      nf::extract_nightfire_disc(argv[1], argv[2]);
+                      return 0;
+                  }
+                  if (argc == 2) {
+                      try {
+                          (void)nf::identify_nightfire_disc(argv[1]);
+                      } catch (const std::exception& error) {
+                          if (std::string(error.what()).find("too small to be a PS2 ISO9660 image") !=
+                              std::string::npos) return 0;
+                          std::cerr << error.what() << '\n';
+                          return 1;
+                      }
+                  }
+                  return 1;
+              } catch (const std::exception& error) {
+                  std::cerr << error.what() << '\n';
+                  return 1;
+              }
+          }
+          EOF
+          c++ -std=c++20 -Wall -Wextra -Werror -Isrc src/assets/iso9660.cpp "$RUNNER_TEMP/iso-smoke.cpp" -o "$RUNNER_TEMP/iso-smoke"
+      - name: Extract and validate user disc
+        run: |
+          export HOME="$RUNNER_TEMP/wizard-home"
+          export XDG_CONFIG_HOME="$HOME/config"
+          export XDG_DATA_HOME="$HOME/data"
+          "$RUNNER_TEMP/iso-smoke" "$RUNNER_TEMP/nightfire-usa.iso" "$HOME/data/nightfire"
+          "$NFDUMP" "$HOME/data/nightfire" validate | tee "$RUNNER_TEMP/nfdump.log"
+          grep -q 'failures 0' "$RUNNER_TEMP/nfdump.log"
+          "$NIGHTFIRE" --gamedir "$HOME/data/nightfire" --page 0x40000002 --shot "$RUNNER_TEMP/nightfire-shots/main-menu.bmp"
+      - name: Reject a wrong file
+        run: |
+          printf 'not an ISO image\n' > "$RUNNER_TEMP/wrong-disc.iso"
+          "$RUNNER_TEMP/iso-smoke" "$RUNNER_TEMP/wrong-disc.iso"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-disc-smoke-screenshots
+          path: ${{ runner.temp }}/nightfire-shots/*.bmp

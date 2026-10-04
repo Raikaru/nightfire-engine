@@ -1,12 +1,7 @@
-// nightfire: the playable game executable. Boots the frontend (UserInterface)
-// on the original menu script and launches ACTION single-player missions
-// (Scripting mission flow is Scripting's slice; the session runs the world,
-// NPCs, HUD and audio until death/fail/quit), multiplayer arena matches with
-// bots (Arena + Bots), or DRIVING.ELF driving missions (Driving), with HUD,
-// AudioSystem + MusicDirector, CharacterRenderer bodies, pause menus and
-// mission/match results back to the frontend. Settings persist in
-// ~/.config/nightfire/nightfire.cfg. Headless --shot/--frames/--inputs runs
-// verify each path without a display.
+// nightfire: playable game and first-run user-data setup. The first-launch
+// wizard validates the user's own Nightfire PS2 USA disc and installs required
+// files to the platform per-user data directory. Settings persist in the
+// platform config directory; headless --shot/--frames/--inputs verify sessions.
 #include <SDL3/SDL.h>
 
 #include <algorithm>
@@ -42,6 +37,7 @@
 #include "driving/driving_level.hpp"
 #include "ui/renderer.hpp"
 #include "ui/text.hpp"
+#include "app/setup_wizard.hpp"
 
 namespace nf::app {
 
@@ -518,7 +514,7 @@ std::vector<nf::net::MatchConfig> make_host_rotation(const AppContext& ctx, cons
 
 void usage(const char* prog) {
     std::fprintf(stderr,
-                 "usage: %s <gamedir> [--mission level.bin [--difficulty 0|1|2] [--channel CH=VAL]] [--mp MAP_OPTS] "
+                 "usage: %s [<gamedir>] [--mission level.bin [--difficulty 0|1|2] [--channel CH=VAL]] [--mp MAP_OPTS] "
                  "[--drive name [--car name]] [--movie hexid] [--logic-hz 30|60] [--frames N] [--shot out.bmp] "
                  "[--inputs file] [--press a,b,...] [--page 0x40000002] [--size WIDTHxHEIGHT] [--mute] [--give ID] "
                  "[--prompts ps|xbox|keyboard] [--virtual-pads xbox,ps,...] [--hold pad0:r1,...]\n"
@@ -543,14 +539,22 @@ int run(int argc, char** argv) {
     AppConfig cfg;
     load_config(config_path(), cfg);
     if (args.gamedir.empty()) args.gamedir = cfg.game_dir;
-    if (!args.gamedir.empty() && args.gamedir != cfg.game_dir) {
+    if (!args.gamedir.empty()) args.gamedir = std::filesystem::absolute(args.gamedir).lexically_normal().string();
+    auto has_game_files = [](const std::string& path) {
+        if (path.empty()) return false;
+        const std::filesystem::path root(path);
+        std::error_code ec;
+        return std::filesystem::is_regular_file(root / "ACTION.ELF", ec) &&
+               std::filesystem::is_regular_file(root / "FILES.BIN", ec);
+    };
+    if (!has_game_files(args.gamedir)) {
+        const SetupResult setup = run_setup_wizard(cfg, args.shot);
+        if (setup == SetupResult::Screenshot) return 0;
+        if (setup != SetupResult::Configured) return 1;
+        args.gamedir = cfg.game_dir;
+    } else if (args.gamedir != cfg.game_dir) {
         cfg.game_dir = args.gamedir;
         save_config(config_path(), cfg);
-    }
-    if (args.gamedir.empty()) {
-        std::fprintf(stderr, "nightfire: no game data configured. Extract your own Nightfire disc into %s and run nightfire <gamedir>.\n",
-                     user_data_path().string().c_str());
-        return 2;
     }
     cfg.logic_hz = args.logic_hz;
     if (args.password.size() > nf::net::kMaxPasswordBytes)

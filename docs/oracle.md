@@ -285,23 +285,28 @@ for every present bot. Missing animation data adds `"bot_animation_layers"` to
 `state_missing`; missing collision data adds `"bot_collision_body"`.
 
 For frame-keyed P2S anchors, pass `--checkpoint-dir DIR` (default interval 60
-logic frames; `--checkpoint-every N` changes it). Each ring sample includes the
+logic frames; `--checkpoint-every N` changes it). `--checkpoint-first FRAME`
+sets the first absolute `GameState+0x3c` checkpoint request; later requests
+advance by the interval from the saved counters. Each ring sample includes the
 `GS_DONE` and `GS_FRAME_START` counters captured by the `Game_Run` end hook;
 their fixed offset is not assumed. For each checkpoint the recorder waits for
 both values to remain unchanged within one PINE transaction, saves the temporary
 `--checkpoint-slot` (default 250), then copies PCSX2's game-ID/slot `.p2s` into
 `DIR/frame-<sample>.p2s`, with a JSON sidecar containing requested/sample frames
-and counter values before and after the PINE save. Reserve that PINE slot: each checkpoint
-overwrites it. The counters locate the save relative to recorded rows; they do
-not claim that the asynchronous file was copied while the game was paused.
+and counter values before and after the PINE save. Savestates are read from
+`$XDG_CONFIG_HOME/PCSX2/sstates` (or `~/.config/PCSX2/sstates` when unset).
+Reserve that PINE slot: each checkpoint overwrites it. The counters locate the
+save relative to recorded rows; they do not claim that the asynchronous file
+was copied while the game was paused.
 Example:
 
 ```sh
 python3 tools/oracle/mp_record.py match.jsonl --load-slot 12 --frames 1800 \
   --seedable --rng-calls --checkpoint-dir ~/.cache/mp-oracle-tmp/checkpoints
 ```
-For parallel PCSX2 captures, configure each instance with a unique `PINESlot` and
-pass the same value to `--pine-slot` (for example, 28011 and 28012).
+
+For parallel PCSX2 captures, configure each instance with a unique `PINESlot`
+and pass the same value to `--pine-slot` (for example, 28012 and 28013).
 
 `--rng-calls` temporarily hooks `Rand_Random`, `Rand_Rand`, `Rand_FRand`, and
 `Rand_FRand_MVar2` in a running EE-interpreter session. For the EE recompiler,

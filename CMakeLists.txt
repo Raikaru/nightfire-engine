@@ -22,6 +22,7 @@ FetchContent_MakeAvailable(SDL3)
 add_library(nf_assets STATIC
   src/assets/elf.cpp
   src/assets/game_files.cpp
+  src/assets/iso9660.cpp
   src/assets/bin_archive.cpp
   src/assets/map_file.cpp
   src/assets/ps2_gfx.cpp
