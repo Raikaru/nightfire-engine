@@ -302,6 +302,22 @@ python3 tools/oracle/ee_oracle.py frame-00013326.p2s replay.jsonl \
   --nfmips build-MpOracle/nfmips --rows 341 --inputs pcsx2.jsonl
 ```
 
+To fill the gaps between P2S checkpoints, run:
+
+```sh
+python3 tools/oracle/ee_oracle.py fill CHECKPOINTS/ pcsx2.jsonl filled.jsonl \
+  --nfmips build-MpOracle/nfmips
+```
+
+Each adjacent checkpoint pair is replayed as a dense inclusive frame interval;
+the shared boundary row is emitted once. Every generated frame present in the
+PCSX2 JSONL is compared field by field (absolute float tolerance `0.001` by
+default; `--tolerance` changes it). A segment with no overlapping reference
+rows or any mismatch makes the command fail and leaves the requested output
+unwritten. Only a fully validated fill is atomically written to `filled.jsonl`.
+Use `--verbose` to print each mismatching field. Supply `--inputs` when the
+replay needs the recorded pad stream.
+
 The headless caller returns success for kernel semaphore/event-flag services
 64–79, coherent-memory `FlushCache` service 100, SIF-DMA services 118–119, and
 DECI2 service 124 (`Deci2Call`). It also bypasses `sceTtyWrite`'s debug-console
@@ -1017,6 +1033,10 @@ countdown: `Game_Run` calls `MP_Update` (which runs `Drone_Control`) before
 passes set it to 2 for selected objects. The host consumes the seeded counter
 at the animation gate, decrements after control, and refreshes visible bots in
 its post-tick view pass; `Drone+0x580` is not part of this gate.
+`View_AddCels` also culls each candidate cel with `Vision_InView` using its
+center/radius before adding its objects. The host uses the room model's
+enclosing AABB sphere for that test and retains portal-clipped traversal for
+cells outside that direct sphere pass.
 
 `NDrone2_SetAngleToDest` and `NDrone2_SetAngleToObj` call
 `ATAN2_APPROX__Fff`; the host uses `atan2_approx` for these movement-heading
