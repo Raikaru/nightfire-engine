@@ -389,6 +389,7 @@ public:
         float source_root_height_offset = 0; // v5 recorded sAnimObject+0x60 offset over the sampled root pose
         bool source_collision_due = true; // v5 NDrone2_DoCollision result for this restored bot snapshot
         bool source_collision_valid = false; // v5 eligibility snapshot, consumed by collision_step once
+        bool source_gravity_due = true; // v5 NDrone2_DoGravity result for this restored bot snapshot
         float step = 0;                 // +0x58c scalar fallback when AnimObjectUpdate is skipped
     } anim;
     // NDrone2 locomotion state (steering target, route, per-tick displacement).
