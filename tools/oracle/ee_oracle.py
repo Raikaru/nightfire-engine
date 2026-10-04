@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run GameFlow_Main from a PCSX2 P2S and decode multiplayer state rows.
+"""Replay multiplayer rows from a PCSX2 P2S using the Game_Run harness.
 
 The interpreter streams compressed EE RAM snapshots into mp_record's existing
 v5 decoder, so live-PINE and headless sources share one JSONL schema.
@@ -138,6 +138,8 @@ def main():
                     help="log writes to one MP human's BLData HP, including PC and $ra")
     ap.add_argument("--weapon-anim-raw", action="store_true",
                     help="capture the full human weapon-animation object range")
+    ap.add_argument("--game-flow", action="store_true",
+                    help="opt into the partial GameFlow_Main/Game_Draw path")
     ap.add_argument("--trace-rng", action="store_true",
                     help="print each Rand_Random caller and result to stderr")
     ap.add_argument("--give-weapon", action="append", type=int, default=[],
@@ -161,6 +163,8 @@ def main():
         command += command_watch_human_hp
         if args.trace_rng:
             command.append("--trace-rng")
+        if args.game_flow:
+            command.append("--game-flow")
         for weapon in args.give_weapon:
             command += ["--give-weapon", str(weapon)]
         pad_span = None

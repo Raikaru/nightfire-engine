@@ -296,13 +296,16 @@ PC/instruction, `$ra`, and saved stack words at SP+0x10, +0x90, +0xa0, and
 raw fields at +0x50, +0x52, +0x58, and +0x08; interpret it with the caller
 chain because the offset is specific to nested hit-handling frames.
 
-The interpreter calls the original `GameFlow_Main` once per replay frame, so
-its scheduler updates and normal `Game_Run`/`Game_Draw` gating execute. The
-source draws only when `GameState+0x40` and `sloflag` permit it. Object-matrix
-submission leaves are skipped; `PS2StartCalcPacket` releases the
-buffer-completion poll that would otherwise wait for a DMA worker. This keeps
-CPU-side scene traversal active, but does not emulate rendered output or
-GS/DMA side effects.
+By default, `mp-oracle` invokes `Game_Run` once per replay frame, matching the
+single-frame probe path. It advances `GameState+0x3C`, `+0x34`, and `+0x38`
+itself; this does not run `GameFlow_Main` scheduling or `Game_Draw`, so it is
+for isolated probes, not complete-match state parity.
+The wrapper also accepts `--game-flow` to opt into one `GameFlow_Main` call
+per frame and its normal `Game_Run`/`Game_Draw` gating. That optional path skips
+object-matrix submission leaves; `PS2StartCalcPacket` releases the
+buffer-completion poll that would otherwise wait for a DMA worker. It exercises
+CPU-side scene traversal but does not emulate rendered output, GS/DMA effects, or the actual
+rendering pipeline, and is not a complete replacement for a running game.
 
 Bot animation is recorded under `pl[4..7].anim`, when the `obj_tag` has a valid
 animation owner. `owner_ptr` is read from `obj_tag+0xDC`; the actual
