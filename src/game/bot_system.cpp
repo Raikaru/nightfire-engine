@@ -25,7 +25,14 @@ namespace {
 
 constexpr float kSpawnHeight = 1.6f;   // MP_RegisterSpawnPoint stores the floor point + 1.6
 
-std::string fmt(const char* f, ...) __attribute__((format(printf, 1, 2)));
+#if defined(__GNUC__) || defined(__clang__)
+#define NF_BOT_PRINTF_FORMAT(format_index, first_argument) \
+    __attribute__((format(printf, format_index, first_argument)))
+#else
+#define NF_BOT_PRINTF_FORMAT(format_index, first_argument)
+#endif
+std::string fmt(const char* f, ...) NF_BOT_PRINTF_FORMAT(1, 2);
+#undef NF_BOT_PRINTF_FORMAT
 std::string fmt(const char* f, ...) {
     char buf[320];
     va_list ap;

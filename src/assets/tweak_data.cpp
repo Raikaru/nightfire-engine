@@ -3,8 +3,8 @@
 // read from ACTION.ELF (nm-verified symbols), so a data change throws instead of mis-showing.
 #include "assets/tweak_data.hpp"
 
-#include <cstring>
 #include <cmath>
+#include <cstring>
 
 namespace nf {
 

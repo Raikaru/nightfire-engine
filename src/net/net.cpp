@@ -8,14 +8,39 @@
 #include <string>
 #include <utility>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 namespace nf::net {
 namespace {
+#ifdef _WIN32
+using NativeSocket = SOCKET;
+using SocketLength = int;
+constexpr NativeSocket kInvalidSocket = INVALID_SOCKET;
+constexpr int kSocketError = SOCKET_ERROR;
+#else
+using NativeSocket = int;
+using SocketLength = socklen_t;
+constexpr NativeSocket kInvalidSocket = -1;
+constexpr int kSocketError = -1;
+#endif
+
+void close_socket(NativeSocket socket) {
+#ifdef _WIN32
+    closesocket(socket);
+#else
+    close(socket);
+#endif
+}
 constexpr std::uint32_t kMagic = 0x544e464e;  // "NFNT" on the wire
 constexpr std::size_t kHeaderBytes = 20;
 constexpr std::size_t kMaxNameBytes = 32;
@@ -819,31 +844,79 @@ std::string hash_hex(const std::array<std::uint8_t,kDataHashBytes>& hash) {
 }
 
 struct UdpSocket::Impl {
-    int fd=-1;
+    NativeSocket fd = kInvalidSocket;
     struct Delayed { std::chrono::steady_clock::time_point due; sockaddr_in peer; std::vector<std::uint8_t> data; };
     std::deque<Delayed> delayed;
-    std::uint32_t rng=0x4e46504e;
+    std::uint32_t rng = 0x4e46504e;
+#ifdef _WIN32
+    bool winsock_started = false;
+    Impl() {
+        WSADATA data{};
+        winsock_started = WSAStartup(MAKEWORD(2, 2), &data) == 0;
+    }
+    ~Impl() {
+        if (fd != kInvalidSocket) close_socket(fd);
+        if (winsock_started) WSACleanup();
+    }
+#else
+    ~Impl() {
+        if (fd != kInvalidSocket) close_socket(fd);
+    }
+#endif
 };
+
 UdpSocket::UdpSocket() : impl_(new Impl) {}
-UdpSocket::~UdpSocket(){if(impl_){if(impl_->fd>=0) close(impl_->fd);delete impl_;}}
-bool UdpSocket::valid() const{return impl_&&impl_->fd>=0;}
-bool UdpSocket::bind(std::uint16_t port,std::string* error) {
-    if(!impl_) return false;
-    if(impl_->fd>=0) close(impl_->fd);
-    impl_->fd=socket(AF_INET,SOCK_DGRAM,0);
-    if(impl_->fd<0){if(error)*error="socket() failed";return false;}
-    sockaddr_in addr{};addr.sin_family=AF_INET;addr.sin_addr.s_addr=htonl(INADDR_ANY);addr.sin_port=htons(port);
-    if(::bind(impl_->fd,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))<0){if(error)*error="bind() failed";close(impl_->fd);impl_->fd=-1;return false;}
-    const int flags=fcntl(impl_->fd,F_GETFL,0);fcntl(impl_->fd,F_SETFL,flags|O_NONBLOCK);
-    impl_->rng=sim_.random_seed; return true;
+UdpSocket::~UdpSocket() { delete impl_; }
+bool UdpSocket::valid() const { return impl_ && impl_->fd != kInvalidSocket; }
+
+bool UdpSocket::bind(std::uint16_t port, std::string* error) {
+    if (!impl_) return false;
+    if (impl_->fd != kInvalidSocket) close_socket(impl_->fd);
+    impl_->fd = kInvalidSocket;
+#ifdef _WIN32
+    if (!impl_->winsock_started) {
+        if (error) *error = "WSAStartup() failed";
+        return false;
+    }
+#endif
+    const NativeSocket fd = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (fd == kInvalidSocket) {
+        if (error) *error = "socket() failed";
+        return false;
+    }
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(port);
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == kSocketError) {
+        if (error) *error = "bind() failed";
+        close_socket(fd);
+        return false;
+    }
+#ifdef _WIN32
+    u_long nonblocking = 1;
+    if (ioctlsocket(fd, FIONBIO, &nonblocking) == SOCKET_ERROR) {
+        if (error) *error = "ioctlsocket(FIONBIO) failed";
+        close_socket(fd);
+        return false;
+    }
+#else
+    const int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+#endif
+    impl_->fd = fd;
+    impl_->rng = sim_.random_seed;
+    return true;
 }
+
 bool UdpSocket::enable_broadcast(std::string* error) {
     if (!valid()) {
         if (error) *error = "socket is not bound";
         return false;
     }
     const int enabled = 1;
-    if (setsockopt(impl_->fd, SOL_SOCKET, SO_BROADCAST, &enabled, sizeof(enabled)) < 0) {
+    if (setsockopt(impl_->fd, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&enabled),
+                   int(sizeof(enabled))) == kSocketError) {
         if (error) *error = "setsockopt(SO_BROADCAST) failed";
         return false;
     }
@@ -880,8 +953,9 @@ bool UdpSocket::send(std::string_view host, std::uint16_t port, const Packet& pa
         impl_->delayed.insert(at, std::move(delayed));
         return true;
     }
-    return sendto(impl_->fd, data.data(), data.size(), 0, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) ==
-           ssize_t(data.size());
+    const int sent = ::sendto(impl_->fd, reinterpret_cast<const char*>(data.data()), int(data.size()), 0,
+                              reinterpret_cast<sockaddr*>(&addr), int(sizeof(addr)));
+    return sent == int(data.size());
 }
 
 std::vector<Received> UdpSocket::receive() {
@@ -890,15 +964,16 @@ std::vector<Received> UdpSocket::receive() {
     const auto now = std::chrono::steady_clock::now();
     while (!impl_->delayed.empty() && impl_->delayed.front().due <= now) {
         auto& delayed = impl_->delayed.front();
-        sendto(impl_->fd, delayed.data.data(), delayed.data.size(), 0, reinterpret_cast<sockaddr*>(&delayed.peer),
-               sizeof(delayed.peer));
+        ::sendto(impl_->fd, reinterpret_cast<const char*>(delayed.data.data()), int(delayed.data.size()), 0,
+                 reinterpret_cast<sockaddr*>(&delayed.peer), int(sizeof(delayed.peer)));
         impl_->delayed.pop_front();
     }
     std::array<std::uint8_t, kMaxDatagramBytes + 1> buffer{};
     for (;;) {
         sockaddr_in peer{};
-        socklen_t len = sizeof(peer);
-        const auto size = recvfrom(impl_->fd, buffer.data(), buffer.size(), 0, reinterpret_cast<sockaddr*>(&peer), &len);
+        SocketLength len = SocketLength(sizeof(peer));
+        const int size = ::recvfrom(impl_->fd, reinterpret_cast<char*>(buffer.data()), int(buffer.size()), 0,
+                                    reinterpret_cast<sockaddr*>(&peer), &len);
         if (size <= 0) break;
         const auto decoded = decode(std::span<const std::uint8_t>(buffer.data(), std::size_t(size)));
         if (!decoded) continue;
