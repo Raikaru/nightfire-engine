@@ -539,6 +539,9 @@ void apply_animation_root_motion(Drone& d, const Vec3& root_delta, float yaw) {
 }
 
 void collision_step(Drone& d) {
+    const bool source_collision_valid = d.anim.source_collision_valid;
+    const bool source_collision_due = d.anim.source_collision_due;
+    const bool source_gravity_due = d.anim.source_gravity_due;
     // NDrone2_Collision rebuilds the bot capsule from the current animation height.
     const CollisionWorld& world = d.sys->collision();
     const FrameTiming timing = d.sys->timing();
@@ -563,7 +566,7 @@ void collision_step(Drone& d) {
     }
 
     const float h = d.stand_height;
-    if (!d.anim.source_collision_valid || d.anim.source_collision_due) {
+    if (!source_collision_valid || source_collision_due) {
         CylinderQuery q;
         if (d.is_bot() && d.character) {
             // Source Drone+0xa0 is root_height - 0.02; NDrone2_Collision rebuilds
@@ -596,7 +599,7 @@ void collision_step(Drone& d) {
     d.mv.seeded_capsule_valid = false;
     d.anim.source_collision_valid = false;
     // Drone_CollisionHandler applies NDrone2_DoGravity after collision and feet resolution.
-    if (!d.mv.disabled) {
+    if (!d.mv.disabled && (!source_collision_valid || source_gravity_due)) {
         if (!d.on_ground || d.ground_normal_y < 0.5f) {
             d.fall_velocity[1] -= 9.8f * timing.rec();
         } else {

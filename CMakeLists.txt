@@ -1,4 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
+if(NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "13.3" CACHE STRING "Minimum supported macOS version")
+endif()
 project(nightfire_engine LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -210,6 +213,7 @@ install(DIRECTORY tools/art/ DESTINATION share/nightfire/tools/art
   FILES_MATCHING PATTERN "*.py" PATTERN "*.txt")
 install(DIRECTORY assets/shaders/ DESTINATION share/nightfire/shaders OPTIONAL)
 install(FILES README.md DESTINATION share/doc/nightfire)
+install(FILES assets/nightfire.png DESTINATION share/icons/hicolor/256x256/apps)
 
 set(CPACK_PACKAGE_NAME "nightfire-engine")
 set(CPACK_PACKAGE_VENDOR "nightfire-engine contributors")
