@@ -3,8 +3,8 @@
 
 #include <algorithm>
 #include <bit>
-#include <cmath>
 #include <cstdio>
+#include <cmath>
 
 #include "game/drone_anim.hpp"
 #include "game/drone_system.hpp"
@@ -14,6 +14,27 @@
 namespace nf::drone {
 
 namespace {
+// The original movement path uses COP1/VU0 single-precision ops, which truncate toward zero (docs/ee.md).
+float add_ee_toward_zero(float a, float b) {
+    const double exact = double(a) + double(b);
+    const float rounded = static_cast<float>(exact);
+    if ((exact < 0.0 && double(rounded) < exact) || (exact > 0.0 && double(rounded) > exact))
+        return std::nextafter(rounded, 0.0f);
+    return rounded;
+}
+// Exact binary64 intermediates let the normal-range float operands reproduce a single truncated .s result.
+float mul_ee_toward_zero(float a, float b) {
+    const double exact = double(a) * double(b);
+    const float rounded = static_cast<float>(exact);
+    if ((exact < 0.0 && double(rounded) < exact) || (exact > 0.0 && double(rounded) > exact))
+        return std::nextafter(rounded, 0.0f);
+    return rounded;
+}
+
+
+
+
+
 
 
 // +x of the object frame is the character's LEFT (the original's convention: CanStrafeLeft moves by +x).
@@ -483,6 +504,8 @@ void move_step(Drone& d) {
     if (d.anim.source_gate_valid) d.anim.source_root_yaw = d.yaw;
     // NDrone2_Move 0x14fe?: steering, then the anim root motion moves the object (AnimObjectUpdate + AnimSeqTick).
     const float rec = d.sys->timing().rec();
+    const float yaw_before = d.yaw;
+    const float dest_before = d.mv.dest_angle;
     if (!d.mv.disabled) {
         // Steer: heading error turned by a fraction each tick (0.1 per 60 Hz frame, DefaultInit +0x4a0).
         const float err = angle_diff(d.yaw, d.mv.dest_angle);
@@ -494,6 +517,10 @@ void move_step(Drone& d) {
         const float err = angle_diff(d.yaw, d.mv.dest_angle);
         d.yaw = wrap_pi(d.yaw + err * std::min(1.0f, 0.1f * 60.0f / d.rate()));
     }
+    if (d.player_slot == 4)
+        std::fprintf(stderr, "TURN %u %08x %08x %08x\n", d.now(),
+                     std::bit_cast<std::uint32_t>(yaw_before), std::bit_cast<std::uint32_t>(dest_before),
+                     std::bit_cast<std::uint32_t>(d.yaw));
     if (!d.mv.disabled) {
         // DroneMove_SetBoundryFlags: which sides are blocked within 0.5 m.
         std::uint32_t f = 0;
@@ -510,18 +537,21 @@ void move_step(Drone& d) {
         source_gate && !d.anim.source_update_due && !d.mv.disabled && d.anim.step > 0.0f;
     Vec3 w = source_gate ? Vec3{} : to_world({rm[0], d.mv.disabled ? rm[1] : 0.0f, rm[2]}, d.yaw);
     if (source_fallback) {
-        w = {std::sin(d.yaw) * d.anim.step, 0.0f, std::cos(d.yaw) * d.anim.step};
+        const float sin_yaw = weap::ps2_sin(d.yaw);
+        const float cos_yaw = weap::ps2_sin(add_ee_toward_zero(d.yaw, 1.5707964f));
+        w = {mul_ee_toward_zero(sin_yaw, d.anim.step), 0.0f, mul_ee_toward_zero(cos_yaw, d.anim.step)};
     } else if (!source_gate && !d.mv.disabled && d.mv.have_dest && (w[0] == 0.0f && w[2] == 0.0f) &&
                d.anim.step > 0.0f) {
         // Legacy/non-v5 no-root fallback; v5 uses the source Drone_Control gate above.
         w = {std::sin(d.yaw) * d.anim.step * d.sys->timing().FRAME_RATE_MUL, 0.0f,
              std::cos(d.yaw) * d.anim.step * d.sys->timing().FRAME_RATE_MUL};
     }
-    d.pos += w;
-    if (d.player_slot == 4)
-        std::fprintf(stderr, "MOVE %u %08x %08x %08x\n", d.now(),
-                     std::bit_cast<std::uint32_t>(w[2]), std::bit_cast<std::uint32_t>(d.pos[2]),
-                     std::bit_cast<std::uint32_t>(before[2]));
+    if (source_fallback) {
+        d.pos[0] = add_ee_toward_zero(d.pos[0], w[0]);
+        d.pos[2] = add_ee_toward_zero(d.pos[2], w[2]);
+    } else {
+        d.pos += w;
+    }
     d.mv.speed = dist2d(before, d.pos);
     d.velocity = (d.pos - before) * d.rate();
     // DroneMove_NoBunching: keep drones from stacking on one spot.
@@ -652,8 +682,6 @@ void collision_step(Drone& d, const Vec3& pre_control_pos) {
     if (source_feet_delta_valid && !source_hit_list_present && d.on_ground && source_feet_delta > -0.1f) {
         d.pos[1] -= source_feet_delta * 0.125f;
     }
-    if (d.player_slot == 4)
-        std::fprintf(stderr, "COLL %u %08x\n", d.now(), std::bit_cast<std::uint32_t>(d.pos[2]));
 
 }
 
