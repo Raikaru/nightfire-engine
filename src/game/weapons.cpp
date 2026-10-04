@@ -906,10 +906,7 @@ void WeaponSystem::weapon_firing(int slot, PlayerWeapons& p, World& world, Frame
     const bool state_ok = p.anim_state == WeaponAnim::Idle || p.anim_state == WeaponAnim::FireHold ||
                           (p.anim_state == WeaponAnim::Firing && !d.has(wf1::kNoRetrigger));
     if (p.cooldown > 0.0f || !state_ok || !gate) return;
-    if (p.shots_left <= 0) {
-        p.shots_left = 0;
-        return;
-    }
+    if (p.shots_left <= 0) return;
     --p.shots_left;
     if (!round_to_fire(p, p.current, need, need)) return;
     p.cooldown = std::max(1.0f, float(d.fire_interval));

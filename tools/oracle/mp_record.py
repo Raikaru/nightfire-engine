@@ -234,20 +234,22 @@ ANIM_SEQ_RAW_SIZE = 0xB0
 ANIM_MAX_LAYERS = 64
 
 
-def refresh_animation_slot(pine, cache, k):
-    """Resolve a bot's sAnimObject and body-layer chain from its obj_tag owner."""
-    obj = cache["objs"][4 + k]
+def refresh_animation_slot(pine, cache, k, obj=None, kind="bot"):
+    """Resolve the sAnimObject and body-layer chain behind an obj_tag owner."""
+    bucket = cache["bot_anim"] if kind == "bot" else cache["human_anim"]
+    if obj is None:
+        obj = cache["objs"][4 + k]
     if not obj:
-        cache["bot_anim"].pop(k, None)
+        bucket.pop(k, None)
         return
     obj_raw = pine.read_block(obj, 0x100)
     owner = struct.unpack_from("<I", obj_raw, ANIM_OWNER_OFFSET)[0]
     if not valid_ee_pointer(owner, 0x120):
-        cache["bot_anim"].pop(k, None)
+        bucket.pop(k, None)
         return
     anim = owner + ANIM_SUBOBJECT_OFFSET
     if not valid_ee_pointer(anim + 0xCC, 4):
-        cache["bot_anim"].pop(k, None)
+        bucket.pop(k, None)
         return
     head = pine.read32(anim + ANIM_LAYER_HEAD_OFFSET)
     layers = []
@@ -268,7 +270,7 @@ def refresh_animation_slot(pine, cache, k):
             "seq_primary": seq_primary if valid_ee_pointer(seq_primary, ANIM_SEQ_RAW_SIZE) else 0,
         })
         cursor = struct.unpack_from("<I", raw, 0x48)[0]
-    cache["bot_anim"][k] = {
+    bucket[k] = {
         "obj": obj, "owner": owner, "anim": anim, "head": head,
         "layers": layers, "chain_complete": chain_complete,
     }
@@ -278,11 +280,25 @@ def refresh_animations(pine, cache):
     for k in range(4):
         refresh_animation_slot(pine, cache, k)
 
+def add_animation_ranges(ranges, tags, k, state, prefix):
+    anim = state["anim"]
+    tags += [(f"{prefix}_list_head", k), (f"{prefix}_root_height", k),
+             (f"{prefix}_distance_step", k), (f"{prefix}_distance_accum", k),
+             (f"{prefix}_foot_height", k)]
+    ranges += [(anim + 0x2C, 4), (anim + 0x5C, 4),
+               (anim + 0x64, 4), (anim + 0x6C, 4), (anim + 0xCC, 4)]
+    for index, layer in enumerate(state["layers"]):
+        tags.append((f"{prefix}_layer_raw", (k, index)))
+        ranges.append((layer["address"], ANIM_LAYER_RAW_SIZE))
+        if layer["seq_primary"]:
+            tags.append((f"{prefix}_seq_raw", (k, index)))
+            ranges.append((layer["seq_primary"], ANIM_SEQ_RAW_SIZE))
 
-def anim_layer_rows(bytag, k, descriptor):
+
+def anim_layer_rows(bytag, k, descriptor, prefix="anim"):
     layers = []
     for index, layer in enumerate(descriptor["layers"]):
-        raw = bytag[("anim_layer_raw", (k, index))]
+        raw = bytag[(f"{prefix}_layer_raw", (k, index))]
         flags = struct.unpack_from("<I", raw, 0x78)[0]
         drive = raw[0xB4]
         blend_time, blend_duration = struct.unpack_from("<2f", raw, 0xA8)
@@ -291,7 +307,7 @@ def anim_layer_rows(bytag, k, descriptor):
         fade_direction = "in" if direction > 0 else "out" if direction < 0 else "steady"
         sequence = None
         seq_addr = layer["seq_primary"]
-        seq_raw = bytag.get(("anim_seq_raw", (k, index)))
+        seq_raw = bytag.get((f"{prefix}_seq_raw", (k, index)))
         if seq_addr and seq_raw is not None:
             seq_flags = struct.unpack_from("<I", seq_raw, 0x98)[0]
             sample_ptr = struct.unpack_from("<I", seq_raw, 0x84)[0]
@@ -337,6 +353,24 @@ def anim_layer_rows(bytag, k, descriptor):
             "sequence": sequence,
         })
     return layers
+
+def animation_record(bytag, k, state, prefix="anim"):
+    return {
+        "owner_ptr": state["owner"],
+        "s_anim_object_ptr": state["anim"],
+        "layer_head_ptr": state["head"],
+        "layer_order": "oldest_to_newest",
+        "layers_complete": state["chain_complete"],
+        "root_height": struct.unpack(
+            "<f", bytag[(f"{prefix}_root_height", k)])[0],
+        "distance_step": struct.unpack(
+            "<f", bytag[(f"{prefix}_distance_step", k)])[0],
+        "distance_accumulator": struct.unpack(
+            "<f", bytag[(f"{prefix}_distance_accum", k)])[0],
+        "foot_height": struct.unpack(
+            "<f", bytag[(f"{prefix}_foot_height", k)])[0],
+        "layers": anim_layer_rows(bytag, k, state, prefix),
+    }
 
 
 
@@ -479,7 +513,7 @@ def main():
              "ports": [], "dynamic_head": 0, "dynamic_members": set(),
              "dynamic_scan_ok": True, "projectiles": {}, "goal_refs": {}, "ai_paths": {},
              "objective_ptrs": [], "route_nodes": {}, "weapon_anim_targets": {},
-             "bot_anim": {}}
+             "bot_anim": {}, "human_anim": {}}
     def resolve(pine):
         """(Re)resolve all pointer caches with unguarded reads; caller retries."""
         settings = pine.read_block(A.PLAYER_SETTING, A.PLAYER_SETTING_STRIDE * 4)
@@ -493,6 +527,7 @@ def main():
                 cache["bl"][s] = struct.unpack_from("<I", od, A.OBJ_BL)[0]
                 cache["cb"][s] = struct.unpack_from("<I", od, A.OBJ_COLL)[0]
         cache["weapon_anim_targets"] = {}
+        cache["human_anim"] = {}
         if args.seedable:
             for slot, bl in cache["bl"].items():
                 if not valid_ee_pointer(bl + 0x7E8, 4):
@@ -541,6 +576,11 @@ def main():
         if args.seedable:
             refresh_ai_paths(pine, cache)
             refresh_animations(pine, cache)
+            if args.weapon_anim_raw:
+                for slot in range(n_humans):
+                    refresh_animation_slot(
+                        pine, cache, slot,
+                        obj=cache["weapon_anim_targets"].get(slot, 0), kind="human")
         cache["pkcount"] = struct.unpack("<H", pine.read_block(
             A.MPSETTINGS + A.MPS_PICKUP_COUNT, 2))[0]
         return objs
@@ -626,19 +666,10 @@ def main():
                     tags.append(("route_nodes", k))
                     ranges.append((route_node[0], route_node[2]))
             for k, state in cache["bot_anim"].items():
-                anim = state["anim"]
-                tags += [("anim_list_head", k), ("anim_root_height", k),
-                         ("anim_distance_step", k), ("anim_distance_accum", k),
-                         ("anim_foot_height", k)]
-                ranges += [(anim + 0x2C, 4), (anim + 0x5C, 4),
-                           (anim + 0x64, 4), (anim + 0x6C, 4),
-                           (anim + 0xCC, 4)]
-                for index, layer in enumerate(state["layers"]):
-                    tags.append(("anim_layer_raw", (k, index)))
-                    ranges.append((layer["address"], ANIM_LAYER_RAW_SIZE))
-                    if layer["seq_primary"]:
-                        tags.append(("anim_seq_raw", (k, index)))
-                        ranges.append((layer["seq_primary"], ANIM_SEQ_RAW_SIZE))
+                add_animation_ranges(ranges, tags, k, state, "anim")
+            if args.weapon_anim_raw:
+                for slot, state in cache["human_anim"].items():
+                    add_animation_ranges(ranges, tags, slot, state, "human_anim")
             for k, state in cache["bot_anim"].items():
                 owner = state["owner"]
                 if valid_ee_pointer(owner, A.CB_RAW_SIZE):
@@ -786,6 +817,9 @@ def main():
                         cache["weapon_anim_targets"][slot] = target
                     else:
                         cache["weapon_anim_targets"].pop(slot, None)
+                    if args.weapon_anim_raw:
+                        refresh_animation_slot(
+                            pine, cache, slot, obj=target, kind="human")
                     pointer_changed = True
             for k in range(4):
                 state = cache["bot_anim"].get(k)
@@ -816,6 +850,43 @@ def main():
                         refresh_animation_slot(pine, cache, k)
                         pointer_changed = True
                         break
+            if args.weapon_anim_raw:
+                for slot in range(n_humans):
+                    state = cache["human_anim"].get(slot)
+                    target = cache["weapon_anim_targets"].get(slot, 0)
+                    raw_obj = bytag.get(("weapon_anim_raw", slot))
+                    if raw_obj is None:
+                        continue
+                    owner = struct.unpack_from("<I", raw_obj, ANIM_OWNER_OFFSET)[0]
+                    if state is None:
+                        if valid_ee_pointer(owner, 0x120):
+                            refresh_animation_slot(
+                                pine, cache, slot, obj=target, kind="human")
+                            pointer_changed = True
+                        continue
+                    head = struct.unpack(
+                        "<I", bytag[("human_anim_list_head", slot)])[0]
+                    if (owner != state["owner"] or head != state["head"]
+                            or state["obj"] != target):
+                        refresh_animation_slot(
+                            pine, cache, slot, obj=target, kind="human")
+                        pointer_changed = True
+                        continue
+                    for index, layer in enumerate(state["layers"]):
+                        raw = bytag[("human_anim_layer_raw", (slot, index))]
+                        next_ptr = struct.unpack_from("<I", raw, 0x48)[0]
+                        seq_ptr = struct.unpack_from("<I", raw, 0x50)[0]
+                        seq_ptr = seq_ptr if valid_ee_pointer(
+                            seq_ptr, ANIM_SEQ_RAW_SIZE) else 0
+                        expected_next = (
+                            state["layers"][index + 1]["address"]
+                            if index + 1 < len(state["layers"]) else 0)
+                        if (next_ptr != expected_next
+                                or seq_ptr != layer["seq_primary"]):
+                            refresh_animation_slot(
+                                pine, cache, slot, obj=target, kind="human")
+                            pointer_changed = True
+                            break
             for k in range(4):
                 drone_raw = bytag.get(("dr_raw", k))
                 if drone_raw is None:
@@ -1114,22 +1185,12 @@ def main():
                 entry["other"] = oth
                 anim_state = cache["bot_anim"].get(k)
                 if anim_state:
-                    entry["anim"] = {
-                        "owner_ptr": anim_state["owner"],
-                        "s_anim_object_ptr": anim_state["anim"],
-                        "layer_head_ptr": anim_state["head"],
-                        "layer_order": "oldest_to_newest",
-                        "layers_complete": anim_state["chain_complete"],
-                        "root_height": struct.unpack(
-                            "<f", bytag[("anim_root_height", k)])[0],
-                        "distance_step": struct.unpack(
-                            "<f", bytag[("anim_distance_step", k)])[0],
-                        "distance_accumulator": struct.unpack(
-                            "<f", bytag[("anim_distance_accum", k)])[0],
-                        "foot_height": struct.unpack(
-                            "<f", bytag[("anim_foot_height", k)])[0],
-                        "layers": anim_layer_rows(bytag, k, anim_state),
-                    }
+                    entry["anim"] = animation_record(bytag, k, anim_state)
+            if s < n_humans and args.weapon_anim_raw:
+                anim_state = cache["human_anim"].get(s)
+                if anim_state:
+                    entry["anim"] = animation_record(
+                        bytag, s, anim_state, "human_anim")
             parts.append(entry)
         rec["pl"] = parts
         if args.seedable:

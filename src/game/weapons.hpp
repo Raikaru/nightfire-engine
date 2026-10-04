@@ -240,6 +240,7 @@ public:
     }
 
 private:
+    friend class MpSeedImporter;
     // One thing a bullet can hit: a player capsule or a registered target.
     struct Victim {
         int id;

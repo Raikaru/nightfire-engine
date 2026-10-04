@@ -271,6 +271,77 @@ std::vector<std::byte> raw_for(const Json& object, const char* key, std::size_t 
     return result;
 }
 
+void restore_weapon_anim_layers(PlayerWeapons& weapon, const Json& anim) {
+    if (!anim.at("layers_complete").boolean() ||
+        anim.at("layer_order").string() != "oldest_to_newest")
+        throw std::runtime_error("MP seed: human weapon animation-layer snapshot is incomplete");
+    const auto& rows = anim.at("layers").array();
+    if (rows.size() > 64)
+        throw std::runtime_error("MP seed: too many human weapon animation layers");
+
+    std::vector<std::vector<std::byte>> raw_layers;
+    raw_layers.reserve(rows.size());
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> layer_nodes;
+    layer_nodes.reserve(rows.size());
+    for (const Json& row : rows) {
+        raw_layers.push_back(raw_for(row, "raw", 0xc0));
+        layer_nodes.emplace_back(uint_number(row.at("ptr")), u32_at(raw_layers.back(), 0x84));
+    }
+
+    std::vector<CharacterInstance::LayerSnapshot> layers;
+    layers.reserve(rows.size());
+    const float distance_step = float_number(anim.at("distance_step"));
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        const Json& row = rows[i];
+        const auto& raw = raw_layers[i];
+        CharacterInstance::LayerSnapshot layer;
+        layer.script = uint_number(row.at("script_id"));
+        layer.flags = uint_number(row.at("flags"));
+        layer.id = u32_at(raw, 0x84);
+        layer.frame = float_number(row.at("frame"));
+        layer.previous_frame = float_number(row.at("previous_frame"));
+        layer.speed = float_number(row.at("speed"));
+        layer.blend_time = float_number(row.at("blend_time"));
+        layer.blend_duration = float_number(row.at("blend_duration"));
+        const std::string_view fade = row.at("fade_direction").string();
+        layer.direction = fade == "in" ? 1 : fade == "out" ? -1 : 0;
+        layer.drive_type = int_number(row.at("drive_type"));
+        if (layer.drive_type == 2) {
+            const std::uint32_t partner = uint_number(row.at("phase_partner_ptr"));
+            for (const auto& [address, id] : layer_nodes)
+                if (address == partner) layer.primary = id;
+            if (partner && layer.primary == 0)
+                throw std::runtime_error("MP seed: phase partner is outside the human weapon animation list");
+        }
+        layer.pair_weight = float_number(row.at("pair_weight"));
+        layer.distance_step = distance_step;
+        layer.fresh = row.at("fresh").boolean();
+        layer.strafe = row.at("strafe").boolean();
+        const bool active = i + 1 == rows.size();
+        const bool stopped = row.at("deleting").boolean();
+        layer.loop = active && weapon.anim_state == WeaponAnim::Idle && !stopped;
+        layer.ended = !active || stopped;
+        if (const Json* sequence = row.find("sequence"); sequence && !sequence->is_null()) {
+            layer.have_root = sequence->at("have_root").boolean();
+            layer.previous_root = {float_number(index(sequence->at("previous_root"), 0)),
+                                   float_number(index(sequence->at("previous_root"), 1)),
+                                   float_number(index(sequence->at("previous_root"), 2))};
+            layer.root_delta = {float_number(index(sequence->at("last_root_delta"), 0)),
+                                float_number(index(sequence->at("last_root_delta"), 1)),
+                                float_number(index(sequence->at("last_root_delta"), 2))};
+        }
+        layers.push_back(layer);
+    }
+    if (!weapon.anim->restore_layers(layers, float_number(anim.at("distance_accumulator"))))
+        throw std::runtime_error("MP seed: unsupported human weapon animation layer");
+
+    const std::uint32_t active_script = rows.empty() ? 0 : uint_number(rows.back().at("script_id"));
+    weapon.anim_script = (active_script >> 24) == 0x06 ? active_script : 0;
+    weapon.anim_cmd_next = 0;
+    weapon.anim_frame_prev = weapon.anim->frame();
+    weapon.anim_reverse = weapon.anim_state == WeaponAnim::AimOut;
+    weapon.reverse_frame = weapon.anim_reverse ? weapon.anim_frame_prev : 0.0f;
+}
 }  // namespace
 constexpr std::uint32_t kMpPickupsAddress = 0x2a4b50;
 constexpr std::uint32_t kMpPickupStride = 0xa0;
@@ -573,10 +644,19 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
             weapon_state->cooldown = float_number(timers.at("fire_cooldown"));
             weapon_state->last_gun = int_number(timers.at("last_gun"));
             weapon_state->last_gadget = int_number(timers.at("last_gadget"));
-            weapon_state->shots_left = int_number(timers.at("trigger_remaining"));
+            // Player_WeaponFiring decrements the 16-bit trigger counter, then branches on its sign; 0xffff is
+            // the source sentinel, not 65535 available shots.
+            weapon_state->shots_left = std::int16_t(int_number(timers.at("trigger_remaining")));
             weapon_state->muzzle_frames = int_number(timers.at("muzzle_timer"));
             if (const Json* anim_state = item.find("weapon_anim_state"))
                 weapon_state->anim_state = WeaponAnim(std::uint8_t(int_number(*anim_state)));
+            if (const Json* anim = item.find("anim")) {
+                if (!weapon_state->anim || weapon_state->anim_weapon != weapon_state->current)
+                    session.weapons().set_weapon_anim(*weapon_state);
+                if (!weapon_state->anim)
+                    throw std::runtime_error("MP seed: human weapon animation model is unavailable");
+                restore_weapon_anim_layers(*weapon_state, *anim);
+            }
             // The recorder captures BLData+0x7E8's pointed-to object state separately when available.
             weapon_state->lock_victim = item.at("autolock_target_slot").is_null() ? -1 : int_number(item.at("autolock_target_slot"));
             weapon_state->lock_yaw = f32_at(bl, 0x120);

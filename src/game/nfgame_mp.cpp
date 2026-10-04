@@ -15,6 +15,7 @@
 #include <stdexcept>
 
 #include "assets/elf.hpp"
+#include "assets/character.hpp"
 #include "assets/game_files.hpp"
 #include "assets/level.hpp"
 #include "game/arena_view.hpp"
@@ -228,6 +229,15 @@ int run_match(const MatchLaunch& request) {
                              if (bot_match) bot_match->install(s);
                          });
     if (bot_match) bot_match->start();
+    std::unique_ptr<CharacterBank> owned_weapon_bank;
+    CharacterBank* weapon_bank = nullptr;
+    if (bot_match) {
+        weapon_bank = &bot_match->bank();
+    } else {
+        owned_weapon_bank = open_character_bank(gf, bin_name);
+        weapon_bank = owned_weapon_bank.get();
+    }
+    session.weapons().set_bank(weapon_bank);
     if (importer) importer->restore(world, session, bot_match.get());
     if (options.log) session.log = [](const std::string& line) { std::printf("%s\n", line.c_str()); };
     ArenaSystem& arena = session.arena();

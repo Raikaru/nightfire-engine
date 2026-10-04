@@ -241,11 +241,16 @@ words, four controller inputs (`pad_all`), MP settings/game state, the eight
 blob (`objx`), and `objectives[]` records resolved from `MP_OBJ_EXT+0x84`
 back-pointers (`MPOBJECT* - 0xE0` gives the root object). Position, state,
 category/item, amount, timestamp, lifetime countdown, radar-hidden state, and
-four `visit_until` values from MPpickups+0x80 are included. Valid human
-weapon-animation pointers add the pointed-to `+0xF4` enum as
-`weapon_anim_state`. The root `assassin`, `target` and `golden_target` fields
+four `visit_until` values from MPpickups+0x80 are included. `pl[].pos` is
+rounded to 4 decimal places (yaw to 6); `pl[].obj_raw` preserves the original
+object bytes, with position at `+0x30` and yaw at `+0x54`, for stricter
+transform comparisons. Valid human weapon-animation pointers add the pointed-to
+`+0xF4` enum as `weapon_anim_state`. The root `assassin`, `target` and
 are participant-slot indices (or `-1`); corresponding raw pointer values are
-retained as `assassin_ptr`, `target_ptr`, and `golden_target_ptr`.
+retained as `assassin_ptr`, `target_ptr`, and `golden_target_ptr`. With
+`--weapon-anim-raw`, the 0x100-byte target is also emitted as
+`weapon_anim_raw`; its `+0xDC` owner pointer and owner+`0x70` sAnimObject
+resolve the shared layer/sequence schema at `pl[0..3].anim`.
 `golden_effect_handle` and `golden_effect_active` expose the GoldenEye effect
 actor; no remaining-effect tick value is mapped.
 Bot goal targets pointing to an objective descriptor (rather than directly to
@@ -255,12 +260,11 @@ seed reconstruction.
 
 For deterministic offline replay from an existing PCSX2 savestate, use
 `ee_oracle.py STATE.p2s OUT.jsonl --rows N [--inputs REC.jsonl]`. It runs the
-original `Game_Run` through `nfmips`, emits the P2S contents as row one, then
-advances GameState's frame/timer counters and the video-frame accumulator
-using `GameFlow_Main`'s `VIDEO_FRAME_RATE / FRAME_RATE_INT` edge, then applies
-the corresponding `pad_all` values before each following call. `N` includes
-the initial row; pad
-input must cover every frame after that row. Row numbers come from the saved
+original `Game_Run` through `nfmips`. Row one is the saved P2S; each following
+row advances GameState's frame/timer counters and video-frame accumulator using
+`GameFlow_Main`'s `VIDEO_FRAME_RATE / FRAME_RATE_INT` edge, then applies the
+corresponding `pad_all` values before the call. `N` includes the initial row;
+pad input must cover every frame after it. Row numbers come from the saved
 GameState counters, not the P2S filename or requested checkpoint frame. The
 input word is the raw active-high Sony tSlot mask (for example, Cross is
 `0x40` and R1 is `0x08`); stick bytes come from `pad_all[].s`. Add
