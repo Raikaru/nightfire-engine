@@ -196,6 +196,8 @@ private:
 bool anim_call(Drone& d, int blend, int dasc, int variant = 0, int end_state = 0, int end_msg = 0);
 // True if the drone's character can play `dasc` (DroneAnim_CanDoAnimState).
 bool anim_can_do(const Drone& d, int dasc, int variant = 0);
+// Computes the current source Drone_Control animation-update gate before movement/control.
+void prepare_source_animation_tick(Drone& d);
 // Per-tick: CallHandler, clip end handling, character tick and anim events (Drone_Control tail).
 void anim_update(Drone& d);
 // DroneAnim_PlayFiringAnim: firing states whose shot is tied to the Shoot clip (Drone::fire_lock). Returns true when the

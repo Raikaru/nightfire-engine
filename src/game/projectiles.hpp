@@ -25,6 +25,8 @@ struct Projectile {
     Vec3 stuck_normal{};         // surface normal a sticky projectile hangs on
     float damage_scale = 1.0f;   // Shooter::damage_scale
     float age = 0;               // ticks alive (for renderers)
+    Vec3 probe_start{};         // HITTEST probe start retained until Collide_Update consumes it
+    bool probe_pending = false; // hit probe is processed after the projectile update, next logic phase
     Vec3 previous_pos{};         // visual-only pose from the preceding logic tick
     std::uint16_t network_id = 0; // snapshot identity for render interpolation
 };

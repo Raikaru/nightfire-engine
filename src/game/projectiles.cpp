@@ -381,7 +381,6 @@ void WeaponSystem::bullet_hit(Projectile& b, const SegmentHit& hit, const Weapon
         const std::uint16_t snd = table_.surface(hit.surface).impact_sound;
         if (snd) sound(snd, hit.point, true);
     }
-    b.pos = hit.point;
     if (def.flags3 & wf3::kExplodes) {
         b.delete_me = true;   // before the blast so it does not detonate itself again
         explode_at(hit.point, def, b.owner, b.damage_scale);
@@ -424,16 +423,32 @@ void WeaponSystem::bullet_hit(Projectile& b, const SegmentHit& hit, const Weapon
             return;
         }
     }
-    b.state = Projectile::State::Hit;   // dead: removed by the caller
-    b.delete_me = true;
+    b.state = Projectile::State::Hit;   // state 2 remains live until Bullet_update marks it for deletion
 }
 
-// Bullet_update / Bullet_DoTrails (fuse) for one projectile; returns false when it is gone.
+
+// Bullet_update emits a HITTEST segment; Collide_Update consumes that segment after the next Game_Run hook.
 bool WeaponSystem::step_projectile(Projectile& b, World& world, FrameTiming timing, const std::vector<Victim>& victims) {
     if (b.delete_me) return false;
+    if (b.state == Projectile::State::Hit || b.state == Projectile::State::OutOfRange) {
+        b.delete_me = true;
+        return false;
+    }
     const WeaponDef& def = table_.weapon(b.weapon);
     const float mul = timing.mul();
     b.age += 1.0f;
+
+    // The original collision phase runs after the trace sample. Consume the previous frame's probe before
+    // updating this bullet, so a hit leaves the object at the source endpoint and damage appears this frame.
+    if (b.probe_pending) {
+        const SegmentHit hit =
+            trace_segment(world, b.probe_start, b.pos, b.owner, victims, (def.flags2 & wf2::kSolidWater) != 0);
+        b.probe_pending = false;
+        if (hit.world || hit.victim >= 0) {
+            bullet_hit(b, hit, def, b.dir);
+            return !b.delete_me;
+        }
+    }
 
     // Fuse of timed explosives (F3 & kTimedFuse): counts down FRAME_RATE_MUL per frame, mines armed by a
     // player do not expire. Stun rows (F3 & kFlashStun: stun/smoke grenades) run Bullet_DoTrails' stun block
@@ -470,7 +485,8 @@ bool WeaponSystem::step_projectile(Projectile& b, World& world, FrameTiming timi
         step_speed = (game_rng().frand(1.0f) + 0.5f) * b.speed;   // first frame: (Rand_FRand(1) + 0.5) * speed
         b.state = Projectile::State::Flying;
     } else if (def.range < b.travelled) {
-        return false;                               // state 4: out of range
+        b.state = Projectile::State::OutOfRange;
+        return true;
     }
     if ((def.flags2 & wf2::kGravity) && !b.resting) {
         // dir = normalise(dir * speed + WldGravity * dt^2), with speed in units per 60 Hz frame.
@@ -484,14 +500,16 @@ bool WeaponSystem::step_projectile(Projectile& b, World& world, FrameTiming timi
     b.travelled += step;
     if (b.travelled > def.range) step -= b.travelled - def.range;
     if (step <= 0.0f) return b.travelled <= def.range;
-    const Vec3 to = b.pos + b.dir * step;
+    const Vec3 from = b.pos;
+    const Vec3 to = from + b.dir * step;
+    b.probe_start = from;
+    b.pos = to;
     const SegmentHit hit =
-        trace_segment(world, b.pos, to, b.owner, victims, (def.flags2 & wf2::kSolidWater) != 0);
+        trace_segment(world, from, to, b.owner, victims, (def.flags2 & wf2::kSolidWater) != 0);
     if (hit.world || hit.victim >= 0) {
         bullet_hit(b, hit, def, b.dir);
         return !b.delete_me;
     }
-    b.pos = to;
     return true;
 }
 
@@ -513,6 +531,7 @@ Projectile* WeaponSystem::find_guided(int owner) {
     }
     return nullptr;
 }
+
 void WeaponSystem::detonate_owned(int owner, int weapon_id) {
     // Bullet_handle_object_destruction for the owner's live projectiles of one weapon.
     for (Projectile& b : projectiles_) {

@@ -246,6 +246,26 @@ retained as `assassin_ptr`, `target_ptr`, and `golden_target_ptr`.
 `golden_effect_handle` and `golden_effect_active` expose the GoldenEye effect
 actor; no remaining-effect tick value is mapped.
 
+For deterministic offline replay from an existing PCSX2 savestate, use
+`ee_oracle.py STATE.p2s OUT.jsonl --rows N [--inputs REC.jsonl]`. It runs the
+original `Game_Run` through `nfmips`, emits the P2S contents as row one, then
+advances the GameState frame/timer counters and applies the corresponding
+`pad_all` values before each following call. `N` includes the initial row; pad
+input must cover every frame after that row. Row numbers come from the saved
+GameState counters, not the P2S filename or requested checkpoint frame. The
+script feeds full RAM snapshots into the same `mp_record.py` decoder, so its
+JSONL uses the seedable v5 schema without a second decoder. Example:
+
+```sh
+python3 tools/oracle/ee_oracle.py frame-00013326.p2s replay.jsonl \
+  --nfmips build-MpOracle/nfmips --rows 341 --inputs pcsx2.jsonl
+```
+
+The headless caller returns success for kernel semaphore/event-flag services
+64–79 and SIF-DMA service 119; these have no separate EE workers in this
+frame-at-a-time run. Unknown syscall services still trap rather than silently
+passing.
+
 Bot animation is recorded under `pl[4..7].anim`, when the `obj_tag` has a valid
 animation owner. `owner_ptr` is read from `obj_tag+0xDC`; the actual
 `sAnimObject` pointer is `owner_ptr+0x70` (verified in `AnimObjectNew` and
@@ -490,6 +510,14 @@ weapon-slot clips 78/79 were one low (engine 115/229; PINE 116/230). Frame
 `bl_raw+440+12*weapon`; nfmips `Player_RoundToFire(weapon 6)` decremented
 only slot 6, leaving 78/79 unchanged. This rules out firing-phase timing and
 an import-offset error; the separate source update path remains unidentified.
+
+Seeded type-5 projectiles restore the source HITTEST start (`BU_tag+0x70`) and
+enable word (`+0xE4`) as well as the projectile pose. The source capture occurs
+before that pending segment is consumed [INFERENCE from the recorded segment
+and following-frame state transition], so a seeded tick sweeps it before
+advancing the projectile. Damage events from the weapon pass are drained in the
+same tick so lethal hits update MP death and kill credit without a one-frame
+delay.
 Those gaps can reject a row or cause observable next-tick drift. `--mp-rng X Y`
 sets only the engine's two RNG words; it does not import the other words or the
 game state.
@@ -506,11 +534,15 @@ absolute frames instead of restarting the match clock at zero.
 `mp_compare.py diff` aligns records by exact absolute `frame` values and
 reports every differing field, per-frame residuals and the first divergence.
 The comparator matches oracle `objectives[]` and engine `objs[]` by
-`(kind, team, occurrence)` rather than array/address order. It compares
-state/timer/carrier/damager/capturer fields and uses oracle `pos_0x40` for
-kinds 0, 1 and 3; it does not compare unverified target HP or draw masks.
-Projectile comparison inverts engine `resting` to oracle `in_air`; it omits
-oracle object yaw because the engine projectile state exposes direction instead.
+`(kind, team, occurrence)` rather than array/address order. For local humans it
+decodes current, selected and previous weapon IDs from the recorded collbody
+state and compares them alongside the engine weapon slots, ammo pools, timers,
+aim/autoaim, health, armour and damage-feedback state. It also compares each
+present MP slot's `last_attacker` and `last_killer` from `MPGame`. Objective
+state/timer/carrier/damager/capturer fields use oracle `pos_0x40` for kinds 0,
+1 and 3; unverified target HP and draw masks are not compared.
+oracle `in_air`; it omits oracle object yaw because the engine projectile state
+exposes direction instead.
 PINE savestate slots 10+ belong to the MP oracle (1-9 are Movement-2's); the
 slot number is stored by PCSX2, and JSONL recordings/logs are kept in
 `~/.cache/mp-oracle-tmp/`.
@@ -944,7 +976,7 @@ The `Drone+0x3e0` writer is `Collide_Update` → `Collide_Intersect`: `sqc2 vf5,
 
 The Team v5 seed-each window, logical frames 13326–13666 (341 aligned frames), now has 0/341 divergent fields at the 1 mm comparator tolerance. Slot 5's late descent was corrected by using source `Drone+0xa0` height (`anim.root_height - 0.02`) for its feet ray and snap delta; the source branch's push/snap exclusion also prevents an erroneous extra feet correction on non-null `obj+0xd0` hit lists.
 
-The Arena p5 residual came from source root-height scaling and `DroneAnim_PreTransCallback`, not collision handling. At logical frame 14730, source `AnimFrameResolve` writes root-motion Y `−0.010288775` after the callback replaces it with current `Drone+0xa0` minus prior `Drone+0xa0`; the unadjusted transformed vector is `−0.0119257001`. With `MPSettings+0x180=1`, source scales sAnimObject `+0x5c` by `0.8627321124` unless `sAnimObject+0x58` bit `0x400` is set; `AnimObjectNew` sets that bit iff `SkinDef::skeleton != 1`. The host now derives the scale from `CharacterInstance::skin().skeleton` and the MP setting, and imports the unscaled `+0x60` root-height offset from the seeded root height. It also applies the source pre-transform callback as an A0-height delta. Final seeded comparisons at the 1 mm tolerance are exact: Team 0/341, Arena outputs 14730–14791 0/62 and 14794–14932 0/139 divergent fields.
+The Arena p5 residual came from source root-height scaling and `DroneAnim_PreTransCallback`, not collision handling. At logical frame 14730, source `AnimFrameResolve` writes root-motion Y `−0.010288775` after the callback replaces it with current `Drone+0xa0` minus prior `Drone+0xa0`; the unadjusted transformed vector is `−0.0119257001`. With `MPSettings+0x180=1`, source scales sAnimObject `+0x5c` by `0.8627321124` unless `sAnimObject+0x58` bit `0x400` is set; `AnimObjectNew` sets that bit iff `SkinDef::skeleton != 1`. The host derives the scale from `CharacterInstance::skin().skeleton` and the MP setting, and imports the unscaled `+0x60` root-height offset from seeded source state (seed path only; ordinary runtime initialization remains separate). It retains the seeded callback enable/baseline and applies the A0-height delta on each subsequent animation update during continuous playback, not only on the seed-gated tick. Final seed-each comparisons at the 1 mm tolerance were exact: Team 0/341, Arena outputs 14730–14791 0/62 and 14794–14932 0/139 divergent fields.
 
 
 Restoring an in-progress bot state clears the runtime fresh-drone flag so the

@@ -381,10 +381,14 @@ public:
         int next_anim = 0;              // +0x594 Drone_AnimInfo +0xa chained anim after the clip ends
         int end_state = 0, end_msg = 0; // applied end handler (+0x596/+0x598)
         bool applied = false;           // +0x57b the request has been turned into a clip
-        bool clip_running = false;      // +0x579 non-looping clip not yet finished
         bool loop = true;
-        bool source_gate_valid = false; // one-tick v5 AnimObjectUpdate eligibility from source Drone_Control
-        bool source_update_due = true;  // NDrone2_DoAnimation or frame-stamp equality
+        bool clip_running = false;      // +0x579 non-looping clip not yet finished
+        bool source_gate_supported = false; // seed has the object fields needed to mirror Drone_Control eligibility
+        bool source_gate_valid = false;
+        bool source_update_due = true;
+        bool source_object_anim = false; // obj+0xfc
+        bool source_force_anim = false;  // Drone+0x538 != 0
+        std::uint32_t source_anim_stamp = 0; // Drone+0x580
         float source_root_yaw = 0;
         float source_root_height_offset = 0; // v5 sAnimObject+0x60 offset before the root-height scale
         float source_root_height_scale = 1.0f; // AnimFrameResolve multiplier, gated by MP and skin skeleton id

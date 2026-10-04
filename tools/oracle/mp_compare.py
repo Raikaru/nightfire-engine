@@ -210,6 +210,13 @@ def diff_fields(record, engine_objectives=()):
                 player["zoom"] = struct.unpack_from("<f", bl, 0x8d0)[0]
                 player["lock_yaw"] = struct.unpack_from("<f", bl, 0x120)[0]
                 player["lock_pitch"] = struct.unpack_from("<f", bl, 0x124)[0]
+        if isinstance(player.get("cb_raw"), str):
+            cb = bytes.fromhex(player["cb_raw"])
+            if len(cb) >= 0x65:
+                held = struct.unpack_from("<b", cb, 0x62)[0]
+                player.setdefault("weap", held if held > 0 else 71)
+                player.setdefault("weap_selected", struct.unpack_from("<b", cb, 0x63)[0])
+                player.setdefault("weap_previous", struct.unpack_from("<b", cb, 0x64)[0])
         if "out" not in player and player.get("type") in (0x11, 0x12):
             player["out"] = True
         elif "out" not in player and "type" in player:
@@ -256,8 +263,9 @@ def diff_fields(record, engine_objectives=()):
         common = {"pos", "yaw", "type", "state", "hp", "alive", "out", "mp_status"}
         if slot < 4:
             common |= {"arm", "dead", "vel", "fall_vel", "substate", "pitch", "foot", "zoom", "aim",
-                       "lock_victim", "lock_yaw", "lock_pitch", "ammo_pool", "weapon_slots",
-                       "weapon_timers", "weapon_anim_state"}
+                       "damage_flash", "pain_dir", "pain_alpha", "weap", "weap_selected", "weap_previous",
+                       "lock_victim", "lock_yaw", "lock_pitch", "ammo_pool", "weapon_slots", "weapon_timers",
+                       "weapon_anim_state"}
         else:
             common |= {"active_goal", "goal_type", "goal_kind", "goal_target"}
         player = {key: value for key, value in player.items() if key in common}
@@ -285,7 +293,10 @@ def diff_fields(record, engine_objectives=()):
                 fields[f"scores[{slot}].d"] = deaths
                 fields[f"scores[{slot}].p"] = points
                 if slot < len(players) and players[slot] is not None:
-                    fields[f"pl[{slot}].mp_status"] = struct.unpack_from("<H", raw_mpg, slot * 0x30 + 0x26)[0]
+                    offset = slot * 0x30
+                    fields[f"pl[{slot}].mp_status"] = struct.unpack_from("<H", raw_mpg, offset + 0x26)[0]
+                    fields[f"scores[{slot}].last_attacker"] = struct.unpack_from("<h", raw_mpg, offset + 0x20)[0]
+                    fields[f"scores[{slot}].last_killer"] = struct.unpack_from("<h", raw_mpg, offset + 0x28)[0]
         except (ValueError, struct.error):
             fields["mpg.invalid"] = True
 
@@ -296,7 +307,7 @@ def diff_fields(record, engine_objectives=()):
     for row in record.get("scores", []):
         slot = row.get("slot", row.get("idx"))
         if slot is not None:
-            for key in ("k", "d", "p"):
+            for key in ("k", "d", "p", "last_attacker", "last_killer"):
                 if key in row:
                     fields[f"scores[{slot}].{key}"] = row[key]
     if "mpg" not in record and "scores" in record:

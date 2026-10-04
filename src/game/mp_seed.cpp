@@ -546,10 +546,11 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
             PlayerWeapons* weapon_state = session.weapons().state(int(s));
             if (!weapon_state) throw std::runtime_error("MP seed: human weapon state is not initialized");
             // Player_CheckForDeath and Player_WeaponSelect read current/selected ids from
-            // the collbody weapon fields at +0x62/+0x63.
+            // the collbody weapon fields at +0x62/+0x63; +0x64 tracks the previous weapon.
             const int held = int(std::bit_cast<std::int8_t>(byte_at(cb, 0x62)));
             weapon_state->current = held > 0 ? held : 71;  // Player_WeaponNone
             weapon_state->selected = int(std::bit_cast<std::int8_t>(byte_at(cb, 0x63)));
+            weapon_state->previous = int(std::bit_cast<std::int8_t>(byte_at(cb, 0x64)));
             const auto& weapon_slots = item.at("weapon_slots").array();
             if (weapon_slots.size() != 0x55) throw std::runtime_error("MP seed: wrong human weapon-slot count");
             for (std::size_t w = 0; w < weapon_slots.size(); ++w) {
@@ -712,6 +713,8 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
         projectile.resting = uint_number(p.at("in_air")) == 0;
         const std::vector<std::byte> obj_raw = raw_for(p, "obj_raw", 0x100);
         const std::vector<std::byte> data_raw = raw_for(p, "data_raw", 0x108);
+        projectile.probe_start = vec3_at(data_raw, 0x70);
+        projectile.probe_pending = u16_at(data_raw, 0xe4) != 0;
         projectiles.push_back(projectile);
     }
     session.weapons().restore_projectiles_for_replay(std::move(projectiles));
@@ -800,14 +803,10 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                 bots::BotSystem::Bot* bot = system.bot_at_slot(s);
                 if (!bot || !bot->drone || !bot->drone->character)
                     throw std::runtime_error("MP seed: bot has no CharacterInstance for slot " + std::to_string(s));
-                const bool do_animation =
-                    (u32_at(drone, 0x4f8) & 0x80000u) != 0 &&
-                    (u16_at(drone, 0xd8) == 0x0c || float_number(anim->at("root_height")) == 0.0f ||
-                     std::to_integer<std::uint8_t>(obj[0xfc]) != 0 || u32_at(drone, 0x538) != 0 ||
-                     (u32_at(drone, 0x570) & 4u) == 0);
-                bot->drone->anim.source_gate_valid = true;
-                bot->drone->anim.source_update_due =
-                    do_animation || std::uint64_t(u32_at(drone, 0x580)) == frame;
+                bot->drone->anim.source_gate_supported = true;
+                bot->drone->anim.source_object_anim = byte_at(obj, 0xfc) != 0;
+                bot->drone->anim.source_force_anim = u32_at(drone, 0x538) != 0;
+                bot->drone->anim.source_anim_stamp = u32_at(drone, 0x580);
                 bot->drone->mv.root_motion = {};
                 std::vector<CharacterInstance::LayerSnapshot> layers;
                 layers.reserve(rows.array().size());
