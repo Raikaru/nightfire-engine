@@ -12,6 +12,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 DESTDIR="$work/AppDir" cmake --install "$build_dir" --prefix /usr
 mkdir -p "$work/AppDir/usr/bin"
+cp "$work/AppDir/usr/share/icons/hicolor/256x256/apps/nightfire.png" "$work/AppDir/nightfire.png"
 cat > "$work/AppDir/nightfire.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application

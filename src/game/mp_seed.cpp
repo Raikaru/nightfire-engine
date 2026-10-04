@@ -881,6 +881,8 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                     ((source_flags & 0x4u) != 0 ||
                      (source_mode_allows_collision && source_collision_predicate));
                 bot->drone->anim.source_collision_valid = true;
+                bot->drone->anim.source_hit_list_present = u32_at(obj, 0xd0) != 0;
+                bot->drone->anim.source_collision_push = vec3_at(drone, 0x3e0);
                 bot->drone->anim.source_root_height_offset =
                     float_number(anim->at("root_height")) - bot->drone->character->root_height();
             }

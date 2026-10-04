@@ -557,11 +557,13 @@ void collision_step(Drone& d) {
     }
 
     // NDrone2_Collision applies the AI-boundary push before Collide_Update builds the capsule hit list.
-    if (NavNetwork* nav = d.sys->nav()) {
-        Vec3 push{};
-        if (nav->bounds_push_vector(0.4f, nav->locate(d.pos), push)) {
-            d.pos[0] += push[0];
-            d.pos[2] += push[2];
+    if (!source_collision_valid || source_collision_due) {
+        if (NavNetwork* nav = d.sys->nav()) {
+            Vec3 push{};
+            if (nav->bounds_push_vector(0.4f, nav->locate(d.pos), push)) {
+                d.pos[0] += push[0];
+                d.pos[2] += push[2];
+            }
         }
     }
 
