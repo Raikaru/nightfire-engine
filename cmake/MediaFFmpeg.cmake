@@ -8,11 +8,12 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
 add_library(FFmpeg INTERFACE IMPORTED GLOBAL)
 target_link_libraries(FFmpeg INTERFACE PkgConfig::FFMPEG)
 if(WIN32 AND FFMPEG_ROOT)
-  file(GLOB FFMPEG_RUNTIME_DLLS CONFIGURE_DEPENDS "${FFMPEG_ROOT}/bin/*.dll")
+  file(TO_CMAKE_PATH "${FFMPEG_ROOT}" _ffmpeg_root)
+  file(GLOB FFMPEG_RUNTIME_DLLS CONFIGURE_DEPENDS "${_ffmpeg_root}/bin/*.dll")
   if(NOT FFMPEG_RUNTIME_DLLS)
-    message(FATAL_ERROR "No FFmpeg runtime DLLs found under ${FFMPEG_ROOT}/bin")
+    message(FATAL_ERROR "No FFmpeg runtime DLLs found under ${_ffmpeg_root}/bin")
   endif()
   install(FILES ${FFMPEG_RUNTIME_DLLS} DESTINATION bin)
-  install(FILES "${FFMPEG_ROOT}/LICENSE.txt" "${FFMPEG_ROOT}/COPYING.GPLv3"
+  install(FILES "${_ffmpeg_root}/LICENSE.txt" "${_ffmpeg_root}/COPYING.GPLv3"
     DESTINATION share/doc/nightfire/licenses)
 endif()
