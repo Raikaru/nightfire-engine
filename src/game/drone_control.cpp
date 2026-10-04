@@ -59,6 +59,7 @@ void pre_drone_control(Drone& d) {
     }
 }
 
+
 void control_standard(Drone& d) {
     // NDrone2_ControlSTANDARD 0x1490f0 (Drone_Control runs the DTYPE's control fn first when the type has one)
     if (d.dtype != kDtypeBot && d.sys->callbacks().control_dtype) d.sys->callbacks().control_dtype(d);
@@ -87,11 +88,14 @@ void control_standard(Drone& d) {
     find_opponent(d);
     prepare_source_animation_tick(d);
 
-    move_step(d);
     const CollisionStepState collision_state = collision_pre_root_step(d);
+
+    move_step(d);
+
     weap::handle_firing(d);
     if (!d.sys->config().multiplayer && d.sys->callbacks().handle_explosives) d.sys->callbacks().handle_explosives(d);   // DroneFunc_HandleExplosives
     anim_update(d);
+
     collision_post_root_step(d, collision_state);
     finish_source_object_animation_tick(d);
 }

@@ -3,7 +3,6 @@
 #include "game/drone_system.hpp"
 
 #include <algorithm>
-#include <cstdio>
 #include <cmath>
 
 #include "game/drone_anim.hpp"
@@ -460,10 +459,12 @@ void DroneSystem::after_tick(World& world, FrameTiming) {
         const float tan_half_x = tan_half_y * kPs2Aspect;
         const float x_radius = std::sqrt(1.0f + tan_half_x * tan_half_x);
         const float y_radius = std::sqrt(1.0f + tan_half_y * tan_half_y);
+        // Camera_SetToPlayer places the viewer at the head; track its cel from the body-linked room.
+        const int view_room = rooms.track_view(player->water.room, player->pos, eye);
         for (const auto& dp : drones_) {
             Drone& d = *dp;
             if (d.hidden || d.pending_delete) continue;
-            const bool room_visible = rooms.view_can_reach(player->water.room, d.source_view_room, eye, right, up,
+            const bool room_visible = rooms.view_can_reach(view_room, d.source_view_room, eye, right, up,
                                                            forward, tan_half_x, tan_half_y);
             const Vec3 delta = d.pos - eye;
             const float depth = dot(delta, forward);
@@ -473,12 +474,6 @@ void DroneSystem::after_tick(World& world, FrameTiming) {
             const bool in_frustum =
                 depth * tan_half_x + radius * x_radius >= horizontal &&
                 depth * tan_half_y + radius * y_radius >= vertical;
-            if (world.frame() == 15389)
-                std::fprintf(stderr, "VIEW frame=%llu id=%d rooms=%d/%d room_ok=%d eye=%.3f,%.3f,%.3f "
-                                     "delta=%.3f,%.3f,%.3f depth=%.3f h=%.3f v=%.3f radius=%.3f fov=%.3f\\n",
-                             static_cast<unsigned long long>(world.frame()), d.id, player->water.room,
-                             d.source_view_room, room_visible, eye[0], eye[1], eye[2], delta[0], delta[1], delta[2],
-                             depth, horizontal, vertical, radius, fovy);
             if (!room_visible || !in_frustum) continue;
             d.anim.source_object_anim = 2;
     }

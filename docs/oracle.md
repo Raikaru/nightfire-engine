@@ -214,8 +214,12 @@ Each configured sample copies the requested ranges plus `GS_DONE`,
 the ring head. Duplicate end-frame counters are skipped; full rings drop the
 new sample and increment overflow. `mp_record.py` drains these immutable
 end-of-frame snapshots instead of batching live source reads, preventing
-fields from adjacent logic frames being mixed. Capacity remains payload-size
-dependent. Loading a P2S restores original RAM and erases hook code; the
+fields from adjacent logic frames being mixed. Capacity remains payload-size dependent.
+The recurring `patch=1` payload in
+`tools/oracle/pcsx2/SLUS-20579_5B86BB62.pnach` must stay synchronized with
+`frame_hook_words()`; the hook rejects wrapped slots and any end beyond the
+configured ring bound.
+Loading a P2S restores original RAM and erases hook code; the
 recorder pauses PCSX2, clears ring state and bounds, reinstalls frame and
 preinstalled RNG hooks, then resumes the VM. `DISPLAY` (or `PCSX2_DISPLAY` for
 a separate capture X server) must point at the visible PCSX2 window when using
@@ -269,12 +273,13 @@ not a persistent end-of-frame field. It cannot be reconstructed from a RAM
 snapshot after the call has returned.
 
 For deterministic offline replay from an existing PCSX2 savestate, use
-`ee_oracle.py STATE.p2s OUT.jsonl --rows N [--inputs REC.jsonl]`. By default it
-runs `GameFlow_Main` through `nfmips`, including `Game_Draw` and draw-side
-visibility state. `--no-game-flow` opts into `Game_Run` only, without draw-side
-visibility state. Row one is the saved P2S; each following row advances
-GameState's frame/timer counters and video-frame accumulator using
-`GameFlow_Main`'s `VIDEO_FRAME_RATE / FRAME_RATE_INT` edge, then applies the
+`ee_oracle.py STATE.p2s OUT.jsonl --rows N [--inputs REC.jsonl]`. The wrapper
+delegates to `nfmips mp-oracle`, which runs `GameFlow_Main` by default,
+including `Game_Draw` and draw-side visibility state. Use `--no-game-flow` to
+run `Game_Run` only, without draw-side visibility state. Row one is the saved
+P2S; each following row advances GameState's frame/timer counters and
+video-frame accumulator using `GameFlow_Main`'s
+`VIDEO_FRAME_RATE / FRAME_RATE_INT` edge, then applies the
 corresponding `pad_all` values and calls `Game_Run` exactly once. A second call
 would advance world state again while leaving the supplied frame counters
 unchanged. `N` includes the initial row; pad input must cover every frame after
@@ -308,16 +313,16 @@ PC/instruction, `$ra`, and saved stack words at SP+0x10, +0x90, +0xa0, and
 raw fields at +0x50, +0x52, +0x58, and +0x08; interpret it with the caller
 chain because the offset is specific to nested hit-handling frames.
 
-By default, `mp-oracle` invokes `Game_Run` once per replay frame, matching the
-single-frame probe path. It advances `GameState+0x3C`, `+0x34`, and `+0x38`
-itself; this does not run `GameFlow_Main` scheduling or `Game_Draw`, so it is
-for isolated probes, not complete-match state parity.
-The wrapper also accepts `--game-flow` to opt into one `GameFlow_Main` call
-per frame and its normal `Game_Run`/`Game_Draw` gating. That optional path skips
-object-matrix submission leaves; `PS2StartCalcPacket` releases the
-buffer-completion poll that would otherwise wait for a DMA worker. It exercises
-CPU-side scene traversal but does not emulate rendered output, GS/DMA effects, or the actual
-rendering pipeline, and is not a complete replacement for a running game.
+By default, `mp-oracle` runs `GameFlow_Main` once per replay frame after the
+initial P2S row, including its normal `Game_Run`/`Game_Draw` gating and
+draw-side visibility updates. It advances `GameState` counters according to
+that flow; the headless path skips object-matrix submission leaves, and
+`PS2StartCalcPacket` releases the buffer-completion poll that would otherwise
+wait for a DMA worker. This exercises CPU-side scene traversal but does not
+emulate rendered output, GS/DMA effects, or the actual rendering pipeline.
+Use `--no-game-flow` to run `Game_Run` only and advance the frame counters
+directly, matching the older single-frame probe path; this is for isolated
+probes, not complete-match state parity.
 
 Bot animation is recorded under `pl[4..7].anim`, when the `obj_tag` has a valid
 animation owner. `owner_ptr` is read from `obj_tag+0xDC`; the actual
@@ -883,6 +888,8 @@ a weapon ID.
 | Skyrail Team Arena, fresh seedable v4, 3 bots | slot 75, teams 0/0/1; 180 s time limit | 1,672 rows, frame 12857..14857; 1,371 `seed_ready` | `~/.cache/MpOracle-2-tmp/fresh-v4-wheel/team.jsonl`; 306 ready windows, longest 45 frames; 329 missed samples, 3 resyncs. |
 | Skyrail CTF, fresh seedable v4, 3 bots | slot 76, teams 0/0/1; 180 s time limit | 1,537 rows, frame 13634..15634; 1,232 `seed_ready` | `~/.cache/MpOracle-2-tmp/fresh-v4-wheel/ctf.jsonl`; 245 ready windows, longest 48 frames; 464 missed samples, no resyncs; four live objective roots. |
 | Skyrail Demolition, fresh seedable v4, 3 bots | slot 74, teams 0/0/1; 180 s time limit | 1,926 rows, frame 12969..14969; 1,627 `seed_ready` | `~/.cache/MpOracle-2-tmp/fresh-v4-wheel/demo.jsonl`; 277 ready windows, longest 33 frames; 75 missed samples, no resyncs; one live demolition root. |
+| Skyrail CTF, fresh seedable v5, 3 bots | slot 232; CTF; idle human + Snow Guard/Black Ops/Yakuza | 5,154 rows, frame 33613..39555; 5,133 `seed_ready`; 789 missed samples, 4 resyncs | `~/.cache/MpOracle-2-tmp/mp-skyrail-ctf-seedable-v5-slot232-bounded.jsonl`; longest ready run 308 frames (34665..34972), 18 P2S checkpoints; summary shows 12 pickup takes and kills 0/1/1; one-frame `nfgame --mp-seed-each` smoke advances frame 34665→34666 (not a parity result). |
+| Skyrail Arena, fresh seedable v5, 3 bots | slot 233, Skyrail Arena; idle human + Snow Guard/Dominique/Yakuza; 180 s match limit | 7,455 rows, frame 15347..24347; 7,154 `seed_ready`; 1,546 missed samples, 14 resyncs | `~/.cache/MpOracle-2-tmp/mp-skyrail-arena-seedable-v5-slot233-bounded.jsonl`; longest ready run 308 frames (23797..24104), 27 P2S checkpoints; summary reports team score 1/0, bot kills 0/0/5 and deaths 3/2/0, 4 pickup takes. One-frame `nfgame --mp-seed-each` smoke advances frame 23797→23798 (not a parity result). |
 
 Latest `--mp-seed-each` rechecks at `--tolerance 1e-6` used the longest
 contiguous fresh seedable windows: Team frames 14523..14726 (203 compared
@@ -988,11 +995,11 @@ resolve their cell from the coordinates with `NavNetwork::find_cel`.
 
 Seedable v5 bot collision capsules use source `Drone+0xa0` height (the raw
 callback-height value seeded as `source_callback_height`), not the sampled
-`anim.root_height`. After movement and before `AnimFrameResolve`,
-`NDrone2_Collision` builds vertical endpoints from the object position and
-`radius - Drone+0xa0`. The host keeps those endpoints across root motion, then
-runs the cylinder response, feet probe, and gravity in post-root
-`Drone_CollisionHandler`.
+`anim.root_height`. `NDrone2_Collision` establishes its vertical capsule
+endpoints from the object position at Control entry, before `move_step`; the
+host captures that query geometry there and retains it through movement and
+`AnimFrameResolve`. The capsule response, feet probe, and gravity then run in
+post-root `Drone_CollisionHandler`.
 
 `Drone_CollisionHandler` gates collision/feet processing with
 `NDrone2_DoCollision`, then calls `NDrone2_DoGravity` separately. The v5
