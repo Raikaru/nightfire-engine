@@ -3,6 +3,8 @@
 
 The default runs Game_Run and Game_Draw, including draw-side visibility state,
 while emitting the same mp_record v5 snapshot schema as the live recorder.
+Use ``ee_oracle.py fill CHECKPOINT_DIR PCSX2.jsonl OUT.jsonl`` to replay dense
+checkpoint intervals and validate every overlapping PCSX2 row before writing.
 """
 
 import argparse
@@ -126,6 +128,9 @@ class _StreamPine:
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "fill":
+        import ee_oracle_fill
+        return ee_oracle_fill.main(sys.argv[2:])
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("state", help="initial PCSX2 .p2s checkpoint")
     ap.add_argument("out", help="output mp_record v5 JSONL")

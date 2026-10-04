@@ -230,6 +230,18 @@ bool RoomMap::view_can_reach(int from, int target, const Vec3& eye, const Vec3& 
     if (from == target || rooms_.empty() || from == kNone || target == kNone) return true;
     if (from < 0 || target < 0 || std::size_t(from) >= rooms_.size() || std::size_t(target) >= rooms_.size())
         return false;
+    // View_AddCels also admits cells whose source bounding sphere intersects the camera frustum,
+    // even when portal clipping did not add the cell to the current recurse chain.
+    const Room& target_room = rooms_[std::size_t(target)];
+    const Vec3 cell_center = (target_room.min + target_room.max) * 0.5f;
+    const float cell_radius = length((target_room.max - target_room.min) * 0.5f);
+    const Vec3 cell_delta = cell_center - eye;
+    const float cell_depth = dot(cell_delta, forward);
+    const float x_margin = cell_radius * std::sqrt(1.0f + tan_half_x * tan_half_x);
+    const float y_margin = cell_radius * std::sqrt(1.0f + tan_half_y * tan_half_y);
+    if (cell_depth * tan_half_x + x_margin >= std::abs(dot(cell_delta, right)) &&
+        cell_depth * tan_half_y + y_margin >= std::abs(dot(cell_delta, up)))
+        return true;
 
     struct Plane {
         Vec3 normal{};
