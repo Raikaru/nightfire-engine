@@ -182,7 +182,10 @@ jobs:
               try {
                   if (argc == 3) {
                       const nf::DiscIdentity disc = nf::identify_nightfire_disc(argv[1]);
-                      if (disc.boot_id != "SLUS20579") return 2;
+                      if (disc.boot_id != "SLUS-20579") {
+                          std::cerr << "unexpected boot id " << disc.boot_id << '\n';
+                          return 2;
+                      }
                       nf::extract_nightfire_disc(argv[1], argv[2]);
                       return 0;
                   }

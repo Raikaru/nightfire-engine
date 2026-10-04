@@ -894,21 +894,26 @@ height (`anim.root_height`, including the sAnimObject `+0x60` offset), with
 object position and the bot radius rather than the recorder's potentially stale
 `+0x3f0`/`+0x400` endpoints.
 
-`Drone_CollisionHandler` gates collision/feet processing with
-`NDrone2_DoCollision`, then calls `NDrone2_DoGravity` separately. Seed restore
-carries both source predicates so a false result does not run a host collision
-or gravity step that the source skips. After the feet probe, the source handler
-adds `Drone+0x3e0` when `obj+0xd0` is non-null; the v5 snapshot carries that
-response vector. In source-seeded replay, `collision_step` substitutes this
-restored response for the host cylinder push-out when the source collision
-path and hit-list pointer are active; this reduced Team p6 residuals to 3/337
-frames at ≤2 mm, but Arena residuals remain and need broader collision review.
+`Drone_CollisionHandler` gates collision/feet processing with `NDrone2_DoCollision`,
+then calls `NDrone2_DoGravity` separately. Seed restore carries both source
+predicates so a false result does not run a host collision or gravity step that
+the source skips.
 
-The isolated 200-frame Arena replay currently has 112 position-divergent
-frames, and Team Arena has 200 of 337; remaining errors include bot vertical
-motion outside this collision response. RNG state matched on all 537 aligned
-frames. Full acceptance still requires resolving the remaining replay
-residuals.
+After the feet probe, the original adds current `Drone+0x3e0` when `obj+0xd0`
+is non-null. That collision response is recomputed during the current update;
+the previously sampled raw vector can be stale, so the host uses its current
+cylinder push-out instead of restoring that snapshot field.
+
+`Drone_FeetOnPoint` also returns a signed foot-to-hit separation through its
+fifth argument. When collbody `+0x60` bit 8 is set and that separation exceeds
+`-0.1`, `Drone_CollisionHandler` subtracts one eighth of it from object Y.
+The host mirrors this arithmetic after gravity using its selected ground hit
+and source `Drone+0xa0` stand height. Direct P2S execution at Team Arena frame
+13544 confirmed the `-0.0106039` store despite gravity being skipped. However,
+the seeded host replay from frame 13544 still has a 0.0121 Y residual for bot slot 5 at frame
+13545 (oracle 12.0798, engine 12.0919). The host feet-hit selection or tick
+phase therefore does not yet reproduce that captured correction; this is not
+a closed replay residual.
 
 Restoring an in-progress bot state clears the runtime fresh-drone flag so the
 next tick does not inject a Global `ENTER` and re-run `BotInit` over the

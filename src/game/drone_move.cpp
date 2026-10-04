@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 #include "game/drone_anim.hpp"
 #include "game/drone_system.hpp"
@@ -567,14 +568,18 @@ void collision_step(Drone& d) {
         }
     }
 
+    float source_feet_delta = 0.0f;
+    bool source_feet_delta_valid = false;
     const float h = d.stand_height;
+    const float collision_height = d.is_bot() && d.character
+                                       ? d.character->root_height() + d.anim.source_root_height_offset - 0.02f
+                                       : h;
     if (!source_collision_valid || source_collision_due) {
         CylinderQuery q;
         if (d.is_bot() && d.character) {
             // Source Drone+0xa0 is root_height - 0.02; NDrone2_Collision rebuilds
             // its vertical capsule from the current object position each update.
-            const float capsule_height =
-                d.character->root_height() + d.anim.source_root_height_offset - 0.02f;
+            const float capsule_height = collision_height;
             q.a = {d.pos[0], d.pos[1] + d.radius, d.pos[2]};
             q.b = {d.pos[0], d.pos[1] + d.radius - capsule_height, d.pos[2]};
             q.radius = d.radius;
@@ -589,13 +594,24 @@ void collision_step(Drone& d) {
         }
         const CylinderResult r = world.cylinder(q);
         // Drone_CollisionHandler probes feet before applying its accumulated push.
-        const FeetResult feet = world.feet_on_point(d.pos, r.b, {0, 1, 0}, h, r.contact);
+        const FeetResult feet = world.feet_on_point(d.pos, r.b, {0, 1, 0}, collision_height, r.contact);
+        if (source_collision_valid) {
+            std::fprintf(stderr, "feet-debug pos=(%.7f %.7f %.7f) due=%d h=%.7f b=(%.7f %.7f %.7f) ground=%d hit=(%.7f %.7f %.7f) dist=%.7f delta=%.7f\n",
+                         d.pos[0], d.pos[1], d.pos[2], source_collision_due, collision_height,
+                         r.b[0], r.b[1], r.b[2], feet.ground.has_value(),
+                         feet.ground ? feet.ground->point[0] : 0.0f,
+                         feet.ground ? feet.ground->point[1] : 0.0f,
+                         feet.ground ? feet.ground->point[2] : 0.0f,
+                         feet.ground ? feet.ground->dist : 0.0f,
+                         feet.ground ? (d.pos[1] - collision_height) - feet.ground->point[1] : 0.0f);
+        }
         d.on_ground = feet.on_ground;
+        if (source_collision_valid && source_collision_due && !d.mv.disabled && feet.ground) {
+            source_feet_delta = (d.pos[1] - collision_height) - feet.ground->point[1];
+            source_feet_delta_valid = true;
+        }
         d.ground_normal_y = feet.ground_normal_y;
-        if (source_collision_valid && source_collision_due && d.anim.source_hit_list_present) {
-            // The source hit-list response replaces the host capsule's approximation of that push.
-            d.pos += d.anim.source_collision_push;
-        } else if (!r.hits.empty()) {
+        if (!r.hits.empty()) {
             d.pos += r.push_out;
         }
     } else {
@@ -604,7 +620,6 @@ void collision_step(Drone& d) {
         d.ground_normal_y = 1.0f;
     }
     d.mv.seeded_capsule_valid = false;
-    d.anim.source_hit_list_present = false;
     d.anim.source_collision_valid = false;
     // Drone_CollisionHandler applies NDrone2_DoGravity after collision and feet resolution.
     if (!d.mv.disabled && (!source_collision_valid || source_gravity_due)) {
@@ -615,6 +630,9 @@ void collision_step(Drone& d) {
         }
         d.fall_velocity[1] = std::clamp(d.fall_velocity[1], -45.0f, 45.0f);
         d.pos = d.pos + d.fall_velocity * timing.rec();
+    }
+    if (source_feet_delta_valid && d.on_ground && source_feet_delta > -0.1f) {
+        d.pos[1] -= source_feet_delta * 0.125f;
     }
 
 }
