@@ -93,7 +93,7 @@ bool opponent_facing_me(const Drone& d, float degrees);
 // NDrone2_Move: steer to the waypoint and apply movement already accumulated by the caller.
 void move_step(Drone& d);
 // AnimFrameResolve: add the sampled root displacement after movement/control for this tick.
-void apply_animation_root_motion(Drone& d, const Vec3& root_delta, float yaw);
+void apply_animation_root_motion(Drone& d, const Vec3& root_delta, const std::array<Vec3, 3>& basis);
 // NDrone2_Collision + Collide_Update: gravity, capsule push-out, ground snap, AI bounds push (r = 0.4).
 void collision_step(Drone& d, const Vec3& pre_control_pos);
 // Places the drone on the floor below its feet position (used at spawn / teleport).

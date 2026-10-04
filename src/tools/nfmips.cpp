@@ -69,6 +69,17 @@ Machine open_machine(const std::string& elf, const GlobalOpts& g) {
     if (!g.fs_root.empty()) m.set_fs_root(g.fs_root);
     return m;
 }
+bool vu0_macro_self_test() {
+    nf::ee::Vu0 vu;
+    vu.vf[2].w[0] = 0x40000000u;  // 2.0
+    vu.vf[4].w[0] = 0x40400000u;  // 3.0
+    vu.acc.w[0] = 0x41200000u;    // 10.0, must not participate in VMULA
+    vu.macro(0x4bc221bcu);        // VMULAx.xyz ACC, vf4, vf2x
+    const bool ok = vu.acc.w[0] == 0x40c00000u;
+    std::printf("VU0 VMULAx ACC (3 * 2, replaces old ACC): %s\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
 
 u32 resolve(Machine& m, const std::string& s) {
     if (auto sym = m.symbol(s)) return sym->value;
@@ -2969,16 +2980,23 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
             u32 return_pc = 0;
             bool trace_active = false;
             m.mem.set_watch([&](u32 address, u32 size, bool write) {
-                if (!write || !trace_active) return;
+                if (!write) return;
                 const u32 offset = m.mem.ram_offset(address);
-                if (offset == ~u32(0) || offset >= position + 12
-                    || u64(offset) + size <= position)
-                    return;
+                const u32 matrix = m.mem.ram_offset(object + 0x90);
+                const bool position_write = offset != ~u32(0) && offset < position + 12
+                    && u64(offset) + size > position;
+                const bool matrix_write = offset != ~u32(0) && offset < matrix + 0x30
+                    && u64(offset) + size > matrix;
+                if (!position_write && !matrix_write) return;
                 std::fprintf(stderr,
-                    "POS_STORE frame=%u slot=%d pc=%08x inst=%08x addr=%08x size=%u "
-                    "sp=%08x ra=%08x\n",
+                    "OBJ_STORE %s frame=%u slot=%d pc=%08x inst=%08x addr=%08x size=%u "
+                    "pre=%08x,%08x,%08x sp=%08x ra=%08x\n",
+                    position_write ? "position" : "matrix",
                     next_frame, trace_slot, m.cpu.cur_pc, m.cpu.cur_inst, address,
-                    size, u32(m.cpu.r[29].d[0]), u32(m.cpu.r[31].d[0]));
+                    size, m.mem.read<u32>(object + (position_write ? kObjectPosition : 0x90)),
+                    m.mem.read<u32>(object + (position_write ? kObjectPosition + 4 : 0x94)),
+                    m.mem.read<u32>(object + (position_write ? kObjectPosition + 8 : 0x98)),
+                    u32(m.cpu.r[29].d[0]), u32(m.cpu.r[31].d[0]));
             });
             m.set_instruction_observer(
                 [&](const nf::ee::Cpu& cpu, u32 pc, u32 inst) {
@@ -3040,7 +3058,7 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                          m.cpu.cur_pc, e.what());
             std::fputs(m.disasm_range(m.cpu.cur_pc - 16, 8).c_str(), stderr);
         }
-        m.set_instruction_observer({});
+        if (!trace_rng) m.set_instruction_observer({});
         if (next_frame == trace_frame) {
             m.mem.set_watch({});
             if (!trace_done)
@@ -3092,7 +3110,10 @@ int main(int argc, char** argv) {
     }
     const std::string elf = av[0], cmd = av[1];
     try {
-        if (cmd == "float-selftest") return nf::ee::fp::self_test() ? 0 : 1;
+        if (cmd == "float-selftest") {
+            const bool fp_ok = nf::ee::fp::self_test();
+            return vu0_macro_self_test() && fp_ok ? 0 : 1;
+        }
         if (cmd == "mp-oracle") {
             std::string state, pads;
             int rows = 0, watch_human_hp_slot = -1, trace_slot = -1;

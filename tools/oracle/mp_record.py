@@ -1004,11 +1004,17 @@ def main():
         rec["projectiles_available"] = True
         if args.seedable:
             changed_goal_targets = []
+            goal_target_changes = []
             for k, refs in cache["goal_refs"].items():
                 bv_raw = bytag[("bv_raw", k)]
                 for goal, cached_target in enumerate(refs):
                     target = struct.unpack_from(
                         "<I", bv_raw, goal * 0x50 + A.GOAL_TARGET)[0]
+                    if target != cached_target:
+                        goal_target_changes.append({
+                            "bot_slot": k + 4, "goal_slot": goal,
+                            "from_ptr": cached_target, "target_ptr": target,
+                        })
                     offset = target - A.MPPICKUPS
                     if (target != cached_target and
                             0 <= offset < 64 * A.MPPICKUP_STRIDE and
@@ -1028,6 +1034,11 @@ def main():
             objective_index_by_ptr = {
                 address: index for index, address in enumerate(objective_ptrs)
             }
+            objective_index_by_kind_team = {}
+            for index, address in enumerate(objective_ptrs):
+                raw = bytag[("mp_object_raw", address)]
+                identity = struct.unpack_from("<HH", raw, 0xE0)
+                objective_index_by_kind_team.setdefault(identity, index)
             goal_targets = []
             for k, refs in cache["goal_refs"].items():
                 bv_raw = bytag[("bv_raw", k)]
@@ -1049,15 +1060,29 @@ def main():
                     elif target in objective_index_by_ptr:
                         ref["objective_index"] = objective_index_by_ptr[target]
                     else:
-                        target_link = bytag.get(("goal_target_link", target))
-                        if target_link is not None:
-                            target_object = struct.unpack("<I", target_link)[0]
-                            index = objective_index_by_ptr.get(target_object + 0x30)
-                            if index is not None:
-                                ref["objective_index"] = index
+                        objective_identity = None
+                        if (A.FLAGS <= target < A.FLAGS + 2 * 0x90
+                                and (target - A.FLAGS) % 0x90 == 0):
+                            objective_identity = (0, (target - A.FLAGS) // 0x90)
+                        elif (A.BASES <= target < A.BASES + 2 * 0x90
+                              and (target - A.BASES) % 0x90 == 0):
+                            objective_identity = (1, (target - A.BASES) // 0x90)
+                        elif target == A.DEMOLITION:
+                            objective_identity = (3, 2)
+                        if objective_identity in objective_index_by_kind_team:
+                            ref["objective_index"] = objective_index_by_kind_team[
+                                objective_identity]
+                        else:
+                            target_link = bytag.get(("goal_target_link", target))
+                            if target_link is not None:
+                                target_object = struct.unpack("<I", target_link)[0]
+                                index = objective_index_by_ptr.get(target_object + 0x30)
+                                if index is not None:
+                                    ref["objective_index"] = index
                     cache["goal_refs"].setdefault(k, [0, 0])[goal] = target
                     goal_targets.append(ref)
             rec["bot_goal_targets"] = goal_targets
+            rec["bot_goal_target_changed"] = goal_target_changes
             rec["seed_version"] = 5
             rec["state_complete"] = False
 

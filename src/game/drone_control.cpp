@@ -76,11 +76,11 @@ void control_standard(Drone& d) {
 
     const Vec3 pre_control_pos = d.pos;
     move_step(d);
-    collision_step(d, pre_control_pos);
     weap::handle_firing(d);
     if (!d.sys->config().multiplayer && d.sys->callbacks().handle_explosives) d.sys->callbacks().handle_explosives(d);   // DroneFunc_HandleExplosives
     prepare_source_animation_tick(d);
     anim_update(d);
+    collision_step(d, pre_control_pos);
 }
 
 }  // namespace nf::drone
