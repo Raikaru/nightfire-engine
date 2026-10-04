@@ -1262,7 +1262,6 @@ Vec3 CharacterInstance::root_translation() const {
     auto root_of = [&](const Layer& l) { return l.prev_root; };   // a Phase partner's root does not take part
     Vec3 r = active.empty() ? root_of(*strafe) : root_of(*active[0]);
     for (std::size_t k = 1; k < active.size(); ++k) r = r + (root_of(*active[k]) - r) * (1.0f - active[k - 1]->weight());
-    if (strafe && !active.empty()) r = r + (root_of(*strafe) - r) * strafe->weight();
     return r;
 }
 

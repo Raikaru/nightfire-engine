@@ -298,6 +298,7 @@ struct MpSeedImporter::Impl {
         return it->second;
     }
 
+
     std::uint64_t contiguous() const {
         std::uint64_t count = 0, frame = selected;
         for (;;) {
@@ -881,8 +882,17 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                     ((source_flags & 0x4u) != 0 ||
                      (source_mode_allows_collision && source_collision_predicate));
                 bot->drone->anim.source_collision_valid = true;
+                constexpr float kMpRootHeightScale = 0.8627321124f;
+                bot->drone->anim.source_root_height_scale =
+                    bot->drone->sys->config().multiplayer && bot->drone->character->skin().skeleton == 1
+                        ? kMpRootHeightScale
+                        : 1.0f;
                 bot->drone->anim.source_root_height_offset =
-                    float_number(anim->at("root_height")) - bot->drone->character->root_height();
+                    float_number(anim->at("root_height")) / bot->drone->anim.source_root_height_scale -
+                    bot->drone->character->root_height();
+                bot->drone->anim.source_callback_height = f32_at(drone, 0xa0);
+                bot->drone->anim.source_callback_height_valid = true;
+                bot->drone->anim.source_callback_y_enabled = byte_at(drone, 0x1a) == 0;
             }
         }
     }
