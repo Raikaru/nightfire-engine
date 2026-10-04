@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <cmath>
 
-#include <cstdio>
 #include "game/drone_anim.hpp"
 #include "game/drone_system.hpp"
 #include "game/drone_vision.hpp"
@@ -619,11 +618,6 @@ void collision_post_root_step(Drone& d, const CollisionStepState& state) {
     const bool source_gravity_due = state.source_gravity_due;
     const CollisionWorld& world = d.sys->collision();
     const FrameTiming timing = d.sys->timing();
-    const bool diag_source_feet = d.anim.source_gate_supported && d.now() == 14740 &&
-                                  std::fabs(d.pos[0] - 15.085f) < 0.1f;
-    if (diag_source_feet)
-        std::fprintf(stderr, "feet-enter y=%.8f stand=%.8f applied=%.8f cap-b=%.8f radius=%.8f\\n",
-                     d.pos[1], d.stand_height, d.mv.applied_height, state.capsule_b[1], state.capsule_radius);
     // Feet stay planted while the pose height changes (crouch, roll).
     d.pos[1] += d.stand_height - d.mv.applied_height;
     d.mv.applied_height = d.stand_height;
@@ -653,12 +647,6 @@ void collision_post_root_step(Drone& d, const CollisionStepState& state) {
             source_feet_delta_valid = true;
             if (feet.nearest) source_feet_delta = (d.pos[1] - h) - feet.nearest->point[1];
             if (source_feet_delta < 0.2f) d.on_ground = true;
-            if (diag_source_feet)
-                std::fprintf(stderr, "feet-probe delta=%.8f nearest=%d nearest-y=%.8f contact=%u on=%u ground=%.8f hits=%u\\n",
-                             source_feet_delta, feet.nearest.has_value(),
-                             feet.nearest ? feet.nearest->point[1] : 0.0f,
-                             capsule.contact, unsigned(d.on_ground), feet.ground_normal_y,
-                             unsigned(source_hit_list_present));
         }
         d.ground_normal_y = feet.ground_normal_y;
         if (source_hit_list_present) d.pos += capsule.push_out;
@@ -682,9 +670,6 @@ void collision_post_root_step(Drone& d, const CollisionStepState& state) {
     if (source_feet_delta_valid && !source_hit_list_present && d.on_ground && source_feet_delta > -0.1f) {
         d.pos[1] -= source_feet_delta * 0.125f;
     }
-    if (diag_source_feet)
-        std::fprintf(stderr, "feet-exit y=%.8f delta=%.8f cap-push=%.8f\\n",
-                     d.pos[1], source_feet_delta, state.capsule_b[1]);
 }
 
 void place_on_floor(Drone& d) {

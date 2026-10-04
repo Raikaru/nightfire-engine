@@ -95,7 +95,7 @@ bool opponent_facing_me(const Drone& d, float degrees);
 void move_step(Drone& d);
 // AnimFrameResolve: add the sampled root displacement after movement/control for this tick.
 void apply_animation_root_motion(Drone& d, const Vec3& root_delta, const std::array<Vec3, 3>& basis);
-// NDrone2_Collision before animation root motion: source eligibility, nav push, and capsule query.
+// NDrone2_Collision before animation root motion: eligibility, nav push, and capsule geometry.
 struct CollisionStepState {
     bool source_collision_valid = false;
     bool source_collision_due = false;

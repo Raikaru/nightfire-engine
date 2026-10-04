@@ -215,8 +215,11 @@ the ring head. Duplicate end-frame counters are skipped; full rings drop the
 new sample and increment overflow. `mp_record.py` drains these immutable
 end-of-frame snapshots instead of batching live source reads, preventing
 fields from adjacent logic frames being mixed. Capacity remains payload-size
-dependent. Loading a P2S restores original RAM and erases hook code, so the
-recorder rehydrates its frame and preinstalled RNG hooks before capture.
+dependent. Loading a P2S restores original RAM and erases hook code; the
+recorder pauses PCSX2, clears ring state and bounds, reinstalls frame and
+preinstalled RNG hooks, then resumes the VM. `DISPLAY` (or `PCSX2_DISPLAY` for
+a separate capture X server) must point at the visible PCSX2 window when using
+`--load-slot`.
 `mp_record.py` includes human-only `damage_flash` (BLData+0x8BC),
 `fade_total`/`fade_timer` (+0x918/+0x91C), `fade_colour` (+0x963),
 `pain_dir` (+0x967), and `pain_alpha` (+0x968). The fade timer and total
@@ -266,9 +269,11 @@ not a persistent end-of-frame field. It cannot be reconstructed from a RAM
 snapshot after the call has returned.
 
 For deterministic offline replay from an existing PCSX2 savestate, use
-`ee_oracle.py STATE.p2s OUT.jsonl --rows N [--inputs REC.jsonl]`. It runs the
-original `Game_Run` through `nfmips`. Row one is the saved P2S; each following
-row advances GameState's frame/timer counters and video-frame accumulator using
+`ee_oracle.py STATE.p2s OUT.jsonl --rows N [--inputs REC.jsonl]`. By default it
+runs `GameFlow_Main` through `nfmips`, including `Game_Draw` and draw-side
+visibility state. `--no-game-flow` opts into `Game_Run` only, without draw-side
+visibility state. Row one is the saved P2S; each following row advances
+GameState's frame/timer counters and video-frame accumulator using
 `GameFlow_Main`'s `VIDEO_FRAME_RATE / FRAME_RATE_INT` edge, then applies the
 corresponding `pad_all` values and calls `Game_Run` exactly once. A second call
 would advance world state again while leaving the supplied frame counters
@@ -981,13 +986,13 @@ The serialized `CelPos` stores a `vec4` followed by a PS2 `cel*`; those pointer
 bytes are not host `NavNetwork` cell indices. Restored route and goal positions
 resolve their cell from the coordinates with `NavNetwork::find_cel`.
 
-Seedable v5 bot collision capsules use the source animation root height
-(`anim.root_height`, including the sAnimObject `+0x60` offset) and
-`NDrone2_Collision`'s `0.02` m margin. The vertical segment is anchored to the
-drone position at Control entry, before `move_step`; `Collide_Update` runs after
-movement but retains those pre-Control HITTEST endpoints. The raw
-`+0x3f0`/`+0x400` values are stale for the current collision pass and are not
-used as endpoints.
+Seedable v5 bot collision capsules use source `Drone+0xa0` height (the raw
+callback-height value seeded as `source_callback_height`), not the sampled
+`anim.root_height`. After movement and before `AnimFrameResolve`,
+`NDrone2_Collision` builds vertical endpoints from the object position and
+`radius - Drone+0xa0`. The host keeps those endpoints across root motion, then
+runs the cylinder response, feet probe, and gravity in post-root
+`Drone_CollisionHandler`.
 
 `Drone_CollisionHandler` gates collision/feet processing with
 `NDrone2_DoCollision`, then calls `NDrone2_DoGravity` separately. The v5
@@ -997,14 +1002,14 @@ import enables source-compatible gates that are recomputed each tick from
 predicates, not seed-only state: `NDrone2_Collision` and the feet snap continue
 to run or skip according to the current source gate after the import frame.
 
-The seeded animation-control predicate is not a one-shot flag: each bot Control
-tick recomputes `NDrone2_DoAnimation` from the source `0x80000` flag, class,
-animation root height, object/forced-animation state, and current animation
-flags. `AnimObjectUpdate` is due when that predicate is true or the source
-animation stamp (`Drone+0x580`) equals the current game frame. The host carries
-the source fields from the seed and reevaluates both predicates on every tick,
-so lockstep execution follows the same animation/root-motion gate as reseeding
-each frame.
+`NDrone2_DoAnimation` recomputes its gate every bot Control tick from the
+source `0x80000` flag, class, root height, `obj+0xfc`, forced-animation
+`Drone+0x538`, and animation flags. The raw `obj+0xfc` byte is seeded as a
+countdown: `Game_Run` calls `MP_Update` (which runs `Drone_Control`) before
+`control_movement_object_handler` decrements it, then `Game_Draw` visibility
+passes set it to 2 for selected objects. The host consumes the seeded counter
+at the animation gate, decrements after control, and refreshes visible bots in
+its post-tick view pass; `Drone+0x580` is not part of this gate.
 
 `NDrone2_SetAngleToDest` and `NDrone2_SetAngleToObj` call
 `ATAN2_APPROX__Fff`; the host uses `atan2_approx` for these movement-heading

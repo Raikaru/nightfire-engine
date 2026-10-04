@@ -127,13 +127,14 @@ void MpTraceSink::dump(const World& world, const ArenaSystem& arena, const Weapo
                                "\"weap\":%d,\"alive\":%s,\"mp_status\":%u,\"dead\":%s,\"out\":%s,"
                                "\"state\":%d,\"active_goal\":%d,\"goal_type\":%d,\"goal_kind\":%d,"
                                "\"goal_target\":%d,\"vel\":[%.5f,%.5f,%.5f],\"fall_vel\":[%.5f,%.5f,%.5f],"
-                               "\"anim\":{\"layers\":[",
+                               "\"anim\":{\"source_object_anim\":%u,\"layers\":[",
                          s ? "," : "", botdrone->pos[0], botdrone->pos[1], botdrone->pos[2], botdrone->yaw,
                          type, botdrone->health, botdrone->weapon, botdrone->health > 0.0f ? "true" : "false",
                          static_cast<unsigned>(arena.status(s)), arena.dead(s) ? "true" : "false",
                          out ? "true" : "false", botdrone->state(), active_goal, goal_type, goal_kind, goal_target,
                          botdrone->velocity[0], botdrone->velocity[1], botdrone->velocity[2],
-                         botdrone->fall_velocity[0], botdrone->fall_velocity[1], botdrone->fall_velocity[2]);
+                         botdrone->fall_velocity[0], botdrone->fall_velocity[1], botdrone->fall_velocity[2],
+                         unsigned(botdrone->anim.source_object_anim));
             bool first_layer = true;
             if (botdrone->character) {
                 botdrone->character->for_each_layer_info([&](const CharacterInstance::LayerInfo& layer) {

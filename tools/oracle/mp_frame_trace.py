@@ -18,6 +18,7 @@ MAX_DESCRIPTORS = 1022  # 0x2000-byte config window: 16-byte header + 8 bytes pe
 # Reserved in sampled ACTION P2S images (0x8e000..ELF load base); 8-slot ring.
 RING_BASE = 0x0008E000
 RING_END = 0x00100000
+RING_LIMIT_ADDR = 0x01FEA000   # exclusive end of the configured snapshot ring
 RING_HEADER_SIZE = 16
 SNAPSHOT_HEADER_SIZE = 16
 GS_DONE = 0x002A3798
@@ -102,6 +103,13 @@ def frame_hook_words():
     a.emit(_r(0, 0, 25, 0, 0x12)) # mflo t9
     a.emit(_i(0x09, 14, 14, RING_HEADER_SIZE))
     a.emit(_r(14, 25, 14, 0, 0x21)) # t6 = slot address
+    _load32(a, 7, RING_LIMIT_ADDR)
+    a.emit(_i(0x23, 8, 24, 12))  # t8 = configured slot size
+    a.emit(_r(14, 24, 24, 0, 0x21)) # t8 = slot start + slot size
+    a.emit(_r(24, 14, 25, 0, 0x2B))  # t9 = slot end wrapped below slot start
+    a.branch(0x05, 25, 0, "drop")
+    a.emit(_r(7, 24, 25, 0, 0x2B))  # t9 = limit < slot end
+    a.branch(0x05, 25, 0, "drop")
     _load32(a, 25, GS_DONE)
     a.emit(_i(0x23, 25, 25, 0))
     a.emit(_i(0x2B, 14, 25, 0))
@@ -162,6 +170,7 @@ def pnach_lines():
               f"patch=0,EE,{CONFIG_BASE+4:08X},word,00000000",
               f"patch=0,EE,{CONFIG_BASE+8:08X},word,00000000",
               f"patch=0,EE,{CONFIG_BASE+12:08X},word,00000000",
+              f"patch=0,EE,{RING_LIMIT_ADDR:08X},word,{RING_END:08X}",
               f"patch=0,EE,{RING_BASE:08X},word,00000000",
               f"patch=0,EE,{RING_BASE+4:08X},word,00000000",
               f"patch=0,EE,{RING_BASE+8:08X},word,00000000",
@@ -173,6 +182,18 @@ def _write_ops(pine, operations):
     pine._transact(b"".join(
         struct.pack("<BI", op, addr) + struct.pack(fmt, value)
         for op, addr, fmt, value in operations))
+def reset_ring(pine):
+    """Clear the snapshot region and bound the hook before it is enabled."""
+    _write_ops(pine, [(WRITE32, CONFIG_BASE, "<I", 0),
+                      (WRITE32, RING_LIMIT_ADDR, "<I", RING_END)])
+    words_per_batch = 4000
+    for base in range(RING_BASE, RING_END, words_per_batch * 4):
+        stop = min(base + words_per_batch * 4, RING_END)
+        _write_ops(pine, [
+            (WRITE32, address, "<I", 0)
+            for address in range(base, stop, 4)
+        ])
+
 
 
 def jump_word():
@@ -229,11 +250,8 @@ def configure(pine, ranges):
     capacity = 1
     while capacity * 2 * slot_size <= ring_bytes:
         capacity *= 2
+    reset_ring(pine)
     _write_ops(pine, [(WRITE32, CONFIG_BASE, "<I", 0),
-                      (WRITE32, RING_BASE, "<I", 0),
-                      (WRITE32, RING_BASE + 4, "<I", 0),
-                      (WRITE32, RING_BASE + 8, "<I", 0),
-                      (WRITE32, RING_BASE + 12, "<I", 0),
                       (WRITE32, CONFIG_BASE + 4, "<I", payload_size),
                       (WRITE32, CONFIG_BASE + 8, "<I", capacity),
                       (WRITE32, CONFIG_BASE + 12, "<I", slot_size)])
