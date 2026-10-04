@@ -275,12 +275,13 @@ int run_match(const MatchLaunch& request) {
         }
         for (long f = 0; f < frames; ++f) {
             PadInputs pads{};
-            float tick_rate = float(launch.logic_hz);
+            float tick_rate = float(launch.logic_hz), match_elapsed = 0.0f, match_total_elapsed = 0.0f;
             if (importer) {
                 const std::uint64_t next_frame = world.frame() + 1;
-                if (!importer->input_for(next_frame, pads, tick_rate))
+                if (!importer->input_for(next_frame, pads, tick_rate, match_elapsed, match_total_elapsed))
                     throw std::runtime_error("MP seed: no contiguous recorded pad input for frame " + std::to_string(next_frame));
                 if (launch.mp_seed_each) importer->restore_at(world.frame(), world, session, bot_match.get());
+                session.arena().set_seeded_clock_for_tick(match_elapsed, match_total_elapsed);
             } else {
                 for (int i = 0; i < options.humans; ++i) pads[std::size_t(i)] = scripts[std::size_t(i)].at(f);
             }

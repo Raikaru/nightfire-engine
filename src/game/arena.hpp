@@ -268,6 +268,8 @@ public:
     void before_player_update(World&, FrameTiming timing) override;
     void tick(World& world, FrameTiming timing) override;
     void after_tick(World& world, FrameTiming timing) override;
+    // Seed replay supplies the exact MPGame clocks for this frame before later systems tick.
+    void set_seeded_clock_for_tick(float elapsed, float total_elapsed);
 
     // ---- read side ----
     const ArenaSettings& settings() const { return settings_; }
@@ -378,7 +380,8 @@ private:
     bool alive(int slot) const;
     void respawn(int slot);
     void update_pickups(World& world, FrameTiming timing);
-    void check_end_condition(float dt);
+    void check_end_condition(float dt, bool clock_already_current);
+    struct SeededClock { float elapsed, total_elapsed; };
     void sort_out_who_won();
     int best_score() const;
     int score_of(int slot) const;
@@ -429,6 +432,7 @@ private:
     bool restart_text_shown_ = false;
     int best_score_ = 0;
     std::uint64_t frame_ = 0;
+    std::optional<SeededClock> seeded_clock_for_tick_;
     float dt_ = 1.0f / 30.0f;
     float rate_ = 30.0f;
     MatchResult result_;

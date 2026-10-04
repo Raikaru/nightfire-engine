@@ -68,7 +68,8 @@ public:
     // `before_start` runs after the humans exist and before ArenaSystem::start(): the place to fill bot slots and
     // register their bodies.
     ArenaSession(World& world, WeaponTable table, const MatchOptions& options, const StringTable* strings,
-                 std::string_view tuning_vars_txt, const std::function<void(ArenaSession&)>& before_start = {});
+                 std::string_view tuning_vars_txt, const std::function<void(ArenaSession&)>& before_start = {},
+                 const MpData* mp_data = nullptr);
 
     ArenaSystem& arena() { return *arena_; }
     const ArenaSystem& arena() const { return *arena_; }
@@ -95,6 +96,8 @@ public:
 private:
     World& world_;
     MatchOptions options_;
+    const MpData* mp_data_ = nullptr;
+    unsigned sleeve_for_character(int character) const;
     WeaponSystem* weapons_ = nullptr;
     ArenaSystem* arena_ = nullptr;
     std::array<std::unique_ptr<HumanBody>, kMpSlots> bodies_{};

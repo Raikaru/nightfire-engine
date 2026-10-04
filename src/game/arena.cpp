@@ -463,9 +463,11 @@ int ArenaSystem::best_score() const {
     return best;
 }
 
-void ArenaSystem::check_end_condition(float dt) {
-    elapsed_ += dt;
-    total_elapsed_ += dt;
+void ArenaSystem::check_end_condition(float dt, bool clock_already_current) {
+    if (!clock_already_current) {
+        elapsed_ += dt;
+        total_elapsed_ += dt;
+    }
     const auto mode = settings_.mode;
     const float limit = settings_.time_limit;
     best_score_ = std::max(int(team_score_[0]), int(team_score_[1]));
@@ -587,6 +589,11 @@ void ArenaSystem::before_player_update(World&, FrameTiming timing) {
 
 void ArenaSystem::tick(World&, FrameTiming timing) {
     dt_ = timing.rec();
+    const bool clock_already_current = seeded_clock_for_tick_.has_value();
+    if (seeded_clock_for_tick_) {
+        elapsed_ = seeded_clock_for_tick_->elapsed;
+        total_elapsed_ = seeded_clock_for_tick_->total_elapsed;
+    }
     rate_ = timing.FRAME_RATE;
 
     for (SlotState& s : slots_) {
@@ -611,7 +618,7 @@ void ArenaSystem::tick(World&, FrameTiming timing) {
     switch (state_code_) {
         case 0:
             update_objectives(timing);
-            check_end_condition(dt_);
+            check_end_condition(dt_, clock_already_current);
             break;
         case 1:
         case 2:
@@ -652,6 +659,11 @@ void ArenaSystem::tick(World&, FrameTiming timing) {
         default:
             break;
     }
+    seeded_clock_for_tick_.reset();
+}
+
+void ArenaSystem::set_seeded_clock_for_tick(float elapsed, float total_elapsed) {
+    seeded_clock_for_tick_ = SeededClock{elapsed, total_elapsed};
 }
 
 void ArenaSystem::after_tick(World& world, FrameTiming timing) {

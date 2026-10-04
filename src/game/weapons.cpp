@@ -44,6 +44,8 @@ Vec3 view_forward(float yaw, float pitch) {
 
 WeaponSystem::WeaponSystem(WeaponTable table, DamageTuning tuning)
     : table_(std::move(table)), tuning_(tuning) {
+    const unsigned default_sleeve = tuning_.mode == GameMode::SinglePlayer ? 1u : 4u;
+    for (SpawnLoadout& loadout : loadouts_) loadout.sleeve = default_sleeve;
     // Draws go to the process-global stream (core/rng.hpp); frontends seed once per match.
 }
 
@@ -208,6 +210,7 @@ float WeaponSystem::zoom(int slot) const { return state(slot) ? state(slot)->zoo
 void WeaponSystem::spawn_player(int slot, const SpawnLoadout& loadout) {
     loadouts_.at(std::size_t(slot)) = loadout;
     auto p = std::make_unique<PlayerWeapons>();
+    p->sleeve = loadout.sleeve;
     for (int w = 0; w < WeaponTable::kWeaponCount; ++w)   // Player_InitAmmoWeapons: saved zoom = sqrt(max zoom)
         p->weapon[std::size_t(w)].saved_zoom = std::sqrt(table_.weapon(w).zoom_max);
     if (world_ && world_->player(slot) && loadout.health != world_->player(slot)->health()) world_->player(slot)->set_health(loadout.health);

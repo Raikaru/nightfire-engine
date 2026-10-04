@@ -195,7 +195,8 @@ struct MpSession::Impl {
             *world, WeaponTable::from_elf(ctx.action_elf), options, strings ? &*strings : nullptr, tuning_text,
             [this](ArenaSession& s) {
                 if (bot_match) bot_match->install(s);
-            });
+            },
+            &ctx.mp_data);
         if (bot_match) bot_match->start();
         // Weapon viewmodels/animations need the level's bank (as in SP); without it
         // viewmodel skins are null and the gun never draws.
@@ -320,7 +321,7 @@ struct MpSession::Impl {
         HudState hs;
         session->weapons().fill_hud(slot, hs);
         hs.controller_style = world->settings(slot).controller_style;
-        const ArenaHud ah = session->hud(slot);
+        ArenaHud ah = session->hud(slot);
         hs.mp.mode = static_cast<HudMpMode>(ah.mode);
         hs.mp.teams = ah.teams;
         hs.mp.objective = ah.objective;
@@ -361,7 +362,9 @@ struct MpSession::Impl {
         hs.mp.health_bonus = ah.health_bonus;
         for (const ArenaHud::Blip& b : ah.blips)
             hs.mp.blips.push_back(HudBlip{b.x, b.y, b.z, b.color, b.kind, b.slot});
-        // HUD_RadarUpdate draws name tags in the view when MPSettings+0x1C4 enables them.
+        // HUD_RadarUpdate requires line of sight before projecting a participant's name.
+        for (ArenaHud::Blip& b : ah.blips)
+            if (!b.name.empty() && !world->collision().line_of_sight(cam.eye, b.world)) b.name.clear();
         project_name_tags(ah, cam.eye, cam.yaw, cam.pitch, cam.fovy, aspect, view_w, view_h, hs.mp);
         return hs;
     }

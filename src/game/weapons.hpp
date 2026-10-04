@@ -32,6 +32,7 @@ struct SpawnLoadout {
     int start_weapon = 6;
     int start_rounds = -1;     // -1: twice the clip size (BOTWEAP_InitWeapon / MP_EquipPlayer)
     bool grapple = false;
+    unsigned sleeve = 4;       // BLData+2405; MP sessions replace the Bond default from the selected MP_skins row
 };
 
 // Sounds and visual hooks of one tick for the frontend (audio, decals, sparks, explosion sprites).
@@ -109,7 +110,7 @@ struct PlayerWeapons {
     float anim_frame_prev = 0;
     std::size_t anim_cmd_next = 0;     // next script sound command to trigger
     std::uint32_t anim_script = 0;
-    unsigned sleeve = 4;               // BLData+2405: default MP character 0 (Bond) uses Bond_hands_malewhite
+    unsigned sleeve = 4;       // BLData+2405: sleeve type (default character 0 is Bond_hands_malewhite)
     std::uint32_t datum0_entity = 0;   // Player_WeaponFiring datum-0 override: entity model hash, 0 = hidden
     std::uint32_t datum0_part = 0;     // skin part hidden while the override runs (def.datum0_gfx, e.g. suppressor)
 };

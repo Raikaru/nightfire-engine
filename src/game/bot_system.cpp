@@ -606,6 +606,9 @@ BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
     Drone& d = *bot->drone;
     d.pos = {raw_f32(obj_raw, 0x30), raw_f32(obj_raw, 0x34), raw_f32(obj_raw, 0x38)};
     d.yaw = raw_f32(obj_raw, 0x54);
+    d.fly_velocity = {raw_f32(drone_raw, 0x480), raw_f32(drone_raw, 0x484),
+                      raw_f32(drone_raw, 0x488)};
+    d.fall_velocity = d.fly_velocity;
     const float sin_yaw = std::sin(d.yaw), cos_yaw = std::cos(d.yaw);
     const auto capsule_offset = [&](std::size_t offset) {
         const Vec3 delta{raw_f32(drone_raw, offset) - d.pos[0],
@@ -957,18 +960,6 @@ void BotSystem::tick(World&, FrameTiming) {
     for (Pickup& p : arena.pickups().all())
         for (float& t : p.visit_until)
             if (t != 0 && t < clock) t = 0;
-    // Pickups taken last tick by bots: BOTSTATE_setPickupVisitTime (the 45 s lock) + statistics.
-    for (const PickupEvent& e : arena.pickup_events()) {
-        if (e.slot < 0 || e.slot >= int(arena.settings().slot_count) ||
-            !arena.settings().slots[std::size_t(e.slot)].bot) continue;
-        Bot* b = bot_at_slot(e.slot);
-        if (!b) continue;
-        b->brain->set_pickup_visit_time(int(e.index));
-        ++b->c.pickups;
-        ++counters.pickups;
-        b->brain->log_event("pickup", fmt("#%zu cat %d item %d", e.index,
-                                          arena.pickups().all()[e.index].category, arena.pickups().all()[e.index].item));
-    }
     // Humans that died since the last tick (MP_PlayerKilled -> msg 0x43 to every bot).
     for (int slot = 0; slot < int(arena.settings().slot_count); ++slot) {
         if (!arena.settings().slots[std::size_t(slot)].present || arena.settings().slots[std::size_t(slot)].bot) continue;
@@ -989,6 +980,21 @@ void BotSystem::tick(World&, FrameTiming) {
         }
         b->last_pos = b->drone->pos;
         b->have_last_pos = true;
+    }
+}
+void BotSystem::after_tick(World&, FrameTiming) {
+    ArenaSystem& arena = *impl_->cfg.arena;
+    // Apply pickup visits after ArenaSystem publishes this frame's pickup events.
+    for (const PickupEvent& e : arena.pickup_events()) {
+        if (e.slot < 0 || e.slot >= int(arena.settings().slot_count) ||
+            !arena.settings().slots[std::size_t(e.slot)].bot) continue;
+        Bot* b = bot_at_slot(e.slot);
+        if (!b) continue;
+        b->brain->set_pickup_visit_time(int(e.index));
+        ++b->c.pickups;
+        ++counters.pickups;
+        b->brain->log_event("pickup", fmt("#%zu cat %d item %d", e.index,
+                                          arena.pickups().all()[e.index].category, arena.pickups().all()[e.index].item));
     }
 }
 

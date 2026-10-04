@@ -28,7 +28,7 @@ public:
     void configure(MatchLaunch& launch) const;
     void restore(World& world, ArenaSession& session, bots::BotMatch* bots) const;
     void restore_at(std::uint64_t frame, World& world, ArenaSession& session, bots::BotMatch* bots) const;
-    bool input_for(std::uint64_t frame, PadInputs& pads, float& rate) const;
+    bool input_for(std::uint64_t frame, PadInputs& pads, float& rate, float& elapsed, float& total_elapsed) const;
 
 private:
     struct Impl;

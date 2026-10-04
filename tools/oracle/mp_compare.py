@@ -425,16 +425,18 @@ def diff_rng_events(oracle, engine, common):
     oracle_rows = [oracle[frame] for frame in comparable]
     engine_rows = [engine[frame] for frame in comparable]
 
-    def by_frame(rows):
+    def by_frame(records):
+        # PINE drains RNG events after sampling the Game_Run ring. An event
+        # tagged for frame N can therefore live on the JSONL row for N-1.
         events = {}
-        for row in rows:
+        for row in records.values():
             for event in row.get("rng_calls", []):
                 frame = int(event.get("frame", row["frame"]))
                 events.setdefault(frame, []).append(event)
         return events
 
-    oracle_events = by_frame(oracle_rows)
-    engine_events = by_frame(engine_rows)
+    oracle_events = by_frame(oracle)
+    engine_events = by_frame(engine)
     divergent = []
     total_oracle = total_engine = 0
     for frame in comparable:
