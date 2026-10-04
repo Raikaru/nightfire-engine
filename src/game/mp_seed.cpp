@@ -866,14 +866,14 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                 const std::uint16_t source_class = u16_at(drone, 0xd8);
                 bool near_player = false;
                 for (std::size_t i = 0; i < 4; ++i)
-                    near_player |= f32_at(drone, 0x154 + i * sizeof(float)) < 4.0f;
+                    near_player |= f32_at(drone, 0x154 + i * sizeof(float)) < 2.0f;
                 const bool source_mode_allows_collision = (source_flags & 0x200u) == 0;
                 const bool source_collision_predicate =
                     (source_flags & 0x20u) != 0 &&
                     (source_class == 0x0c ||
                      (source_class != 0x13 &&
                       (u32_at(drone, 0x538) != 0 || near_player || byte_at(obj, 0xfc) != 0 ||
-                       (u32_at(drone, 0x570) & 2u) != 0)));
+                       (u32_at(drone, 0x570) & 2u) == 0)));
                 bot->drone->anim.source_collision_due =
                     source_mode_allows_collision && source_collision_predicate;
                 bot->drone->anim.source_gravity_due =

@@ -592,13 +592,19 @@ void collision_step(Drone& d) {
         const FeetResult feet = world.feet_on_point(d.pos, r.b, {0, 1, 0}, h, r.contact);
         d.on_ground = feet.on_ground;
         d.ground_normal_y = feet.ground_normal_y;
-        if (!r.hits.empty()) d.pos += r.push_out;
+        if (source_collision_valid && source_collision_due && d.anim.source_hit_list_present) {
+            // The source hit-list response replaces the host capsule's approximation of that push.
+            d.pos += d.anim.source_collision_push;
+        } else if (!r.hits.empty()) {
+            d.pos += r.push_out;
+        }
     } else {
         // NDrone2_DoCollision returned false: source skips the feet probe and hit push.
         d.on_ground = false;
         d.ground_normal_y = 1.0f;
     }
     d.mv.seeded_capsule_valid = false;
+    d.anim.source_hit_list_present = false;
     d.anim.source_collision_valid = false;
     // Drone_CollisionHandler applies NDrone2_DoGravity after collision and feet resolution.
     if (!d.mv.disabled && (!source_collision_valid || source_gravity_due)) {

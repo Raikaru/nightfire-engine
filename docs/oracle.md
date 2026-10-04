@@ -888,15 +888,27 @@ The serialized `CelPos` stores a `vec4` followed by a PS2 `cel*`; those pointer
 bytes are not host `NavNetwork` cell indices. Restored route and goal positions
 resolve their cell from the coordinates with `NavNetwork::find_cel`.
 
-Seed restoration also reads the captured pose-derived collision segment from
-`drone_raw` offsets `+0x3f0`/`+0x400` and radius `+0x45c`. For the first
-seeded collision, these body-local endpoints are transformed at the current
-position/yaw, `Drone_FeetOnPoint` is evaluated before applying the collision
-push, and the one-tick override is then cleared.
+Seedable v5 bot collision capsules are rebuilt from the source animation root
+height (`anim.root_height`, including the sAnimObject `+0x60` offset), with
+`NDrone2_Collision`'s `0.02` m margin. The vertical segment uses the current
+object position and the bot radius rather than the recorder's potentially stale
+`+0x3f0`/`+0x400` endpoints.
 
-The original `Drone_CollisionHandler` applies the capsule/feet/push stage before
-`NDrone2_DoGravity`; `collision_step` now preserves that order. In the Team
-13519→13520 replay this removes slot 5's prior 1.5 mm position residual.
+`Drone_CollisionHandler` gates collision/feet processing with
+`NDrone2_DoCollision`, then calls `NDrone2_DoGravity` separately. Seed restore
+carries both source predicates so a false result does not run a host collision
+or gravity step that the source skips. After the feet probe, the source handler
+adds `Drone+0x3e0` when `obj+0xd0` is non-null; the v5 snapshot carries that
+response vector. In source-seeded replay, `collision_step` substitutes this
+restored response for the host cylinder push-out when the source collision
+path and hit-list pointer are active; this reduced Team p6 residuals to 3/337
+frames at ≤2 mm, but Arena residuals remain and need broader collision review.
+
+The isolated 200-frame Arena replay currently has 112 position-divergent
+frames, and Team Arena has 200 of 337; remaining errors include bot vertical
+motion outside this collision response. RNG state matched on all 537 aligned
+frames. Full acceptance still requires resolving the remaining replay
+residuals.
 
 Restoring an in-progress bot state clears the runtime fresh-drone flag so the
 next tick does not inject a Global `ENTER` and re-run `BotInit` over the

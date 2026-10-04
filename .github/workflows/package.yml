@@ -48,10 +48,10 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}\vcpkg-bincache
-          key: vcpkg-bin-x64-windows-6f29f12e-ffmpeg-zlib-zstd-pkgconf
+          key: vcpkg-bin-x64-windows-9e593bb1-ffmpeg-zlib-zstd-pkgconf
       - uses: lukka/run-vcpkg@v11
         with:
-          vcpkgGitCommitId: '6f29f12e82a8293156836ad81cc9bf5af41fe836'
+          vcpkgGitCommitId: '9e593bb18ea69cc5095e012465dcd675a822ed0d'
       - name: Install dependencies
         shell: pwsh
         run: |
@@ -115,7 +115,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Install smoke-test tools
-        run: sudo apt-get update && sudo apt-get install -y xdotool zstd xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xdotool zstd xvfb libopengl0 libgl1 libegl1 libgl1-mesa-dri ffmpeg libasound2t64 libpulse0
       - name: Read private ISO checksum
         id: iso
         uses: actions/checkout@v4

@@ -1,6 +1,6 @@
 #include <csignal>
 #include <condition_variable>
-#include <stop_token>
+#include <atomic>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -390,7 +390,10 @@ struct RuntimeState {
 };
 }  // namespace
 
-int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::net::ServerConfig* runtime_config = nullptr,
+// `stop` is the listen-server runtime's cancel flag (null for the dedicated nfserver process). A plain atomic rather
+// than std::stop_token: Apple's libc++ ships neither stop_token nor jthread.
+int run_server_impl(int argc, char** argv, const std::atomic<bool>* stop = nullptr,
+                    const nf::net::ServerConfig* runtime_config = nullptr,
                     RuntimeState* runtime_state = nullptr) {
     nf::GameRng server_rng;
     nf::ScopedGameRng rng_binding(server_rng);
@@ -660,7 +663,7 @@ int run_server_impl(int argc, char** argv, std::stop_token stop = {}, const nf::
         int test_give_on_kill_slot = -1, test_give_on_kill_weapon = 0;
         const nf::FrameTiming frame_timing{float(logic_hz)};
         const auto tick_duration = std::chrono::nanoseconds(1000000000 / logic_hz);
-        while (!stop.stop_requested() && (max_ticks < 0 || tick < std::uint32_t(max_ticks))) {
+        while (!(stop && stop->load(std::memory_order_relaxed)) && (max_ticks < 0 || tick < std::uint32_t(max_ticks))) {
             std::deque<std::string> commands;
             {
                 std::lock_guard lock(admin->mutex);
@@ -1156,16 +1159,16 @@ struct ServerRuntime::Impl {
         state->status.mode = config.match.mode;
     }
 
-    void run(std::stop_token stop) {
+    void run() {
         MatchConfig current{config.map, config.match};
         std::size_t rotation_index = 0;
         for (;;) {
-            if (stop.stop_requested()) break;
+            if (stop_requested.load()) break;
             ServerConfig match_config = config;
             match_config.map = current.map;
             match_config.match = current.match;
-            const int result = run_server_impl(0, nullptr, stop, &match_config, state.get());
-            if (stop.stop_requested() || result != 2) break;
+            const int result = run_server_impl(0, nullptr, &stop_requested, &match_config, state.get());
+            if (stop_requested.load() || result != 2) break;
 
             {
                 std::lock_guard lock(state->mutex);
@@ -1194,7 +1197,8 @@ struct ServerRuntime::Impl {
 
     ServerConfig config;
     std::shared_ptr<RuntimeState> state;
-    std::jthread worker;
+    std::atomic<bool> stop_requested{false};
+    std::thread worker;
 };
 
 ServerRuntime::ServerRuntime(ServerConfig config) : impl_(std::make_unique<Impl>(std::move(config))) {}
@@ -1237,7 +1241,8 @@ bool ServerRuntime::start(std::string* error_out) {
         impl_->state->queued_matches.clear();
         impl_->state->status.mode = impl_->config.match.mode;
     }
-    impl_->worker = std::jthread([runtime = impl_.get()](std::stop_token stop) { runtime->run(stop); });
+    impl_->stop_requested = false;
+    impl_->worker = std::thread([runtime = impl_.get()] { runtime->run(); });
     std::unique_lock lock(impl_->state->mutex);
     const bool started = impl_->state->condition.wait_for(lock, std::chrono::seconds(60), [&] {
         return impl_->state->startup_complete || !impl_->state->error.empty();
@@ -1247,7 +1252,7 @@ bool ServerRuntime::start(std::string* error_out) {
                                     ? impl_->state->error
                                     : "timed out while starting the authoritative server";
         lock.unlock();
-        impl_->worker.request_stop();
+        impl_->stop_requested = true;
         impl_->worker.join();
         if (error_out) *error_out = why;
         return false;
@@ -1257,7 +1262,7 @@ bool ServerRuntime::start(std::string* error_out) {
 
 void ServerRuntime::stop() {
     if (impl_ && impl_->worker.joinable()) {
-        impl_->worker.request_stop();
+        impl_->stop_requested = true;
         impl_->worker.join();
     }
 }
