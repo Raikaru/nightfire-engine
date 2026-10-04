@@ -136,6 +136,8 @@ def main():
     ap.add_argument("--inputs", help="contiguous mp_record JSONL supplying pad_all values")
     ap.add_argument("--watch-human-hp", type=int, choices=range(4),
                     help="log writes to one MP human's BLData HP, including PC and $ra")
+    ap.add_argument("--weapon-anim-raw", action="store_true",
+                    help="capture the full human weapon-animation object range")
     ap.add_argument("--timeout", type=float, default=1200.0)
     args = ap.parse_args()
     if args.rows < 1:
@@ -196,8 +198,11 @@ def main():
             F.configure_ranges = lambda pine, ranges: {
                 **configure_ranges(pine, ranges), "ranges": list(ranges)}
             F.read_next = read_next
-            sys.argv = ["mp_record.py", args.out, "--frames", str(args.rows - 1),
-                        "--seedable", "--timeout", str(args.timeout)]
+            record_args = ["mp_record.py", args.out, "--frames", str(args.rows - 1),
+                           "--seedable", "--timeout", str(args.timeout)]
+            if args.weapon_anim_raw:
+                record_args.append("--weapon-anim-raw")
+            sys.argv = record_args
             result = R.main()
             instances[0].close()
             return result

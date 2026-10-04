@@ -13,6 +13,7 @@ namespace nf::drone {
 
 namespace {
 
+
 // +x of the object frame is the character's LEFT (the original's convention: CanStrafeLeft moves by +x).
 Vec3 to_world(const Vec3& local, float yaw) {
     const float s = std::sin(yaw), c = std::cos(yaw);
@@ -503,8 +504,10 @@ void move_step(Drone& d) {
     const Vec3 before = d.pos;
     const Vec3 rm = d.mv.root_motion;
     const bool source_gate = d.anim.source_gate_valid;
+    const bool source_fallback =
+        source_gate && !d.anim.source_update_due && !d.mv.disabled && d.anim.step > 0.0f;
     Vec3 w = source_gate ? Vec3{} : to_world({rm[0], d.mv.disabled ? rm[1] : 0.0f, rm[2]}, d.yaw);
-    if (source_gate && !d.anim.source_update_due && !d.mv.disabled && d.anim.step > 0.0f) {
+    if (source_fallback) {
         w = {std::sin(d.yaw) * d.anim.step, 0.0f, std::cos(d.yaw) * d.anim.step};
     } else if (!source_gate && !d.mv.disabled && d.mv.have_dest && (w[0] == 0.0f && w[2] == 0.0f) &&
                d.anim.step > 0.0f) {
