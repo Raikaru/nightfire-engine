@@ -66,35 +66,35 @@ void Cpu::exec_cop1_s(u32 inst) {
         case 0x00: f[fd] = fp::add(a, b, fl); fpu_result_flags(fl, true); return;              // ADD.S
         case 0x01: f[fd] = fp::sub(a, b, fl); fpu_result_flags(fl, true); return;              // SUB.S
         case 0x02: f[fd] = fp::mul(a, b, fl); fpu_result_flags(fl, true); return;              // MUL.S
-        case 0x03:                                                                              // DIV.S
+        case 0x03: {                                                                             // DIV.S
+            fcr31 &= ~(kI | kD);
             if ((b & 0x7F800000u) == 0) {
                 fcr31 |= ((a & 0x7F800000u) == 0) ? (kI | kSI) : (kD | kSD);
                 f[fd] = ((a ^ b) & 0x80000000u) | fp::kFmax;
                 return;
             }
-            f[fd] = fp::div(a, b, fl);
+            f[fd] = fp::div_nearest(a, b, fl);
             return;
+        }
         case 0x04:                                                                              // SQRT.S (operand is ft)
             fcr31 &= ~(kI | kD);
-            if ((b & 0x7F800000u) == 0) f[fd] = b & 0x80000000u;
-            else {
-                if (b & 0x80000000u) fcr31 |= kI | kSI;
-                f[fd] = fp::sqrt_abs(b);
-            }
+            if (b & 0x80000000u) fcr31 |= kI | kSI;
+            f[fd] = fp::sqrt_nearest_abs(b);
             return;
         case 0x05: f[fd] = a & 0x7FFFFFFFu; fcr31 &= ~(kO | kU); return;                       // ABS.S
         case 0x06: f[fd] = a; return;                                                          // MOV.S
         case 0x07: f[fd] = a ^ 0x80000000u; fcr31 &= ~(kO | kU); return;                       // NEG.S
-        case 0x16:                                                                              // RSQRT.S: fs / sqrt(ft)
+        case 0x16: {                                                                            // RSQRT.S: fs / sqrt(ft)
             fcr31 &= ~(kD | kI);
+            if (b & 0x80000000u) fcr31 |= kI | kSI;
             if ((b & 0x7F800000u) == 0) {
-                fcr31 |= kD | kSD;
-                f[fd] = (b & 0x80000000u) | fp::kFmax;
+                fcr31 |= ((a & 0x7F800000u) == 0) ? (kI | kSI) : (kD | kSD);
+                f[fd] = (a & 0x80000000u) | fp::kFmax;
                 return;
             }
-            if (b & 0x80000000u) fcr31 |= kI | kSI;
             f[fd] = fp::div(a, fp::sqrt_abs(b), fl);
             return;
+        }
         case 0x18: fpu_acc = fp::add(a, b, fl); fpu_result_flags(fl, true); return;            // ADDA.S
         case 0x19: fpu_acc = fp::sub(a, b, fl); fpu_result_flags(fl, true); return;            // SUBA.S
         case 0x1A: fpu_acc = fp::mul(a, b, fl); fpu_result_flags(fl, true); return;            // MULA.S

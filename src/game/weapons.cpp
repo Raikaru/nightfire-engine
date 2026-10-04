@@ -1062,7 +1062,10 @@ void WeaponSystem::init_bullet(int slot, PlayerWeapons& p, World& world) {
     s.owner_aiming = p.aim;
     s.shots_in_burst = std::max(0, p.cycle_start - p.shots_left);   // fired_in_cycle; spawn clamps by clipSize
     fire(s, d.id);
-    if (d.model_gfx != 0 && d.muzzle_script != 0) p.muzzle_frames = d.id == 51 ? 7 : 3;
+    if (d.model_gfx != 0 && d.muzzle_script != 0) {
+        p.muzzle_frames = d.id == 51 ? 7 : 3;
+        if (tuning_.mode == GameMode::Multiplayer) ++p.muzzle_lights_pending;
+    }
     p.rumble = d.rumble;
 }
 
@@ -1181,6 +1184,10 @@ void WeaponSystem::post_tick_rng() {
                               table_.weapon(pair).has(wf1::kLaserSight));
         if (sighted) (void)game_rng().rand_int(9);
         if (p->muzzle_frames > 0) {
+            while (p->muzzle_lights_pending > 0) {
+                --p->muzzle_lights_pending;
+                (void)game_rng().rand_int(0);   // Light_Create calls Rand_Rand(0), still advancing the stream.
+            }
             (void)game_rng().frand(1.0f);
             (void)game_rng().frand(1.0f);
             (void)game_rng().frand(1.0f);

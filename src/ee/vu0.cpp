@@ -100,17 +100,16 @@ void Vu0::fmac(Op op, u32 inst, int sel, bool to_acc) {
         const u32 b = sel == kBcNone ? t.w[lane] : bcv;
         u32 fl = 0, v;
         switch (op) {
-            case Op::Add: v = fp::add(a, b, fl); break;
-            case Op::Sub: v = fp::sub(a, b, fl); break;
-            case Op::Mul: v = fp::mul(a, b, fl); break;
+            case Op::Add: v = fp::vu_add(a, b, fl); break;
+            case Op::Sub: v = fp::vu_sub(a, b, fl); break;
             case Op::Madd: {
                 u32 ignore = 0;
-                v = fp::add(acc.w[lane], fp::mul(a, b, ignore), fl);
+                v = fp::vu_add(acc.w[lane], fp::mul(a, b, ignore), fl);
                 break;
             }
             default: {
                 u32 ignore = 0;
-                v = fp::sub(acc.w[lane], fp::mul(a, b, ignore), fl);
+                v = fp::vu_sub(acc.w[lane], fp::mul(a, b, ignore), fl);
                 break;
             }
         }
@@ -180,21 +179,17 @@ void Vu0::div_family(u32 inst, int kind) {
             }
             break;
         case 1:
-            if (t & 0x80000000u && !t_zero) flags = 0x10u;
+            if (t & 0x80000000u) flags = 0x10u;
             q = fp::sqrt_abs(t);
             break;
         default:
+            if (t & 0x80000000u) flags = 0x10u;
+            q = fp::sqrt_abs(t);
             if (t_zero) {
-                flags = 0x20u;
-                if (!s_zero) {
-                    q = sign_xor ? 0xFF7FFFFFu : 0x7F7FFFFFu;
-                } else {
-                    q = sign_xor ? 0x80000000u : 0u;
-                    flags |= 0x10u;
-                }
+                flags = s_zero ? 0x10u : 0x20u;
+                q = (s & 0x80000000u) | 0x7F7FFFFFu;
             } else {
-                if (t & 0x80000000u) flags = 0x10u;
-                q = fp::div(s, fp::sqrt_abs(t), fl);
+                q = fp::div(s, q, fl);
             }
             break;
     }
@@ -329,9 +324,9 @@ void Vu0::macro(u32 inst) {
             case 0x2E: {  // VOPMSUB: Fd.xyz = ACC.xyz - (Fs.yzx * Ft.zxy)
                 const Reg128 s = vf[fs], t = vf[ft];
                 u32 fl[3] = {0, 0, 0}, ig = 0;
-                const u32 r[3] = {fp::sub(acc.w[0], fp::mul(s.w[1], t.w[2], ig), fl[0]),
-                                  fp::sub(acc.w[1], fp::mul(s.w[2], t.w[0], ig), fl[1]),
-                                  fp::sub(acc.w[2], fp::mul(s.w[0], t.w[1], ig), fl[2])};
+                const u32 r[3] = {fp::vu_sub(acc.w[0], fp::mul(s.w[1], t.w[2], ig), fl[0]),
+                                  fp::vu_sub(acc.w[1], fp::mul(s.w[2], t.w[0], ig), fl[1]),
+                                  fp::vu_sub(acc.w[2], fp::mul(s.w[0], t.w[1], ig), fl[2])};
                 for (int l = 0; l < 3; ++l) {
                     const u32 v = mac_lane(l, r[l], fl[l]);
                     if (fd) vf[fd].w[l] = v;

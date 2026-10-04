@@ -174,6 +174,11 @@ Offsets in bytes; “use” cites the function that proves it.
 | +260 | ptr | fire callback (called after firing if non-null) – **always 0** in the table | `Player_WeaponInitBullet` |
 | +264 | ptr | impact callback `(bullet,normal,pos)`; sets `obj+254|=1` – **always 0** | `Bullet_CollisionHandler` |
 
+Muzzle-light creation is RNG-visible even with zero variance: `Player_MuzzleFlash` calls `Light_Create`
+when the weapon model (`+220`) and muzzle script (`+72`) are present, passing `param_11 = 0`.
+`Light_Create` unconditionally calls `Rand_Rand(param_11)`, which still advances the global stream for
+`Rand_Rand(0)`; the MP view's later `Draw_MuzzleFlash` then consumes three `Rand_FRand` draws.
+
 The 34-row `ammo_data` table, the name label ids and every raw hash are in §5.
 
 ### 2.2 Per-player weapon state (`BLData`, `obj+224`; `obj+220` is the player's `weapon state`)

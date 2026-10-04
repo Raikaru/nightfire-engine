@@ -46,6 +46,7 @@ copies, skipping the SPR DMA + timer sync at `0x1000D000`).
 ./build-x/nfmips $ELF call 'AccelFunc0__FfPffffff' i:0x1e00000 f:0.9 f:0.05 f:2.0 f:10 f:0.05 f:0.95 --dump 0x1e00000:4
 ./build-x/nfmips $ELF init --check        # full static init + weapon_data cross-check
 ./build-x/nfmips $ELF diff --count 10000  # differential tests (see below)
+./build-x/nfmips $ELF float-selftest       # bit-pattern assertions for EE/VU float semantics
 ./build-x/nfmips $ELF trace 'AccelFunc0__FfPffffff' i:0x1e00000 f:0.9 f:0.05 f:2.0 f:10 f:0.05 f:0.95 --steps 200
 ```
 
@@ -126,27 +127,25 @@ Determined from `ACTION.ELF` disassembly, not assumed:
 The EE FPU has no Inf/NaN and flushes denormals; `nf_ee` models that in integer
 arithmetic (`src/ee/ps2float.*`), independent of the host FPU:
 
-- Every op rounds toward zero, exactly once. Fused forms (`MADD`/`MSUB`,
-  `MADDA`/`MSUBA`) are a truncated multiply followed by a truncated add,
-  matching the PCSX2 interpreters. Note the bias this creates in loops: 159
-  truncated `x -= 2pi` steps (PS2Sinf reduction) accumulate ~80 ulp of
-  same-sign error (~1.9e-5), where a host round-to-nearest loop would only
-  random-walk ~6 ulp — replicas must truncate per iteration, not just match
-  the count.
+- EE COP1 `ADD.S`/`SUB.S` apply PCSX2's one-guard-bit operand reduction before
+  the Chop operation: exponent gaps 1-24 mask the smaller mantissa's low bits,
+  and gaps >=25 reduce it to signed zero. VU0 macro `VADD`/`VSUB` instead use
+  the direct Chop operation.
+- `MUL.S`, VU multiply, and the multiply half of `MADD`/`MSUB` truncate
+  toward zero. Fused forms are not fused: multiply first, then apply the
+  corresponding EE-FPU or VU add/sub operation.
+- EE `DIV.S` uses PCSX2's separate default `FPUDivFPCR`, which is nearest-even
+  (unlike the general EE FPU Chop mode); the VU divide and EE `RSQRT.S`
+  SQRT-plus-DIV sequence remain Chop. EE `SQRT.S` temporarily uses nearest.
 - Overflow yields +/-`Fmax` (+FPU `O` flag); underflow yields signed zero (+`U`
-  flag). Division by zero yields +/-`Fmax` (+`D`/`I` flags like PCSX2);
-  `0/0` also sets `I`. `SQRT.S` of a negative sets `I` and roots the magnitude.
+  flag). Divide-by-zero yields +/-`Fmax` (+`D`/`I` flags); `0/0` also sets
+  `I`. EE `SQRT.S` of a negative sets `I` and roots the magnitude.
   `CVT.W.S` truncates with saturation.
 - Comparisons are ordered (nothing is NaN); `MAX.S`/`MIN.S` pick by
   sign-magnitude, like the hardware.
-- VU0 macro-mode float ops use the same core, including `VCLIP` (with the
-  hardware's flag-bit layout), `VDIV`/`VSQRT`/`VRSQRT` latency fields
-  (results immediate; `VWAITQ` is a nop), `R`/`I`/`Q`/`P` registers, and MAC
-  flag updates per lane. One deliberate simplification, documented here: VU
-  `ADD`/`MUL` on real hardware round the intermediate differently from a
-  single truncate in rare cases; we truncate once per op (the PCSX2
-  interpreter/microVU model). The `Vec_Dist3D` differential below bounds the
-  effect: max relative error < 1e-6 over 10k random vectors.
+- VU0 macro mode follows PCSX2's microVU operation order, including `VCLIP`
+  flag-bit layout, `VDIV`/`VSQRT`/`VRSQRT` latency fields (results immediate;
+  `VWAITQ` is a nop), `R`/`I`/`Q`/`P` registers, and MAC flag updates per lane.
 - Integer `DIV`/`DIVU` by zero and `MULT` lane semantics follow the EE manual
   (LO=`-1`/unsigned-max conventions); `ADD`/`DADD`/`SUB` and immediates trap
   on overflow (`IntegerOverflow`), the wrapping forms do not.
@@ -249,9 +248,9 @@ kept next to the calls in `src/tools/nfmips.cpp`:
 
 | # | original | engine reference | measured (seed 12345; fresh and slot-2-seeded runs identical) |
 |---|---|---|---|
-| 1 | `AccelFunc0__FfPffffff` (`0x1A9218`) | `accel_ramp` (`src/game/player.cpp`) | exact-bit 4944/10000 (49.44%), max abs diff 3.8e-6 -> PASS (< 1e-5) |
-| 2 | `Intersect_RayBox__FPC11HITTEST_tagP7_VECTORT1Rf` (`0x1E9008`) | `ray_box` (`src/game/collision_world.cpp`) | hit-agree 10000/10000, t-exact 9656/10000, max\|t-diff\| 4.8e-7 -> PASS (< 1e-4) |
-| 3 | `Vec_Dist3D__FPC7_VECTORT0` (`0x1E2E48`, VU0 `VSUB`/`VMUL` + FPU) | fp64 `sqrt` | exact-bit 405/10000 (4.05%), max rel err 2.8e-7 -> PASS (< 1e-6) |
+| 1 | `AccelFunc0__FfPffffff` (`0x1A9218`) | `accel_ramp` (`src/game/player.cpp`) | exact-bit 5469/10000 (54.69%), max abs diff 3.8147e-6 -> PASS (< 1e-5) |
+| 2 | `Intersect_RayBox__FPC11HITTEST_tagP7_VECTORT1Rf` (`0x1E9008`) | `ray_box` (`src/game/collision_world.cpp`) | hit-agree 10000/10000, t-exact 10000/10000, max\|t-diff\| 0 -> PASS (< 1e-4) |
+| 3 | `Vec_Dist3D__FPC7_VECTORT0` (`0x1E2E48`, VU0 `VSUB`/`VMUL` + FPU) | fp64 `sqrt` | exact-bit 3272/10000 (32.72%), max rel err 2.33997e-7 -> PASS (< 1e-6) |
 
 `nfmips <elf> diff-mpweap` emits the MP combat truth tables (Combat slice; host side `nfdump
 diff-mpweap`): 24 per-shot spread draw triples (`Rand_FRand_MVar2(2A,A)`, `Rand_FRand(2pi/pi)`,
@@ -267,11 +266,11 @@ report). Test 1 takes `(state*, stick, speed, mul, steps, centred, full)`;
 test 2 fakes the `HITTEST` as 256 zeroed bytes + origin at `+0x20`, direction
 at `+0x40`, radius at `+0x8C`, mixes `radius = max(|dir|, 1)` (as real callers
 pass) with uniform radii, injects zero-direction lanes for the parallel-slab
-paths, and biases half the origins near the box (face + inside-box `t = 0`
-paths). Residual bit differences are the documented
-round-toward-zero-vs-nearest gap, not logic errors: AccelFunc0 lands within a
-few ulps (max 3.8e-6 on values up to ~30), RayBox `t` within 4.8e-7, Dist3D
-within 2.8e-7 relative.
+paths, and biases half the origins near the box (face + inside-box `t = 0` paths).
+The exact-bit rates are diagnostic rather than the acceptance criterion: RayBox
+is exact for all 10k inputs, while AccelFunc0 and Vec_Dist3D remain within their
+documented absolute/relative tolerances. Both fresh-image and slot-2-seeded
+runs produced the same measurements with seed 12345.
 
 ## Traps (fail loud, never silent)
 
