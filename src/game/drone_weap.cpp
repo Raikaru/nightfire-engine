@@ -8,6 +8,7 @@
 #include "game/drone_system.hpp"
 #include "game/drone_vision.hpp"
 #include "game/weapons.hpp"
+#include "game/ee_math.hpp"
 
 namespace nf::drone::weap {
 
@@ -24,33 +25,22 @@ namespace {
 const DroneTuning& tuning(const Drone& d) { return d.sys->config().tuning; }
 bool multiplayer(const Drone& d) { return d.sys->config().multiplayer; }
 
-// PS2Sinf range reduction. The EE sub.s/add.s round toward zero (not to nearest), so every loop
-// iteration errs downward and the error accumulates linearly (~80 ulp at x=1000); a round-to-nearest
-// host loop random-walks instead and diverges past tolerance. Replicated exactly: double subtract,
-// float convert, one-ulp pull toward zero when the conversion rounded away from it.
-// Used by the aim-wobble path so differential comparisons against the original hold to 1e-5.
+// PS2Sinf range reduction uses COP1 sub.s/add.s, which truncate toward zero on the EE.
 float ps2_sinf_arg(float x) {
-    constexpr double two_pi = 6.2831854820251465;   // 0x40C90FDB
-    if (3.1415927f <= x) {
+    constexpr float pi = 3.1415927f;
+    constexpr float two_pi = 6.2831855f;
+    if (pi <= x) {
         do {
-            const double d = double(x) - two_pi;
-            float r = float(d);
-            if (double(r) > d) r = std::nextafterf(r, 0.0f);
-            x = r;
-        } while (3.1415927f <= x);
+            x = nf::game::ee_math::sub(x, two_pi);
+        } while (pi <= x);
     } else {
-        while (x < -3.1415927f) {
-            const double d = double(x) + two_pi;
-            float r = float(d);
-            if (double(r) < d) r = std::nextafterf(r, 0.0f);
-            x = r;
-        }
+        while (x < -pi) x = nf::game::ee_math::add(x, two_pi);
     }
     if (x <= 1.5707964f) {
         if (-1.5707964f <= x) return x;
-        return -3.1415927f - x;
+        return nf::game::ee_math::sub(-pi, x);
     }
-    return 3.1415927f - x;
+    return nf::game::ee_math::sub(pi, x);
 }
 
 // ps2_sin lives at weap scope below (shared with the bot aim-wobble); ps2_sinf_arg stays file-local.
@@ -78,18 +68,16 @@ const WeaponDef* weapon_def(const Drone& d) {
 }
 
 }  // namespace
-// PS2Sinf polynomial: Horner in f32 with the .sdata constants @0x2f3b20, verified bit-near-exact
-// (max 2.4e-7 over 2001 samples incl. the ±1.00000012 endpoint overshoot) against the original.
-// Shared with the bot aim-wobble (BOT_opponentTargetting).
+// PS2Sinf polynomial, evaluated with the source's VU0 operation semantics.
 float ps2_sin(float x) {
-    // Table: {-0.00019807414, -0.1666665673, 0.0083330255, 2.601887e-6} (lanes c0..c3).
+    // The source evaluates the polynomial in this order with VU0 multiply/add operations.
     constexpr float c0 = -0.00019807414f, c1 = -0.1666665673f, c2 = 0.0083330255f, c3 = 2.601887e-6f;
     const float a = ps2_sinf_arg(x);
-    const float a2 = a * a;
-    const float inner = a2 * c3 + c0;
-    const float m2 = a2 * inner + c2;
-    const float m1 = a2 * m2 + c1;
-    return a * (1.0f + a2 * m1);
+    const float a2 = nf::game::ee_math::mul(a, a);
+    const float inner = nf::game::ee_math::add(nf::game::ee_math::mul(a2, c3), c0);
+    const float m2 = nf::game::ee_math::add(nf::game::ee_math::mul(a2, inner), c2);
+    const float m1 = nf::game::ee_math::add(nf::game::ee_math::mul(a2, m2), c1);
+    return nf::game::ee_math::mul(a, nf::game::ee_math::add(1.0f, nf::game::ee_math::mul(a2, m1)));
 }
 
 

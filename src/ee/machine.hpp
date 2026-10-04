@@ -70,6 +70,7 @@ struct CallResult {
 // hook set); return false to execute the instruction normally (e.g. counting).
 // The hook may read arguments from cpu.r[4..7] / cpu.f[12..] / RAM.
 using Hook = std::function<bool(Cpu& cpu)>;
+using InstructionObserver = std::function<void(const Cpu&, u32 pc, u32 inst)>;
 
 class Machine {
 public:
@@ -148,6 +149,10 @@ public:
     // Runs until `entry` returns (like call) or `max_steps` is hit.
     void trace(u32 entry, const CallArgs& args, u64 max_steps, FILE* out);
     void trace(const std::string& sym, const CallArgs& args, u64 max_steps, FILE* out);
+    // Observes executed instructions inside call()/call_keep() without changing semantics.
+    void set_instruction_observer(InstructionObserver observer) {
+        instruction_observer_ = std::move(observer);
+    }
 
     static constexpr u32 kStackTop = 0x01FE0000u;  // game's _stack symbol
     static constexpr u32 kAllocBase = 0x01E00000u;  // scratch region below the stack
@@ -172,6 +177,7 @@ private:
     std::map<u32, Hook> hooks_;
     u32 alloc_ptr_ = kAllocBase;
     u32 sentinel_ = 0xFFFFFFF0u;
+    InstructionObserver instruction_observer_;
     std::unique_ptr<class HostFs> fs_;
 };
 

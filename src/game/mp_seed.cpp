@@ -646,7 +646,8 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
             weapon_state->last_gadget = int_number(timers.at("last_gadget"));
             // Player_WeaponFiring decrements the 16-bit trigger counter, then branches on its sign; 0xffff is
             // the source sentinel, not 65535 available shots.
-            weapon_state->shots_left = std::int16_t(int_number(timers.at("trigger_remaining")));
+            weapon_state->shots_left =
+                std::bit_cast<std::int16_t>(std::uint16_t(uint_number(timers.at("trigger_remaining"))));
             weapon_state->muzzle_frames = int_number(timers.at("muzzle_timer"));
             if (const Json* anim_state = item.find("weapon_anim_state"))
                 weapon_state->anim_state = WeaponAnim(std::uint8_t(int_number(*anim_state)));

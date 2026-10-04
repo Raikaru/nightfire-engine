@@ -19,6 +19,11 @@ else()
   set(NF_WARNINGS -Wall -Wextra)
 endif()
 
+# PS2 float operations are shared by the gameplay mirror and the optional EE interpreter.
+add_library(nf_ee_float STATIC src/ee/ps2float.cpp)
+target_include_directories(nf_ee_float PUBLIC src)
+target_compile_options(nf_ee_float PRIVATE ${NF_WARNINGS})
+
 include(FetchContent)
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
@@ -150,7 +155,7 @@ target_compile_options(nfui PRIVATE ${NF_WARNINGS})
 file(GLOB NF_GAME_SOURCES CONFIGURE_DEPENDS src/game/*.cpp)
 list(FILTER NF_GAME_SOURCES EXCLUDE REGEX "/(main|nfgame_[a-z_]+)\\.cpp$")   # the nfgame_* files draw, so they belong to the executable
 add_library(nf_game STATIC ${NF_GAME_SOURCES})
-target_link_libraries(nf_game PUBLIC nf_assets)
+target_link_libraries(nf_game PUBLIC nf_assets nf_ee_float)
 target_compile_options(nf_game PRIVATE ${NF_WARNINGS})
 
 add_executable(nfgame src/game/main.cpp src/game/nfgame_mp.cpp src/game/nfgame_weapon_hud.cpp
@@ -169,6 +174,7 @@ if(NF_BUILD_EE_TOOLS)
   # EE/R5900 headless interpreter + harness (docs/ee.md). nf_ee needs only
   # zlib/zstd; nfmips additionally links nf_assets for the weapon_data check.
   file(GLOB NF_EE_SOURCES CONFIGURE_DEPENDS src/ee/*.cpp)
+  list(FILTER NF_EE_SOURCES EXCLUDE REGEX "/ps2float\\.cpp$")
   add_library(nf_ee STATIC ${NF_EE_SOURCES})
   target_include_directories(nf_ee PUBLIC src)
   find_package(ZLIB REQUIRED)

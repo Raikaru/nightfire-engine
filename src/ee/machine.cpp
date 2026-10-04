@@ -198,6 +198,13 @@ CallResult Machine::run_until_return(u64 step_limit) {
             cpu.npc = cpu.pc + 4;
             continue;
         }
+        if (instruction_observer_) {
+            if (const u8* p = mem.host(cpu.pc, 4)) {
+                u32 inst;
+                std::memcpy(&inst, p, sizeof(inst));
+                instruction_observer_(cpu, cpu.pc, inst);
+            }
+        }
         try {
             cpu.step();
         } catch (Trap& t) {
