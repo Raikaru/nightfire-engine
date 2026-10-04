@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <limits>
 #include <optional>
 #include <unordered_map>
@@ -240,7 +239,7 @@ bool RoomMap::view_can_reach(int from, int target, const Vec3& eye, const Vec3& 
         int room = kNone;
         std::size_t next_portal = 0;
         std::size_t plane_count = 0;
-        std::array<Plane, 46> planes{};
+        std::array<Plane, 10> planes{};
     };
     constexpr std::size_t kCelLimit = 64;    // Vision_AddCelToDraw's VisCelCount capacity.
     constexpr std::size_t kPlaneLimit = 46;  // Vision_Recurse refuses portal depth >= 0x2e.
@@ -248,18 +247,19 @@ bool RoomMap::view_can_reach(int from, int target, const Vec3& eye, const Vec3& 
     std::array<Frame, kPlaneLimit> stack{};
     Frame& root = stack[0];
     root.room = from;
-    root.plane_count = 4;
+    root.plane_count = 5;
     root.planes[0] = make_plane(forward * tan_half_x + right);
     root.planes[1] = make_plane(forward * tan_half_x - right);
     root.planes[2] = make_plane(forward * tan_half_y + up);
     root.planes[3] = make_plane(forward * tan_half_y - up);
+    root.planes[4] = {forward * -1.0f, dot(forward, eye) + 200.0f};
 
     std::array<int, kCelLimit> visible{};
     visible[0] = from;
     std::size_t visible_count = 1;
     std::size_t depth = 1;
     int recurse_count = 1;
-    while (depth != 0 && recurse_count < 100) {
+    while (depth != 0) {
         Frame& frame = stack[depth - 1];
         const Room& room = rooms_[std::size_t(frame.room)];
         if (frame.next_portal == room.portals.size()) {
@@ -294,11 +294,7 @@ bool RoomMap::view_can_reach(int from, int target, const Vec3& eye, const Vec3& 
             std::swap(input, output);
             point_count = clipped_count;
         }
-        if (from == 8 && target == 5)
-            std::fprintf(stderr, "PORTAL room=%d dest=%d clipped=%zu plane=%zu\\n",
-                          frame.room, portal.dest, point_count, frame.plane_count);
         if (point_count == 0) continue;
-        if (portal.dest == target) return true;
 
         bool already_visible = false;
         for (std::size_t i = 0; i < visible_count; ++i)
@@ -306,18 +302,20 @@ bool RoomMap::view_can_reach(int from, int target, const Vec3& eye, const Vec3& 
                 already_visible = true;
                 break;
             }
-        if (!already_visible && visible_count < visible.size()) visible[visible_count++] = portal.dest;
-        if (++recurse_count >= 100 || depth == stack.size()) continue;
+        const bool added = !already_visible && visible_count < visible.size();
+        if (added) visible[visible_count++] = portal.dest;
+        if (portal.dest == target && (already_visible || added)) return true;
+        if (point_count < 3 || recurse_count >= 100 || depth == stack.size()) continue;
+        ++recurse_count;
 
         Frame& child = stack[depth++];
         child.room = portal.dest;
         child.next_portal = 0;
-        child.plane_count = frame.plane_count;
-        for (std::size_t i = 0; i < frame.plane_count; ++i) child.planes[i] = frame.planes[i];
+        child.plane_count = 0;
         Vec3 center{};
         for (std::size_t i = 0; i < point_count; ++i) center += (*input)[i];
         center = center * (1.0f / float(point_count));
-        for (std::size_t i = 0; i < point_count && child.plane_count < child.planes.size(); ++i) {
+        for (std::size_t i = 0; i < point_count && child.plane_count + 1 < child.planes.size(); ++i) {
             const Vec3 a = (*input)[i] - eye;
             const Vec3 b = (*input)[(i + 1) % point_count] - eye;
             Vec3 normal = cross(a, b);
@@ -328,6 +326,19 @@ bool RoomMap::view_can_reach(int from, int target, const Vec3& eye, const Vec3& 
             if (dot(normal, center) + d < 0.0f) normal = normal * -1.0f, d = -d;
             child.planes[child.plane_count++] = {normal, d};
         }
+        Vec3 portal_normal = cross(portal.quad[1] - portal.quad[0], portal.quad[2] - portal.quad[0]);
+        const float portal_magnitude = length(portal_normal);
+        if (portal_magnitude <= 1.0e-6f) {
+            --depth;
+            continue;
+        }
+        portal_normal = portal_normal * (1.0f / portal_magnitude);
+        float portal_d = -dot(portal_normal, portal.quad[0]);
+        const Room& destination = rooms_[std::size_t(portal.dest)];
+        const Vec3 destination_center = (destination.min + destination.max) * 0.5f;
+        if (dot(portal_normal, destination_center) + portal_d < 0.0f)
+            portal_normal = portal_normal * -1.0f, portal_d = -portal_d;
+        child.planes[child.plane_count++] = {portal_normal, portal_d};
     }
     return false;
 }
