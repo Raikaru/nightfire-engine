@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "game/drone_system.hpp"
+#include "game/drone_move.hpp"
 #include "game/drone_weap.hpp"
 
 namespace nf::drone {
@@ -273,9 +274,26 @@ void anim_update(Drone& d) {
         }
     }
 
-    if (!d.character) return;
+    if (!d.character) {
+        a.source_gate_valid = false;
+        a.source_update_due = true;
+        return;
+    }
+    const bool source_gate = a.source_gate_valid;
+    if (source_gate && !a.source_update_due) {
+        a.source_gate_valid = false;
+        a.source_update_due = true;
+        return;
+    }
     d.character->tick(d.sys->timing().FRAME_RATE_MUL);
-    d.mv.root_motion = d.character->root_motion();
+    if (source_gate) {
+        apply_animation_root_motion(d, d.character->root_motion(), a.source_root_yaw);
+        d.mv.root_motion = {};
+        a.source_gate_valid = false;
+        a.source_update_due = true;
+    } else {
+        d.mv.root_motion = d.character->root_motion();
+    }
     for (const AnimEvent& e : d.character->take_events()) {
         if (e.kind == AnimEventKind::Footstep) {
             if (d.sys->callbacks().on_footstep) d.sys->callbacks().on_footstep(d);

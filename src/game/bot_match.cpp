@@ -30,7 +30,8 @@ void BotMatch::install(ArenaSession& session) {
     const std::size_t available = settings.slot_count > first_bot ? settings.slot_count - first_bot : 0;
     if (roster_.size() > available) roster_.resize(available);
     for (std::size_t i = 0; i < roster_.size(); ++i) roster_[i].slot = int(first_bot + i);
-    fill_bot_slots(settings, roster_);
+    if (session.options().roster_override)
+        for (BotSpec& spec : roster_) spec.team = settings.slots[std::size_t(spec.slot)].team;
     // Bots are drones: multiplayer perception / firing branches, difficulty forced to 1 by P_MPCONFIRM_Handler.
     drone::DroneConfig dc;
     dc.elf = &elf_;

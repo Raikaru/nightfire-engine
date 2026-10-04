@@ -350,8 +350,7 @@ struct Args {
     std::string hold;                     // --hold pad0:r1,pad1:l1: virtual pad buttons held during the match
 };
 bool parse_args(int argc, char** argv, Args& a) {
-    if (argc < 2) return false;
-    // --help anywhere (including argv[1]) prints usage without a gamedir.
+    // --help works without a positional game directory.
     for (int i = 1; i < argc; ++i) {
         const std::string v = argv[i];
         if (v == "--help" || v == "-h") {
@@ -359,8 +358,12 @@ bool parse_args(int argc, char** argv, Args& a) {
             return true;
         }
     }
-    a.gamedir = argv[1];
-    for (int i = 2; i < argc; ++i) {
+    int first_option = 1;
+    if (argc > 1 && argv[1][0] != '-') {
+        a.gamedir = argv[1];
+        first_option = 2;
+    }
+    for (int i = first_option; i < argc; ++i) {
         const std::string v = argv[i];
         auto need = [&](std::string& dst) {
             if (i + 1 >= argc) throw std::runtime_error(v + " needs a value");
@@ -539,6 +542,16 @@ int run(int argc, char** argv) {
     }
     AppConfig cfg;
     load_config(config_path(), cfg);
+    if (args.gamedir.empty()) args.gamedir = cfg.game_dir;
+    if (!args.gamedir.empty() && args.gamedir != cfg.game_dir) {
+        cfg.game_dir = args.gamedir;
+        save_config(config_path(), cfg);
+    }
+    if (args.gamedir.empty()) {
+        std::fprintf(stderr, "nightfire: no game data configured. Extract your own Nightfire disc into %s and run nightfire <gamedir>.\n",
+                     user_data_path().string().c_str());
+        return 2;
+    }
     cfg.logic_hz = args.logic_hz;
     if (args.password.size() > nf::net::kMaxPasswordBytes)
         throw std::runtime_error("--password is limited to 64 bytes");

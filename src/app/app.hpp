@@ -22,11 +22,12 @@
 
 namespace nf::app {
 
-// Persisted settings (docs/ui.md "Front end": the P_CNOPTIONS / P_CNAVOPTIONS /
-// P_CNCONTROLS / P_CNMPOPTIONS pages). Stored as key=value in
-// ~/.config/nightfire/nightfire.cfg (see config.cpp); the options pages edit
-// the live GameOptions/PlayerOptions and the app writes them back on change.
+// Persisted settings and the configured extracted game-data directory.
+// Stored as key=value in the platform user config directory.
+// Platform config-path details are handled by config.cpp. Options pages edit
+// the live GameOptions/PlayerOptions and write them back on change.
 struct AppConfig {
+    std::string game_dir;
     // Audio (P_CNAVOPTIONS sliders 0x134/0x135, applied via SFXSetVolume/SFXMusicSetVolume).
     int sfx_volume = 100;
     int music_volume = 70;
@@ -62,6 +63,7 @@ struct AppConfig {
 };
 
 std::filesystem::path config_path();
+std::filesystem::path user_data_path();
 bool load_config(const std::filesystem::path& path, AppConfig& cfg);
 bool save_config(const std::filesystem::path& path, const AppConfig& cfg);
 

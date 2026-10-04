@@ -1,0 +1,65 @@
+# Packaging
+
+Packages contain the engine and its tooling only. They do not contain a game disc, game data, BIOS, or copyrighted game artwork. Supply data from a disc/ISO you own. UI artwork used by the executable is built into the executable; distributable source sheets/manifests and art-generation scripts are included for maintainers.
+
+## Common build
+
+Use CMake 3.24+, Ninja, a C++20 compiler, OpenGL development files, zlib, zstd, and FFmpeg development files. SDL3 is built from the CMake FetchContent dependency. Example Linux build:
+
+```sh
+cmake -S . -B build -G Ninja
+cmake --build build --parallel 2
+```
+
+`cmake --install build --prefix /usr/local` installs the game and the command-line tools. Never add user-supplied game files to the install tree.
+
+## Linux tar.gz
+
+```sh
+cmake -S . -B build -G Ninja
+cmake --build build --parallel 2
+(cd build && cpack -G TGZ)
+```
+
+The archive installs binaries under `bin/` and supporting maintainers' art assets under `share/nightfire/`. Extract it anywhere and invoke `bin/nightfire`. Linux user configuration is `${XDG_CONFIG_HOME:-$HOME/.config}/nightfire/nightfire.cfg`; the game-data setting is stored there. User data defaults to `${XDG_DATA_HOME:-$HOME/.local/share}/nightfire`.
+
+### AppImage
+
+Build and test the ordinary Linux build first. Install `appimagetool`, then run:
+
+```sh
+packaging/linux/build-appimage.sh build dist/nightfire-x86_64.AppImage
+```
+
+The helper stages `cmake --install` output in an AppDir and invokes `appimagetool`. It does not bundle game data. For a portable release, build on the oldest supported glibc baseline and audit dynamic runtime dependencies.
+
+## Windows
+
+With Visual Studio and NSIS installed, configure using the Visual Studio generator, build, then run `cpack -G ZIP` or `cpack -G NSIS` from the build directory. Both generators are configured in CMake; the ZIP is the portable option and NSIS creates an installer.
+
+A MinGW-w64 cross-toolchain file is provided at `cmake/toolchains/mingw-w64-x86_64.cmake`:
+
+```sh
+cmake -S . -B build-win -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-x86_64.cmake
+cmake --build build-win --parallel 2
+(cd build-win && cpack -G ZIP)
+```
+
+Install a matching x86_64 MinGW-w64 compiler plus Windows-target dependencies (OpenGL/SDL3/FFmpeg/zlib/zstd) before configuring. Windows builds are not exercised by this Linux packaging workflow. On Windows, configuration is under `%APPDATA%\Nightfire\nightfire.cfg` and per-user data is under `%APPDATA%\Nightfire\data`.
+
+## macOS
+
+On macOS, configure/build with CMake and generate a DMG:
+
+```sh
+cmake -S . -B build -G Ninja
+cmake --build build --parallel 2
+(cd build && cpack -G DragNDrop)
+```
+
+CMake marks `nightfire` as an application bundle and configures CPack's `DragNDrop` DMG generator. `packaging/macos/Info.plist.in` documents the bundle metadata. The bundle is not built or tested on Linux; validate bundle resource placement, signing/notarization and runtime library resolution on macOS before release. macOS user configuration and game data live under `~/Library/Application Support/Nightfire/`.
+
+## Disc data
+
+The current application accepts an extracted game directory as its first positional argument. With no directory argument it uses the saved `game_dir` setting; passing a directory updates that setting. Obtain your own disc and extract `ACTION.ELF`, `FILES.BIN`, and any optional data described in the README. `nfdump <gamedir> validate` is the data validation command. This release does not provide automatic ISO extraction or a graphical first-run setup wizard; first-run disc setup remains unimplemented.

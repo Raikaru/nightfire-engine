@@ -224,23 +224,65 @@ yet live-probed; bot hit-zone and flash fields are not mapped.
 Use `python3 tools/oracle/mp_record.py OUT.jsonl --load-slot SLOT --seedable
 --frames N` for a seedable per-logic-frame capture. Seedable reads come from
 the end-of-`Game_Run` frame ring; objective blobs, weapon-animation objects,
-bot route-node buffers, and AI path graphs are included in its immutable
-snapshot. Dynamic pointers are checked against the sampled records; when a
-pointer changes, the recorder refreshes that range schema and skips the
-transition sample. Each accepted row carries `seed_version: 4`, the separately
-sampled GameState+0x34 `timer_frame`, four RNG words, four controller inputs
-(`pad_all`), MP settings/game state, the eight `mp_roster` records, indexed
-`pk[]` pickup records, every objective extension blob (`objx`), and
-`objectives[]` records resolved from `MP_OBJ_EXT+0x84` back-pointers
-(`MPOBJECT* - 0xE0` gives the root object).
-position, state, category/item, amount, timestamp, lifetime countdown,
-radar-hidden state, and four `visit_until` values from MPpickups+0x80. Valid
-human weapon-animation pointers add the pointed-to `+0xF4` enum as
+bot route-node buffers, AI path graphs, and bot body-animation layers are
+included in its immutable snapshot. Dynamic pointers are checked against the
+sampled records; when a pointer changes, the recorder refreshes that range
+schema and skips the transition sample. Bot collision-body bytes are also
+captured per seedable frame as `pl[4..7].cb_raw` (0xD0 bytes from each bot's
+`obj_tag+0xDC` owner/collision-body block); bytes `+0xCC..+0xCF` are the
+collision foot-height baseline. Bot collision-body data is required for
+`seed_ready`. Each accepted row carries
+`seed_version: 5`, the separately sampled GameState+0x34 `timer_frame`, four RNG
+words, four controller inputs (`pad_all`), MP settings/game state, the eight
+`mp_roster` records, indexed `pk[]` pickup records, every objective extension
+blob (`objx`), and `objectives[]` records resolved from `MP_OBJ_EXT+0x84`
+back-pointers (`MPOBJECT* - 0xE0` gives the root object). Position, state,
+category/item, amount, timestamp, lifetime countdown, radar-hidden state, and
+four `visit_until` values from MPpickups+0x80 are included. Valid human
+weapon-animation pointers add the pointed-to `+0xF4` enum as
 `weapon_anim_state`. The root `assassin`, `target` and `golden_target` fields
 are participant-slot indices (or `-1`); corresponding raw pointer values are
 retained as `assassin_ptr`, `target_ptr`, and `golden_target_ptr`.
 `golden_effect_handle` and `golden_effect_active` expose the GoldenEye effect
 actor; no remaining-effect tick value is mapped.
+
+Bot animation is recorded under `pl[4..7].anim`, when the `obj_tag` has a valid
+animation owner. `owner_ptr` is read from `obj_tag+0xDC`; the actual
+`sAnimObject` pointer is `owner_ptr+0x70` (verified in `AnimObjectNew` and
+`AnimObjectUpdate`, not inferred from `Drone+0x584`). `layer_head_ptr` comes
+from `sAnimObject+0x2C`; body script layers are followed through each node's
+`+0x48` next link, in oldest-to-newest order (the append path walks to the
+tail). Each `layers[]` item includes its address and complete 0xC0-byte raw
+node plus decoded fields: script id `+0x74`, primary/AnimSet id `+0x80`, flags
+`+0x78`, drive type `+0xB4` (0 Time, 1 Distance, 2 Phase), frame `+0x90`,
+previous frame `+0x94`, speed `+0x98`, blend time/duration `+0xA8/+0xAC`,
+phase partner `+0x4C`, pair weight `+0x88`, strafe bit `0x4000`, fresh bit
+`0x20000000`, resource flag bytes `+0xB2/+0xB3`, and stop state `+0xB5`.
+`resource_flags_b2` and `resource_flags_b3` retain source bytes; their loop
+semantics are unmapped. Signed byte `+0xB6` is the fade direction. Phase
+layers expose their current script frame as `phase`. `fade_progress` and
+`effective_weight` are the stored `+0x9C` blend ratio produced by
+`AnimFrameResolve` (`+0xA8/+0xAC`); signed byte `+0xB6` gives direction
+(`in`, `out`, or `steady`). Layer flag `0x10000000` marks the deferred-delete
+path, rather than the fade direction.
+
+`anim.root_height`/`foot_height` are sampled from `sAnimObject+0x5C/+0xCC`;
+distance step/accumulator are `+0x64/+0x6C`. The `+0x5C` value is recomputed
+by `AnimFrameResolve`; the `+0xCC` source writer is not yet located, so that
+field is recorded raw as requested, without claiming its original writer.
+Each body layer's primary sequence is followed from node `+0x50`, with its
+complete 0xB0-byte sequence state. Sequence state `+0x00` is the previous
+sampled root vector, `+0x10` the stored root delta, `+0x84` the sample-data
+pointer, `+0x98` sequence flags, signed `+0xA0` the sampled integer frame,
+and `+0x9C` the fractional-frame coordinate.
+`have_root` is derived as sample pointer nonzero with the initial-root
+suppression flag `0x20000000` clear; `previous_frame` remains the script node's
+`+0x94` value. The raw sequence flags are retained for restoring first-tick
+root motion exactly.
+
+`seed_ready` requires a complete body-layer chain and collision-body snapshot
+for every present bot. Missing animation data adds `"bot_animation_layers"` to
+`state_missing`; missing collision data adds `"bot_collision_body"`.
 
 For frame-keyed P2S anchors, pass `--checkpoint-dir DIR` (default interval 60
 logic frames; `--checkpoint-every N` changes it). Each ring sample includes the
@@ -258,6 +300,8 @@ Example:
 python3 tools/oracle/mp_record.py match.jsonl --load-slot 12 --frames 1800 \
   --seedable --rng-calls --checkpoint-dir ~/.cache/mp-oracle-tmp/checkpoints
 ```
+For parallel PCSX2 captures, configure each instance with a unique `PINESlot` and
+pass the same value to `--pine-slot` (for example, 28011 and 28012).
 
 `--rng-calls` temporarily hooks `Rand_Random`, `Rand_Rand`, `Rand_FRand`, and
 `Rand_FRand_MVar2` in a running EE-interpreter session. For the EE recompiler,
@@ -272,6 +316,16 @@ snapshot, an event tagged for frame N may be stored on the row for N-1; `mp_comp
 aligns calls by the event's own frame. `rng_trace` reports ring overflow and lost-event counts.
 
 `--mp-seed` replay applies the next row's raw `MPGame+0x190/+0x19c` clocks in `ArenaSystem::tick`, before bot updates and the end-of-frame pickup pass. Source clock deltas can differ from the fixed logic-rate step; pickup visit locks therefore use the recorded current-frame clock.
+
+Seed replay also keeps each captured `mp_roster` team assignment when `BotMatch::install` constructs the bot roster; otherwise the character-default team could replace the recorded slot team before state restoration.
+
+The v5 frame payload adds the resolved bot `sAnimObject` body-layer chain and
+primary-sequence root caches to the `Drone` scalars, so `mp_seed` can restore
+animation cursors and root-motion predecessor state instead of compensating
+locomotion with guessed displacement. `mp_compare.py` normalizes recognized
+source pickup, participant, and objective-table pointers to corresponding
+engine target IDs using the paired objective roster (for example
+`MP_DEMOLITION` pointer `0x3178d0` maps to the demolition objective).
 
 The sampled source paths are distinct: `Env_Update` calls `Rand_Rand(20000)`
 once per live-world frame before player updates; `Player_Update` decrements
@@ -305,6 +359,9 @@ raw objects are in the same row). For a changed pickup pointer, the recorder
 re-reads the target and frame counters; that raw record is included only if the
 read remains on the sampled frame. The pointer/index comes from the coherent
 BOT_vars sample even when the supplemental raw read is unavailable.
+Seed readiness accepts these references when they resolve to a participant,
+objective, or active same-row pickup record; a supplemental target reread that
+misses the sampled frame does not invalidate an otherwise resolved index.
 
 `seed_ready` requires a coherent per-frame sample, roster, participant and
 pickup records, objective blobs and object records, and stable projectile data;

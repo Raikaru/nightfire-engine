@@ -1164,6 +1164,62 @@ std::vector<AnimEvent> CharacterInstance::take_events() {
     return out;
 }
 
+bool CharacterInstance::restore_layers(const std::vector<LayerSnapshot>& snapshots, float distance_accumulator) {
+    if (!std::isfinite(distance_accumulator)) return false;
+    std::vector<Layer> restored;
+    restored.reserve(snapshots.size());
+    std::uint32_t next_id = 1;
+    for (const LayerSnapshot& snapshot : snapshots) {
+        if (snapshot.drive_type < 0 || snapshot.drive_type > 2 ||
+            snapshot.direction < -1 || snapshot.direction > 1 ||
+            !std::isfinite(snapshot.frame) || !std::isfinite(snapshot.previous_frame) ||
+            !std::isfinite(snapshot.speed) || !std::isfinite(snapshot.blend_time) ||
+            !std::isfinite(snapshot.blend_duration) || !std::isfinite(snapshot.pair_weight) ||
+            !std::isfinite(snapshot.distance) || !std::isfinite(snapshot.distance_step) ||
+            snapshot.blend_duration < 0.0f)
+            return false;
+        Layer layer;
+        if (!make_layer(snapshot.script, snapshot.loop, false, layer) ||
+            snapshot.frame < 1.0f || snapshot.frame > layer.length)
+            return false;
+        layer.id = snapshot.id;
+        layer.primary = snapshot.primary;
+        layer.frame = snapshot.frame;
+        layer.speed = snapshot.speed;
+        layer.loop = snapshot.loop;
+        layer.ended = snapshot.ended;
+        layer.drive = Drive(snapshot.drive_type);
+        layer.blend_time = snapshot.blend_time;
+        layer.blend_duration = snapshot.blend_duration;
+        layer.direction = snapshot.direction;
+        layer.distance = snapshot.distance;
+        layer.distance_step = snapshot.distance_step;
+        layer.pair_weight = snapshot.pair_weight;
+        layer.prev_int = int(snapshot.previous_frame);
+        layer.have_root = snapshot.have_root;
+        layer.prev_root = snapshot.previous_root;
+        layer.root_delta = snapshot.root_delta;
+        layer.mask_root_xz = (snapshot.flags & (0x01000000u | 0x04000000u)) != 0;
+        layer.mask_root_y = (snapshot.flags & 0x02000000u) != 0;
+        layer.fresh = snapshot.fresh;
+        layer.strafe = snapshot.strafe;
+        if (layer.drive == Drive::Distance && layer.seq)
+            layer.table = distance_table(*layer.seq);
+        next_id = std::max(next_id, layer.id + 1);
+        restored.push_back(layer);
+    }
+    layers_ = std::move(restored);
+    set_ = nullptr;
+    set_phase_base_ = distance_accumulator;
+    set_primary_ = set_secondary_ = strafe_layer_ = 0;
+    events_.clear();
+    tick_accumulator_ = 0;
+    next_id_ = next_id;
+    dirty_ = true;
+    return true;
+}
+
+
 std::vector<CharacterInstance::LayerInfo> CharacterInstance::layer_infos() const {
     std::vector<LayerInfo> out;
     for (const auto& l : layers_) {

@@ -477,6 +477,7 @@ bool set_combat_move_anim(Drone& d, float dist) {
 
 // ---- per tick -------------------------------------------------------------------------------------------------------------
 void move_step(Drone& d) {
+    if (d.anim.source_gate_valid) d.anim.source_root_yaw = d.yaw;
     // NDrone2_Move 0x14fe?: steering, then the anim root motion moves the object (AnimObjectUpdate + AnimSeqTick).
     const float rec = d.sys->timing().rec();
     if (!d.mv.disabled) {
@@ -501,10 +502,13 @@ void move_step(Drone& d) {
     }
     const Vec3 before = d.pos;
     const Vec3 rm = d.mv.root_motion;
-    Vec3 w = to_world({rm[0], d.mv.disabled ? rm[1] : 0.0f, rm[2]}, d.yaw);
-    if (!d.mv.disabled && d.mv.have_dest && (w[0] == 0.0f && w[2] == 0.0f) && d.anim.step > 0.0f) {
-        // Drone_AnimInfo +4: per-tick forward step when the anim system does not move the drone (a clip
-        // with no root motion, e.g. a skeleton the clip was not authored for). Step along the steered heading.
+    const bool source_gate = d.anim.source_gate_valid;
+    Vec3 w = source_gate ? Vec3{} : to_world({rm[0], d.mv.disabled ? rm[1] : 0.0f, rm[2]}, d.yaw);
+    if (source_gate && !d.anim.source_update_due && !d.mv.disabled && d.anim.step > 0.0f) {
+        w = {std::sin(d.yaw) * d.anim.step, 0.0f, std::cos(d.yaw) * d.anim.step};
+    } else if (!source_gate && !d.mv.disabled && d.mv.have_dest && (w[0] == 0.0f && w[2] == 0.0f) &&
+               d.anim.step > 0.0f) {
+        // Legacy/non-v5 no-root fallback; v5 uses the source Drone_Control gate above.
         w = {std::sin(d.yaw) * d.anim.step * d.sys->timing().FRAME_RATE_MUL, 0.0f,
              std::cos(d.yaw) * d.anim.step * d.sys->timing().FRAME_RATE_MUL};
     }
@@ -529,6 +533,9 @@ void move_step(Drone& d) {
             }
         }
     }
+}
+void apply_animation_root_motion(Drone& d, const Vec3& root_delta, float yaw) {
+    d.pos += to_world(root_delta, yaw);
 }
 
 void collision_step(Drone& d) {
