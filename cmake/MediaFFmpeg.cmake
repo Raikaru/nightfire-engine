@@ -7,4 +7,12 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
   libavformat libavcodec libswscale libavutil)
 add_library(FFmpeg INTERFACE IMPORTED GLOBAL)
 target_link_libraries(FFmpeg INTERFACE PkgConfig::FFMPEG)
-target_include_directories(FFmpeg SYSTEM INTERFACE ${FFMPEG_INCLUDE_DIRS})
+if(WIN32 AND FFMPEG_ROOT)
+  file(GLOB FFMPEG_RUNTIME_DLLS CONFIGURE_DEPENDS "${FFMPEG_ROOT}/bin/*.dll")
+  if(NOT FFMPEG_RUNTIME_DLLS)
+    message(FATAL_ERROR "No FFmpeg runtime DLLs found under ${FFMPEG_ROOT}/bin")
+  endif()
+  install(FILES ${FFMPEG_RUNTIME_DLLS} DESTINATION bin)
+  install(FILES "${FFMPEG_ROOT}/LICENSE.txt" "${FFMPEG_ROOT}/COPYING.GPLv3"
+    DESTINATION share/doc/nightfire/licenses)
+endif()
