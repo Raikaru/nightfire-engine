@@ -258,6 +258,7 @@ void WeaponSystem::damage_player(int slot, const HitInfo& hit) {
     // Assassination: damage = victim health, set pre-armour like Player_DealWithObjHit (armour still absorbs).
     if (rules_ && h.damage > 0.0f && rules_->assassin_lethal(hit.attacker, slot, hit.part)) h.damage = pl->health();
     pl->hurt(h);
+    pl->check_for_death();
 }
 
 void WeaponSystem::hurt_player(int slot, float damage, DamageType type, int attacker) {
@@ -1072,11 +1073,7 @@ void WeaponSystem::init_bullet(int slot, PlayerWeapons& p, World& world) {
 // ---------------------------------------------------------------------------------------------------------
 // tick
 
-void WeaponSystem::tick_player(int slot, World& world, FrameTiming timing) {
-    active_lag_comp_ = lag_comp_provider_ ? lag_comp_provider_(slot) : LagCompVolumes{};
-    PlayerWeapons& p = *players_[std::size_t(slot)];
-    Player& pl = *world.player(slot);
-    // Health events (Player_CheckForDeath ran in the collision pass): sounds pass on to the frontend, a death puts the gun away.
+void WeaponSystem::process_health_events(int slot, PlayerWeapons& p, Player& pl) {
     const HealthEvents health_events = pl.take_events();
     for (const SoundCue& c : health_events.sounds) sound(c.id, c.position, true);
     if (health_events.died && !p.dead && tuning_.mode == GameMode::Multiplayer && rules_) {
@@ -1104,12 +1101,18 @@ void WeaponSystem::tick_player(int slot, World& world, FrameTiming timing) {
         p.dead = true;
         weapon_none(p);
     } else if (pl.alive() && p.dead) {
-        p.dead = false;   // respawned behind our back: the caller should have used respawn()
+        p.dead = false;
     }
     if (health_events.died && rules_) {
         if (pl.last_hit.attacker < 0) rules_->environment_kill(slot);
         else rules_->player_killed(slot, pl.last_hit.attacker, pl.last_hit.weapon);
     }
+}
+void WeaponSystem::tick_player(int slot, World& world, FrameTiming timing) {
+    active_lag_comp_ = lag_comp_provider_ ? lag_comp_provider_(slot) : LagCompVolumes{};
+    PlayerWeapons& p = *players_[std::size_t(slot)];
+    Player& pl = *world.player(slot);
+    process_health_events(slot, p, pl);
     if (p.dead) {
         active_lag_comp_ = {};
         return;
@@ -1195,6 +1198,11 @@ void WeaponSystem::tick(World& world, FrameTiming timing) {
         if (players_[std::size_t(slot)]) tick_player(slot, world, timing);
     }
     step_projectiles(world, timing);
+    for (int slot = 0; slot < World::kMaxPlayers; ++slot) {
+        PlayerWeapons* state = players_[std::size_t(slot)].get();
+        Player* player = world.player(slot);
+        if (state && player) process_health_events(slot, *state, *player);
+    }
     update_owner_locks(world);
 }
 

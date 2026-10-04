@@ -260,6 +260,7 @@ private:
 
     void ensure_player(int slot, World& world);
     void tick_player(int slot, World& world, FrameTiming timing);
+    void process_health_events(int slot, PlayerWeapons& state, Player& player);
     void anim_update(int slot, PlayerWeapons& p, World& world, FrameTiming timing);   // Player_SetWeaponAnimObj
     void weapon_input(int slot, PlayerWeapons& p, World& world, FrameTiming timing);  // Player_Weapon
     void weapon_firing(int slot, PlayerWeapons& p, World& world, FrameTiming timing); // Player_WeaponFiring

@@ -318,6 +318,7 @@ public:
 
 private:
     friend class MpSeedImporter;
+    friend class WeaponSystem;
     void move(const ActionInput& input, FrameTiming timing, float speed_scale);   // Player_Move
     void handle_jump(const ActionInput& input, const CollisionWorld& world, FrameTiming timing);                                          // Player_HandleJump
     void aim(const ActionInput& input, FrameTiming timing);                       // Player_Aiming

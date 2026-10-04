@@ -229,6 +229,26 @@ bool play_firing_anim(Drone& d) {
     return true;
 }
 
+void prepare_source_animation_tick(Drone& d) {
+    Drone::Anim& a = d.anim;
+    if (!a.source_gate_supported) return;
+
+    a.source_gate_valid = (d.flags & 0x80000u) != 0;
+    if (!a.source_gate_valid) {
+        a.source_update_due = true;
+        return;
+    }
+
+    const float root_height = d.character
+                                  ? (d.character->root_height() + a.source_root_height_offset) *
+                                        a.source_root_height_scale
+                                  : 0.0f;
+    const bool do_animation =
+        d.char_class == 0x0c || root_height == 0.0f || a.source_object_anim || a.source_force_anim ||
+        (a.cur_flags & 4u) == 0;
+    a.source_update_due = do_animation || a.source_anim_stamp == d.now();
+}
+
 void anim_update(Drone& d) {
     const DroneAnimData* data = data_of(d);
     if (!data) return;
@@ -286,22 +306,22 @@ void anim_update(Drone& d) {
         return;
     }
     d.character->tick(d.sys->timing().FRAME_RATE_MUL);
+    if (source_gate) a.source_anim_stamp = d.now();
     Vec3 root_motion = d.character->root_motion();
-    if (source_gate) {
-        // AnimObjectNew sets sAnimObject+0x58 bit 0x400 when the skin's skeleton id is
-        // not 1; AnimFrameResolve scales root height only when that bit is clear.
-        if (d.obj_type == 2 && a.source_callback_y_enabled) {
-            const float root_height =
-                (d.character->root_height() + a.source_root_height_offset) * a.source_root_height_scale;
-            if (!a.source_callback_height_valid) {
-                a.source_callback_height = std::max(root_height - 0.02f, 0.2f);
-                a.source_callback_height_valid = true;
-            }
-            float callback_height = a.source_callback_height;
-            if (root_height != 0.0f) callback_height = std::max(root_height - 0.02f, 0.2f);
-            root_motion[1] = callback_height - a.source_callback_height;
-            a.source_callback_height = callback_height;
+    if (d.obj_type == 2 && a.source_callback_y_enabled) {
+        // The source pre-transform callback runs on every animation update, not just the seed tick.
+        const float root_height =
+            (d.character->root_height() + a.source_root_height_offset) * a.source_root_height_scale;
+        if (!a.source_callback_height_valid) {
+            a.source_callback_height = std::max(root_height - 0.02f, 0.2f);
+            a.source_callback_height_valid = true;
         }
+        float callback_height = a.source_callback_height;
+        if (root_height != 0.0f) callback_height = std::max(root_height - 0.02f, 0.2f);
+        root_motion[1] = callback_height - a.source_callback_height;
+        a.source_callback_height = callback_height;
+    }
+    if (source_gate) {
         apply_animation_root_motion(d, root_motion, a.source_root_yaw);
         d.mv.root_motion = {};
         a.source_gate_valid = false;

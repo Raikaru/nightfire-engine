@@ -17,11 +17,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <random>
 #include <string>
 #include <vector>
+
+#include <zlib.h>
 
 #include "assets/elf.hpp"
 #include "assets/weapon_data.hpp"
@@ -2567,12 +2570,134 @@ int cmd_diff_botmp(const std::string& elf_path, const std::string& state) {
 
 
 
+struct OraclePad {
+    u32 port = 0;
+    u16 buttons = 0;
+    u8 sticks[4] = {};
+};
+
+int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
+                  const std::string& pad_script) {
+    if (state.empty() || rows < 1)
+        throw std::runtime_error("mp-oracle needs --state <p2s> and --rows N");
+
+    std::map<u32, std::vector<OraclePad>> pads;
+    if (!pad_script.empty()) {
+        std::ifstream input(pad_script);
+        if (!input) throw std::runtime_error("cannot open pad script: " + pad_script);
+        u32 frame = 0, port = 0, buttons = 0;
+        int x = 0, y = 0, rx = 0, ry = 0;
+        while (input >> frame >> port >> buttons >> x >> y >> rx >> ry) {
+            if (port >= 4 || buttons > 0xFFFF || x < 0 || x > 255 || y < 0 || y > 255
+                || rx < 0 || rx > 255 || ry < 0 || ry > 255)
+                throw std::runtime_error("invalid pad script row");
+            pads[frame].push_back({port, u16(buttons), {u8(x), u8(y), u8(rx), u8(ry)}});
+        }
+        if (!input.eof()) throw std::runtime_error("malformed pad script: " + pad_script);
+    }
+
+    GlobalOpts opts;
+    opts.state = state;
+    Machine m = open_machine(elf, opts);
+    // Game_Run polls EE peripheral registers; model the inert register bank as
+    // last-value storage while scratchpad DMA is handled by hook_sp_copy().
+    m.mem.stub_hw_window(0x10000000u, 0x00100000u);
+    hook_sp_copy(m);
+    m.cpu.on_syscall = [](nf::ee::Cpu& cpu, u32 code) {
+        const u32 service = cpu.r[3].w[0];
+        // Game_Run's semaphore/event-flag and SIF-DMA calls do not have EE
+        // workers in this headless, frame-at-a-time oracle.
+        if (code != 0 || !((service >= 64 && service <= 79) || service == 119)) return false;
+        cpu.r[2].w[0] = 0;
+        return true;
+    };
+    for (const char* sound : {"Sound_Play__FUifsUi", "Sound_Play3D__FUiP7_VECTORfffsUii"})
+        if (m.symbol(sound)) hook_noop(m, sound);
+    // Preserve scripted tSlot data while running the game's real input mapper.
+    if (m.symbol("psiInput_PollDevices__Fv"))
+        hook_noop(m, "psiInput_PollDevices__Fv");
+
+    constexpr u32 kGameState = 0x002A3768;
+    constexpr u32 kDone = kGameState + 0x30;
+    constexpr u32 kFrame = kGameState + 0x34;
+    constexpr u32 kFrameStart = kGameState + 0x3C;
+    constexpr u32 kTslot0 = 0x00245680;
+    constexpr u32 kTslotStride = 0x180;
+    constexpr u32 kPadInput = 0x120;
+    constexpr u32 kRamSize = nf::ee::Memory::kRamSize;
+
+    auto write_u32 = [](u32 value) {
+        const u8 bytes[] = {u8(value), u8(value >> 8), u8(value >> 16), u8(value >> 24)};
+        if (std::fwrite(bytes, 1, sizeof(bytes), stdout) != sizeof(bytes))
+            throw std::runtime_error("writing oracle stream failed");
+    };
+    std::vector<u8> compressed(compressBound(kRamSize));
+    auto snapshot = [&]() {
+        const u32 frame = m.mem.read<u32>(kFrameStart);
+        const u32 done = m.mem.read<u32>(kDone);
+        const u32 timer = m.mem.read<u32>(kFrame);
+        uLongf compressed_size = compressed.size();
+        const int status = compress2(compressed.data(), &compressed_size, m.mem.ram(),
+                                     kRamSize, Z_BEST_SPEED);
+        if (status != Z_OK) throw std::runtime_error("compressing EE RAM snapshot failed");
+        write_u32(frame);
+        write_u32(done);
+        write_u32(timer);
+        write_u32(u32(compressed_size));
+        if (std::fwrite(compressed.data(), 1, compressed_size, stdout) != compressed_size)
+            throw std::runtime_error("writing oracle snapshot failed");
+    };
+
+    const u8 magic[] = {'N', 'F', 'O', 'R'};
+    if (std::fwrite(magic, 1, sizeof(magic), stdout) != sizeof(magic))
+        throw std::runtime_error("writing oracle stream header failed");
+    write_u32(1); // stream version
+    write_u32(u32(rows));
+    write_u32(kRamSize);
+    snapshot();   // P2S state is the first emitted post-Game_Run sample.
+
+    const u32 entry = m.addr("Game_Run__Fv");
+    for (int row = 1; row < rows; ++row) {
+        const u32 before = m.mem.read<u32>(kFrameStart);
+        const u32 timer_before = m.mem.read<u32>(kFrame);
+        const u32 next_frame = before + 1;
+        const u32 next_timer_frame = timer_before + 1;
+        // The scheduler advances these before invoking Game_Run. The
+        // interpreter calls that frame body directly, so reproduce its edge.
+        m.mem.write<u32>(kFrameStart, next_frame);
+        m.mem.write<u32>(kFrame, next_timer_frame);
+        const auto events = pads.find(before + 1);
+        if (events != pads.end()) {
+            for (const OraclePad& event : events->second) {
+                const u32 address = kTslot0 + event.port * kTslotStride + kPadInput;
+                m.mem.write<u16>(address + 2, event.buttons);
+                m.mem.write_block(address + 8, event.sticks, sizeof(event.sticks));
+            }
+        }
+        try {
+            m.call_keep(entry, {}, 200'000'000);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "Game_Run trap at %08x: %s\n", m.cpu.cur_pc, e.what());
+            std::fputs(m.disasm_range(m.cpu.cur_pc - 16, 8).c_str(), stderr);
+            throw;
+        }
+        const u32 after = m.mem.read<u32>(kFrameStart);
+        const u32 timer_after = m.mem.read<u32>(kFrame);
+        if (after != next_frame || timer_after != next_timer_frame)
+            throw std::runtime_error("Game_Run frame counters did not advance exactly once");
+        snapshot();
+    }
+    if (std::fflush(stdout) != 0) throw std::runtime_error("flushing oracle stream failed");
+    return 0;
+}
+
+
 void usage() {
     std::fprintf(stderr,
                  "usage: nfmips <elf> call <sym|addr> [args] [--state p|--ram d] [--dump a[:n]] [--steps N]\n"
                  "       nfmips <elf> init [--check] [--dump-out f] [--steps N]\n"
                  "       nfmips <elf> trace <sym|addr> [args] [--steps N] [--state p|--ram d]\n"
-                 "       nfmips <elf> disasm <addr> [count]\n"
+                 "       nfmips <elf> mp-oracle --state <p2s> --rows N [--pads <frame/port/input.txt>]\n"
                  "       nfmips <elf> symbols [substr]\n"
                  "       nfmips <elf> diff [--count N] [--seed N] [--state p2s]\n"
                  "       nfmips <elf> diff-acc (DroneWeap_DoBulletAccuracy truth table, Bots diff)\n"
@@ -2601,6 +2726,17 @@ int main(int argc, char** argv) {
     }
     const std::string elf = av[0], cmd = av[1];
     try {
+        if (cmd == "mp-oracle") {
+            std::string state, pads;
+            int rows = 0;
+            for (size_t j = 2; j < av.size(); j++) {
+                if (av[j] == "--state" && j + 1 < av.size()) state = av[++j];
+                else if (av[j] == "--rows" && j + 1 < av.size()) rows = std::stoi(av[++j]);
+                else if (av[j] == "--pads" && j + 1 < av.size()) pads = av[++j];
+                else throw std::runtime_error("mp-oracle wants --state <p2s> --rows N [--pads file]");
+            }
+            return cmd_mp_oracle(elf, state, rows, pads);
+        }
         if (cmd == "call") {
             if (av.size() < 3) {
                 usage();

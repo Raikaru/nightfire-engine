@@ -52,6 +52,7 @@ void pre_drone_control(Drone& d) {
 }
 
 void control_standard(Drone& d) {
+    prepare_source_animation_tick(d);
     // NDrone2_ControlSTANDARD 0x1490f0 (Drone_Control runs the DTYPE's control fn first when the type has one)
     if (d.dtype != kDtypeBot && d.sys->callbacks().control_dtype) d.sys->callbacks().control_dtype(d);
     if (d.alertness > 1.0f) d.alertness = 1.0f;

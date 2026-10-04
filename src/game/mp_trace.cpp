@@ -136,20 +136,25 @@ void MpTraceSink::dump(const World& world, const ArenaSystem& arena, const Weapo
         } else {
             const PlayerWeapons* state = weapons.state(s);
             std::fprintf(out_, "%s{\"pos\":[%.4f,%.4f,%.4f],\"yaw\":%.6f,\"type\":%u,\"state\":%d,"
-                               "\"hp\":%.3f,\"arm\":%.3f,\"weap\":%d,\"alive\":%s,\"mp_status\":%u,"
+                               "\"hp\":%.3f,\"arm\":%.3f,\"damage_flash\":%.4f,\"pain_dir\":%u,"
+                               "\"pain_alpha\":%u,\"weap\":%d,\"weap_selected\":%d,"
+                               "\"weap_previous\":%d,\"alive\":%s,\"mp_status\":%u,"
                                "\"dead\":%s,\"out\":%s,\"foot\":%.4f,\"pitch\":%.5f,\"substate\":%d,"
                                "\"vel\":[%.5f,%.5f,%.5f],\"fall_vel\":[%.5f,%.5f,%.5f],"
                                "\"zoom\":%.4f,\"aim\":%s,\"lock_victim\":%d,\"lock_yaw\":%.6f,"
                                "\"lock_pitch\":%.6f,\"ammo_pool\":[",
-                         s ? "," : "", p->pos[0], p->pos[1], p->pos[2], p->yaw, type, p->alive() ? 1 : 0,
-                         p->health(), p->armor(), weapons.current_weapon(s), p->alive() ? "true" : "false",
-                         static_cast<unsigned>(arena.status(s)), arena.dead(s) ? "true" : "false",
-                         out ? "true" : "false", p->stand_height, p->pitch, int(p->substate),
-                         p->velocity[0], p->velocity[1], p->velocity[2],
-                         p->fall_velocity[0], p->fall_velocity[1], p->fall_velocity[2],
-                         state ? state->zoom : 1.0f, state && state->aim ? "true" : "false",
-                         state ? state->lock_victim : -1, state ? state->lock_yaw : 0.0f,
-                         state ? state->lock_pitch : 0.0f);
+                     s ? "," : "", p->pos[0], p->pos[1], p->pos[2], p->yaw, type, p->alive() ? 1 : 0,
+                     p->health(), p->armor(), p->vitals.flash, unsigned(p->vitals.pain_dir),
+                     unsigned(p->vitals.pain_alpha), weapons.current_weapon(s),
+                     state ? state->selected : -1, state ? state->previous : -1,
+                     p->alive() ? "true" : "false",
+                     static_cast<unsigned>(arena.status(s)), arena.dead(s) ? "true" : "false",
+                     out ? "true" : "false", p->stand_height, p->pitch, int(p->substate),
+                     p->velocity[0], p->velocity[1], p->velocity[2],
+                     p->fall_velocity[0], p->fall_velocity[1], p->fall_velocity[2],
+                     state ? state->zoom : 1.0f, state && state->aim ? "true" : "false",
+                     state ? state->lock_victim : -1, state ? state->lock_yaw : 0.0f,
+                     state ? state->lock_pitch : 0.0f);
             if (state) {
                 for (std::size_t i = 0; i < kOracleAmmoPoolCount && i < state->pool.size(); ++i)
                     std::fprintf(out_, "%s%u", i ? "," : "", state->pool[i]);
@@ -197,8 +202,9 @@ void MpTraceSink::dump(const World& world, const ArenaSystem& arena, const Weapo
     std::fprintf(out_, "],\"scores\":[");
     bool first = true;
     for (const ScoreRow& r : arena.scoreboard()) {
-        std::fprintf(out_, "%s{\"slot\":%d,\"k\":%d,\"d\":%d,\"p\":%.1f}", first ? "" : ",", r.slot, r.kills,
-                     r.deaths, r.points);
+        std::fprintf(out_, "%s{\"slot\":%d,\"k\":%d,\"d\":%d,\"p\":%.1f,\"last_attacker\":%d,\"last_killer\":%d}",
+                     first ? "" : ",", r.slot, r.kills, r.deaths, r.points,
+                     arena.last_attacker(r.slot), arena.last_killer(r.slot));
         first = false;
     }
     std::fprintf(out_, "],\"pk\":[");

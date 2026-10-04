@@ -319,6 +319,7 @@ public:
     // MPGame slot fields for the bot brains (no allocation, unlike scoreboard()).
     std::uint16_t status(int slot) const { return slots_.at(std::size_t(slot)).status; }   // +0x26: 1 flag, 2 blueprint, 4 GE key, 8 GE crystal, 0x10 hill
     int last_killer(int slot) const { return slots_.at(std::size_t(slot)).last_killer; }   // +0x28
+    int last_attacker(int slot) const { return slots_.at(std::size_t(slot)).last_attacker; }  // +0x20
     float points(int slot) const { return slots_.at(std::size_t(slot)).points; }           // +0x18
     int kills(int slot) const { return slots_.at(std::size_t(slot)).kills; }
     int deaths(int slot) const { return slots_.at(std::size_t(slot)).deaths; }
