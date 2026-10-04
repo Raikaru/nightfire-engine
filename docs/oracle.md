@@ -888,11 +888,13 @@ The serialized `CelPos` stores a `vec4` followed by a PS2 `cel*`; those pointer
 bytes are not host `NavNetwork` cell indices. Restored route and goal positions
 resolve their cell from the coordinates with `NavNetwork::find_cel`.
 
-Seedable v5 bot collision capsules are rebuilt from the source animation root
-height (`anim.root_height`, including the sAnimObject `+0x60` offset), with
-`NDrone2_Collision`'s `0.02` m margin. The vertical segment uses the current
-object position and the bot radius rather than the recorder's potentially stale
-`+0x3f0`/`+0x400` endpoints.
+Seedable v5 bot collision capsules use the source animation root height
+(`anim.root_height`, including the sAnimObject `+0x60` offset) and
+`NDrone2_Collision`'s `0.02` m margin. The vertical segment is anchored to the
+drone position at Control entry, before `move_step`; `Collide_Update` runs after
+movement but retains those pre-Control HITTEST endpoints. The raw
+`+0x3f0`/`+0x400` values are stale for the current collision pass and are not
+used as endpoints.
 
 `Drone_CollisionHandler` gates collision/feet processing with `NDrone2_DoCollision`,
 then calls `NDrone2_DoGravity` separately. Seed restore carries both source
@@ -900,9 +902,9 @@ predicates so a false result does not run a host collision or gravity step that
 the source skips.
 
 After the feet probe, the original adds current `Drone+0x3e0` when `obj+0xd0`
-is non-null. That collision response is recomputed during the current update;
-the previously sampled raw vector can be stale, so the host uses its current
-cylinder push-out instead of restoring that snapshot field.
+is non-null. `Drone+0x3e0` is written by the current `Collide_Update` pass, so
+the host applies its current cylinder-query push-out rather than restoring a
+sampled vector from the seed.
 
 `Drone_FeetOnPoint` also returns a signed foot-to-hit separation through its
 fifth argument. When collbody `+0x60` bit 8 is set and that separation exceeds
@@ -933,17 +935,39 @@ A v5 Arena seed at frame 14727 produced 5/10 position-divergent frames: bot slot
 frame 14730. The other five frames matched within the 1 mm comparator tolerance.
 
 When a v5 snapshot has non-null `obj+0xd0`, source `Drone_CollisionHandler`
-adds the captured `Drone+0x3e0` response and does not apply the generic feet
-snap on that branch; the host mirrors this source gate. Direct P2S p6 execution
-measured the handler displacement equal to that vector within EE ULP precision.
-The v5 Team seed now matches all 10 tested frames. A peer-run Arena comparison
-seeded at 14729→30 reports p5 Y `-0.0016` and p6 Y `+0.0034` (host-push branch:
-p6 `+0.0033`). The captured p6 `Drone+0x3e0` Y changes by `-0.0034486` between
-rows 14729 and 14730; direct Control/Handler execution consumes the older value,
-so the later full-tick update that produces the row-14730 value is still unknown.
-A temporary importer-only lookahead using row 14730's vector removed that p6
-residual, confirming its magnitude; it was discarded because future-row state
-cannot drive production replay.
+uses the collision push and skips the generic feet snap. A full `Game_Run`
+watch traced the `Drone+0x3e0` writer to `Collide_Update` →
+`Collide_Intersect`: `sqc2 vf5, 0x10(HITTEST)` stores at `Drone+0x3d0+0x10`.
+The Team p6 response was `(-0.00086185, 0.01037366, 0.00402999)` and Arena
+p6 was `(-0.00007928, 0.02278954, 0.00621574)`. The host now reconstructs the
+collision capsule from the Control-entry position and current height, then
+applies its freshly computed push after movement; this matches the Team 10
+frame probe and Arena p6 frame probe. The raw `Drone+0x3f0/+0x400` fields are
+not the current HITTEST endpoints (they are stale relative to the
+Control-entry position) and must not be used as collision endpoints.
+
+A Team v5 seed-each window, frames 13326–13666 (341 aligned frames), now has
+30 divergent frames, all p5 Y at 13637–13666 (+10.1 to +21.0 mm). Earlier p5
+and all p6 fields match. Source and host positions match through frame 13636;
+at 13637 the source drops 12.8 mm while the host drops 2.7 mm, then their
+per-frame descent is nearly aligned and the residual settles near 21 mm.
+Source p5 D0 is null and collbody bit 8 is set on the late path. Direct P2S
+`Drone_Control`→`Drone_CollisionHandler` at checkpoint 13652 measured
+`Drone_FeetOnPoint` output `0.185566902` and applied a `-0.02319622` Y snap.
+The one-tick descent onset discrepancy remains unresolved; a missing source
+gravity/vertical-velocity input is under investigation.
+
+A v5 Arena seed at frame 14727 produced 5/10 position-divergent frames: bot slot
+5 Y differed by 1.1–1.6 mm at frames 14729–14733, and slot 6 Y by +3.4 mm at
+frame 14730. The other five frames matched within the 1 mm comparator tolerance.
+
+A separate Arena p5 check at 14729→30 finds non-null `obj+0xd0`: the source
+uses its collision-push branch, and the feet output (~`4.8e-5`) would be only
+about 6 μm if divided by eight, far below the 1.6 mm p5 residual. The host
+gates its generic feet snap off for that branch, so the residual is not a
+host-only feet correction. Team's 10-frame seed at 13544→13554 and the
+source-derived Team p6 collision response are now exact.
+
 
 Restoring an in-progress bot state clears the runtime fresh-drone flag so the
 next tick does not inject a Global `ENTER` and re-run `BotInit` over the

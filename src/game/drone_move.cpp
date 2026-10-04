@@ -538,7 +538,7 @@ void apply_animation_root_motion(Drone& d, const Vec3& root_delta, float yaw) {
     d.pos += to_world(root_delta, yaw);
 }
 
-void collision_step(Drone& d) {
+void collision_step(Drone& d, const Vec3& pre_control_pos) {
     const bool source_collision_valid = d.anim.source_collision_valid;
     const bool source_collision_due = d.anim.source_collision_due;
     const bool source_gravity_due = d.anim.source_gravity_due;
@@ -569,6 +569,7 @@ void collision_step(Drone& d) {
 
     float source_feet_delta = 0.0f;
     bool source_feet_delta_valid = false;
+    bool current_hit_list_present = false;
     const float h = d.stand_height;
     const float collision_height = d.is_bot() && d.character
                                        ? d.character->root_height() + d.anim.source_root_height_offset - 0.02f
@@ -576,26 +577,19 @@ void collision_step(Drone& d) {
     if (!source_collision_valid || source_collision_due) {
         CylinderQuery q;
         if (d.is_bot() && d.character) {
-            // Source Drone+0xa0 is root_height - 0.02; NDrone2_Collision rebuilds
-            // its vertical capsule from the current object position each update.
-            const float capsule_height = collision_height;
-            q.a = {d.pos[0], d.pos[1] + d.radius, d.pos[2]};
-            q.b = {d.pos[0], d.pos[1] + d.radius - capsule_height, d.pos[2]};
+            // The source collision capsule is derived from the body position at Control entry.
+            q.a = {pre_control_pos[0], pre_control_pos[1] + d.radius, pre_control_pos[2]};
+            q.b = {pre_control_pos[0], pre_control_pos[1] + d.radius - collision_height, pre_control_pos[2]};
             q.radius = d.radius;
-        } else if (d.mv.seeded_capsule_valid) {
-            q.a = d.pos + to_world(d.mv.seeded_capsule_a_offset, d.yaw);
-            q.b = d.pos + to_world(d.mv.seeded_capsule_b_offset, d.yaw);
-            q.radius = d.mv.seeded_capsule_radius;
         } else {
             q.a = {d.pos[0], d.pos[1] - h + 1.4f, d.pos[2]};
             q.b = {d.pos[0], d.pos[1] - h + d.radius, d.pos[2]};
             q.radius = d.radius;
         }
         const CylinderResult r = world.cylinder(q);
-        // Drone_CollisionHandler probes feet before applying its accumulated push.
-        const Vec3 feet_top = d.is_bot() && d.mv.seeded_capsule_valid
-                                  ? d.pos + to_world(d.mv.seeded_capsule_b_offset, d.yaw)
-                                  : r.b;
+        current_hit_list_present = !r.hits.empty();
+        // The source capsule was constructed from the body position at Control entry.
+        const Vec3 feet_top = r.b;
         const FeetResult feet = world.feet_on_point(d.pos, feet_top, {0, 1, 0}, collision_height, r.contact);
         d.on_ground = feet.on_ground;
         if (source_collision_valid && source_collision_due && !d.mv.disabled && feet.nearest) {
@@ -603,18 +597,13 @@ void collision_step(Drone& d) {
             source_feet_delta_valid = true;
         }
         d.ground_normal_y = feet.ground_normal_y;
-        // The source handler tests obj+0xD0 and applies Drone+0x3E0 on this branch.
-        if (source_collision_valid && source_collision_due && d.anim.source_hit_list_present) {
-            d.pos += d.anim.source_collision_push;
-        } else if (!r.hits.empty()) {
-            d.pos += r.push_out;
-        }
+        // Collide_Update's current hit list drives its freshly computed push-out.
+        if (!r.hits.empty()) d.pos += r.push_out;
     } else {
         // NDrone2_DoCollision returned false: source skips the feet probe and hit push.
         d.on_ground = false;
         d.ground_normal_y = 1.0f;
     }
-    d.mv.seeded_capsule_valid = false;
     d.anim.source_collision_valid = false;
     // Drone_CollisionHandler applies NDrone2_DoGravity after collision and feet resolution.
     if (!d.mv.disabled && (!source_collision_valid || source_gravity_due)) {
@@ -626,9 +615,8 @@ void collision_step(Drone& d) {
         d.fall_velocity[1] = std::clamp(d.fall_velocity[1], -45.0f, 45.0f);
         d.pos = d.pos + d.fall_velocity * timing.rec();
     }
-    // The D0 path applies the source push response rather than the host's generic feet snap.
-    if (source_feet_delta_valid && d.on_ground && source_feet_delta > -0.1f &&
-        !(source_collision_valid && d.anim.source_hit_list_present)) {
+    // The current collision hit list suppresses the host's generic feet snap.
+    if (source_feet_delta_valid && d.on_ground && source_feet_delta > -0.1f && !current_hit_list_present) {
         d.pos[1] -= source_feet_delta * 0.125f;
     }
 
