@@ -22,7 +22,7 @@ public:
     // 999 single-player rifle stance, anything else unarmed). The bank (which decodes the skin mesh once, for its bounding box) must outlive the animator.
     PlayerAnimator(CharacterBank& bank, const SkinDef& skin, const std::vector<AnimSet>& sets, int category);
 
-    void set_category(int category);
+    void set_weapon(int weapon_id, int category, GameRng* rng);
     // One logic frame with the frame's walk velocity (body space, x = left, z = forward) and FRAME_RATE_MUL `mul`
     // (frame rate 60 / mul). Returns the new foot height.
     float update(bool crouched, const Vec3& velocity, float mul, GameRng* rng = nullptr);
@@ -37,6 +37,7 @@ private:
     const std::vector<AnimSet>& sets_;
     CharacterInstance character_;
     float model_min_y_ = 0;
+    int weapon_id_ = -1;
     int category_;
     bool crouched_ = false;
 };

@@ -411,8 +411,9 @@ and pass the same value to `--pine-slot` (for example, 28012 and 28013).
 `Rand_FRand_MVar2` in a running EE-interpreter session. For the EE recompiler,
 install those trampolines and the ring buffer from the game-specific PCSX2
 pnach before loading the savestate, then use `--rng-calls-preinstalled`. The
-recorder verifies the pnach entry words and trampoline bodies, waits through
-three forward logic frames after the load to avoid a stale ring snapshot, and
+recorder verifies the pnach entry words and trampoline bodies, accumulates
+three forward logic-frame increments (allowing unchanged polls between them)
+after the load to avoid a stale ring snapshot, and
 then consumes new events without removing the persistent hooks. Each accepted
 row's `rng_calls[]` records each event's logic frame, function, caller return
 address, and result bits. Because PINE drains events after consuming a frame
@@ -1040,12 +1041,58 @@ at the animation gate, decrements after control, and refreshes visible bots
 after camera update using their source `obj+0x80` sphere center and `obj+0x8c`
 radius, not the collision capsule. `Drone+0x580` is not part of this gate.
 
-The recorder's bot layer `effective_weight` is the raw script-layer `+0x9c`
-field. `AnimFrameResolve` refreshes it from blend time/duration when the object
-is resolved for rendering; an offscreen fresh layer can therefore retain zero
-even while its blend time and duration are both one. The host trace computes
-the blend ratio on demand, so this stale render cache is not a simulation-state
-divergence.
+The recorder's bot-layer `effective_weight` is the raw `sAnimScript+0x9c`
+cache, distinct from blend time/duration at `+0xa8/+0xac`. `AnimFrameResolve`
+refreshes the cache from that ratio only when the object resolves; a fresh
+offscreen layer can retain zero while both blend values are one. The seed
+importer restores `+0x9c`, traces emit that stored value, and
+`CharacterInstance::palette()` refreshes it when the host pose resolves.
+In seed-each mode, the source row at frame 34715 has slot 6 `obj+0xfc == 0`,
+while the camera visibility pass writes the host counter to 2 after the tick;
+the next source row records 1. Reimporting frame 34715's pre-render byte used
+to erase that post-tick write and skip slot 6's frame-35 animation update at
+34716. The host now carries the visibility-generated counter over the next
+seed-each restore, while still importing the raw byte when no such pass wrote
+it.
+This carry models the one-frame ordering only when the host visibility result
+matches the source. The longer Arena samples expose a separate limit in that
+approximation: slot 6's source `obj+0xfc` remains zero while the host camera
+test repeatedly marks it visible, so its animation advances early. Arena
+frames 17466, 18076, and 20090 are first affected at 17468, 18078, and 20092
+respectively. This is a culling/visibility residual, not evidence that the raw
+counter should be fabricated or forced from the next recorder row.
+
+### Extended seeded campaign results
+
+These runs used the checkpointed v5 recordings and compared frame-aligned
+state at the comparator's 1 mm tolerance. “Continuous” seeds once at the
+segment start; “seed-each” restores every frame. A count `0/N` means zero
+divergent frames among N compared transitions.
+
+| Mode / segment start | Continuous | Seed-each | Result |
+| --- | ---: | ---: | --- |
+| Demo 15290 | 2/2 | 1/2 | first difference frame 15291 (weapon clip/bot state) |
+| Demo 15328, 15386, 15438, 15545, 15649, 15761, 15874, 15879, 15882 | 0 in each segment | 0 in each segment | no divergence in the tested contiguous windows |
+| Team cb-dense2 13319 (370 transitions) | 0/370 | 0/370 | exact aligned state |
+| Team 13326 (250) and 13579 (87) | 0 in both | 0 in both | exact aligned state |
+| Arena 23797 (307) | 0/307 | 0/307 | exact aligned state |
+| Arena 15386 (230) | 5/230 | 1/230 | continuous first differs at 15602 by a small `pl[5].pos[2]` residual; bot 4 state differs at 15615 |
+| Arena 15728 (306) | 62/306 | 0/306 | continuous first differs at 15960 in `pl[5].pos[2]` |
+| Arena 17466 (245), 18076 (305) | 244/245, 304/305 | 244/245, 304/305 | slot 6 animation advances one frame while the source counter stays zero (first differences 17468 and 18078) |
+| Arena 20090 (306) | 305/306 | 305/306 | first difference 20092: slot 6 animation frame 23 vs source 22 |
+| Arena 23509 | 58/242 | 0/242 | continuous first differs at 23550 in `pl[5].pos[0]` |
+| CTF 34665 (307) | 0/307 | 0/307 | exact aligned state; includes frame 34716 slot 6 animation |
+| CTF 36025 (277) | 0/277 | 0/277 | exact aligned state |
+| CTF 34086 (215) | 215/215 | 215/215 | first frame 34087: source player 0 dead, host alive after seed |
+| CTF 34334 (223) | 223/223 | 20/223 | first frame 34335: player weapon animation state; later foot/position drift and RNG order diverge at 34473 |
+| CTF 36995 (263), 37656 (306), 38319 (306) | divergent | divergent | first mismatch is `objs[0,1,0].pos[0]` (frames 36996, 37657, 38320 respectively) |
+
+Demo's older BotVars slot 4 `+0x8c` seed failure did not recur in the
+checkpointed windows. Remaining differences above are not established as
+recorder artifacts: they are concrete engine/source state mismatches, notably
+the Arena view-counter case and CTF object/player state. The longer tests
+therefore validate the exact listed windows only; they do not establish
+campaign-wide multiplayer parity.
 
 In `Drone_CollisionHandler`, a grounded source drone skips gravity
 acceleration but still integrates its stored `Drone+0x480` vector once before

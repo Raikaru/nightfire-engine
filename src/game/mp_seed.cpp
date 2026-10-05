@@ -904,7 +904,10 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                         {f32_at(obj, off), f32_at(obj, off + 4), f32_at(obj, off + 8)};
                 }
                 bot->drone->anim.source_root_basis_valid = true;
-                bot->drone->anim.source_object_anim = byte_at(obj, 0xfc);
+                if (bot->drone->anim.source_object_anim_from_view)
+                    bot->drone->anim.source_object_anim_from_view = false;
+                else
+                    bot->drone->anim.source_object_anim = byte_at(obj, 0xfc);
                 bot->drone->anim.source_force_anim = u32_at(drone, 0x538) != 0;
                 bot->drone->mv.root_motion = {};
                 std::vector<CharacterInstance::LayerSnapshot> layers;
