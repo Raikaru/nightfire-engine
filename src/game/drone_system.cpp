@@ -76,7 +76,7 @@ struct DroneSystem::Target final : DamageTarget {
 };
 
 DroneSystem::DroneSystem(World& world, CharacterBank& bank, DroneConfig config)
-    : world_(world), bank_(bank), config_(std::move(config)) {
+    : world_(world), bank_(bank), config_(std::move(config)), timing_(config_.initial_timing) {
     register_core_states();
     if (config_.elf) anim_data_ = std::make_unique<DroneAnimData>(*config_.elf);
 }
@@ -257,6 +257,8 @@ Drone& DroneSystem::spawn(SpawnInfo info) {
     d->rand_phase = rand_int(10000);   // obj+0xec
     d->ext = std::move(info.ext);
     d->yaw = info.yaw;
+    // NDrone2_DefaultInit writes 0.1 / FRAME_RATE_DIV to Drone+0x4a0.
+    d->mv.turn_rate = 0.1f * timing_.FRAME_RATE_MUL;
     d->mv.dest_angle = info.yaw;   // no steering target yet: keep facing
     d->pos = {info.feet[0], info.feet[1] + d->stand_height, info.feet[2]};
     d->source_view_room = world_.rooms().find(d->pos, world_.collision());

@@ -54,6 +54,7 @@ def _copy_bytes(a, source_reg, dest_reg, count_reg, label):
     a.emit(_i(0x09, dest_reg, dest_reg, 1))
     a.emit(_i(0x09, count_reg, count_reg, -1))
     a.branch(0x05, count_reg, 0, label)
+    a.emit(0)
     a.label(label + "_done")
 
 class _Assembler:
@@ -153,9 +154,11 @@ def frame_hook_words():
     a.emit(_i(0x09, 15, 15, 1))
     a.emit(_i(0x09, 12, 12, -1))
     a.branch(0x05, 12, 0, "byte")
+    a.emit(0)
     a.label("next_descriptor")
     a.emit(_i(0x09, 9, 9, -1))
     a.branch(0x05, 9, 0, "descriptor")
+    a.emit(0)
     # Dynamic records follow the direct range table: count, then 8-word
     # pointer/list descriptors. Each output block is {count, complete, items}.
     a.label("dynamic_count")
@@ -182,14 +185,16 @@ def frame_hook_words():
     a.emit(_i(0x09, 5, 5, 1))
     a.emit(_i(0x09, 6, 6, -1))
     a.branch(0x05, 6, 0, "dynamic_zero")
+    a.emit(0)
     a.label("dynamic_zero_done")
     a.emit(_i(0x09, 15, 5, 12))
-    a.emit(_i(0x23, 8, 8, 0))    # t0 = root pointer-cell address
     a.emit(_i(0x23, 24, 25, 28)) # t9 = root traversal mode / offsets
     a.emit(_i(0x09, 0, 1, -1))
     a.branch(0x04, 25, 1, "dynamic_root_simple")
     a.emit(0)
     a.emit(_i(0x23, 8, 2, 0))    # v0 = parent pointer
+    a.branch(0x04, 2, 0, "dynamic_root_null")
+    a.emit(0)
     a.emit(_r(0, 25, 1, 15, 0x02))
     a.emit(_i(0x0C, 1, 1, 0x1FFF))
     a.emit(_r(2, 1, 8, 0, 0x21))
@@ -198,6 +203,8 @@ def frame_hook_words():
     a.emit(_i(0x09, 0, 1, 0x7FFF))
     a.branch(0x04, 25, 1, "dynamic_root_nested_done")
     a.emit(0)
+    a.branch(0x04, 2, 0, "dynamic_root_null")
+    a.emit(0)
     a.emit(_r(2, 25, 8, 0, 0x21))
     a.emit(_i(0x23, 8, 2, 0))    # v0 = second child pointer
     a.label("dynamic_root_nested_done")
@@ -205,6 +212,10 @@ def frame_hook_words():
     a.emit(0)
     a.label("dynamic_root_simple")
     a.emit(_i(0x23, 8, 2, 0))    # v0 = *root
+    a.branch(0x04, 0, 0, "dynamic_root_done")
+    a.emit(0)
+    a.label("dynamic_root_null")
+    a.emit(_i(0x09, 0, 2, 0))
     a.label("dynamic_root_done")
     a.emit(_i(0x2B, 15, 2, 8))   # same-frame pointee/list head
     a.emit(_r(0, 0, 3, 0, 0x21)) # v1 = actual count
@@ -212,6 +223,7 @@ def frame_hook_words():
     a.branch(0x04, 2, 0, "dynamic_done")
     a.emit(_r(3, 11, 25, 0, 0x2B)) # v1 < maximum
     a.branch(0x05, 25, 0, "dynamic_node_valid")
+    a.emit(0)
     a.emit(_i(0x2B, 15, 0, 4))   # non-null remainder was truncated
     a.branch(0x04, 0, 0, "dynamic_done")
     a.label("dynamic_node_valid")
@@ -241,14 +253,16 @@ def frame_hook_words():
     a.emit(_r(4, 14, 25, 0, 0x21))
     _load32(a, 8, EE_RAM_END)
     a.emit(_r(8, 25, 25, 0, 0x2B))
+    a.emit(0)
     a.branch(0x05, 25, 0, "dynamic_bad_child")
+    a.emit(0)
     a.emit(_r(14, 0, 6, 0, 0x21))
     _copy_bytes(a, 4, 5, 6, "dynamic_copy_child")
     a.branch(0x04, 0, 0, "dynamic_after_child")
+    a.emit(0)
     a.label("dynamic_bad_child")
     a.emit(_i(0x2B, 15, 0, 4))
     a.label("dynamic_no_child")
-    a.emit(_r(5, 14, 5, 0, 0x21))
     a.label("dynamic_after_child")
     a.emit(_i(0x09, 3, 3, 1))
     a.emit(_i(0x2B, 15, 3, 0))
@@ -257,14 +271,20 @@ def frame_hook_words():
     a.branch(0x04, 25, 0, "dynamic_done")
     a.emit(_r(2, 12, 4, 0, 0x21))
     a.emit(_i(0x23, 4, 2, 0))
-    a.branch(0x04, 0, 0, "dynamic_node")
+    a.branch(0x05, 2, 0, "dynamic_node")
+    a.emit(0)
+    a.branch(0x04, 0, 0, "dynamic_done")
+    a.emit(0)
     a.label("dynamic_bad")
     a.emit(_i(0x2B, 15, 0, 4))
+    a.branch(0x04, 0, 0, "dynamic_done")
+    a.emit(0)
     a.label("dynamic_done")
     a.emit(_r(15, 7, 15, 0, 0x21)) # next reserved output block
     a.emit(_i(0x09, 24, 24, 32))
     a.emit(_i(0x09, 9, 9, -1))
     a.branch(0x05, 9, 0, "dynamic_descriptor")
+    a.emit(0)
     a.label("publish")
     _load32(a, 14, RING_BASE)
     a.emit(_i(0x23, 14, 15, 0))

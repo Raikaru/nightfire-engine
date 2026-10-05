@@ -38,6 +38,7 @@ void BotMatch::install(ArenaSession& session) {
     dc.level_id = level_id_;
     dc.difficulty = 1;
     dc.multiplayer = true;
+    dc.initial_timing = FrameTiming{float(options_.logic_hz)};
     dc.tuning = drone::DroneTuning::load(tuning_text_, level_id_);
     auto drones = std::make_unique<drone::DroneSystem>(world_, *bank_, dc);
     drones_ = drones.get();

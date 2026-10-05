@@ -330,6 +330,19 @@ timing.
 Seeded host replays also pass each row's absolute `timer_frame` (GameState+0x34)
 to `World::tick`; this source clock is independent of the row's logic-frame
 index and must not be reconstructed from it.
+The end-of-`Game_Run` ring also carries dynamic snapshots in descriptor order:
+each block has a count/completeness/header pointer followed by fixed-size
+records and optional child records. The hook resolves the pointer cell and
+walks list links before copying, so bot/human animation layers and sequences,
+AnimSet nodes, drone script/route data, pickup data, cells, and weapon animator
+state come from the same logic frame as their owners. Pointer changes are not
+re-read from PINE after the hook. `ee_oracle.py` applies the same descriptor
+walk to the corresponding full `nfmips` RAM image for each streamed row.
+With `--weapon-anim-raw`, the same path also includes the human weapon animator
+object and its active layer/sequence chain; without it, the weapon animator
+state word is still taken from the captured current object.
+`seed_ready` remains false when a dynamic block is incomplete; missing/null
+optional lists are complete zero-count snapshots.
 A two-row CTF hook replay (33604→33605) matches `MPGame+0x190`, `+0x19c`,
 and `+0x1a4` exactly after modeling `VBlankInt`'s one-increment-per-game-frame
 update. The raw human collision delta is `HITDATA_tag+0x4c`:
@@ -1140,12 +1153,47 @@ keeps its previous `+0x9c` even when `blend_time/blend_duration` differs. Every
 bot `CharacterInstance` now refreshes the cache during its tick, under this
 gate, rather than during palette/render resolution. Player animation instead
 refreshes explicitly after `PlayerAnimator::advance`, on the active update path.
-The v6 CTF replay from frame 33662 to 33665 with `--mp-seed-each` compares
-without divergent fields (0/3); slot 5's weights at frames 33663–33665 are
-`.1`, `.06666667`, and `.033333335`, matching the source. Its rows include
-0xA0-byte `cell_raw` payloads for bot slots 4–6. The continuous 3-tick replay
-from the same seed still differs in player 0's foot each tick and slot 5 yaw
-on frames 33664–33665.
+The v6 CTF replay from frame 33662 for four ticks with `--mp-seed-each`
+compares without divergent fields (0/4, frames 33663–33666). Slot 5's
+weights at frames 33663–33665 are `.1`, `.06666667`, and `.033333335`,
+matching the source. The rows include 0xA0-byte `cell_raw` payloads for bot
+slots 4–6. A continuous 3-tick replay from the same seed also compares 0/3;
+the prior slot 5 yaw residuals (`0.001294`, `0.002442`) are gone, as is the
+earlier player-0 foot residual.
+From frame 33604, a 16-tick continuous replay also compares 0/16 through
+33620. Extending the frame-33662 continuous replay to nine ticks remains
+clean through 33666, then diverges at 33667 on slot 5's animation-layer
+count/state before position and yaw drift accumulate. The same layer mismatch
+appears with a binary built before the concurrent `CharacterInstance` tick
+change, so it is not a regression from that change.
+The CTF frame-33905 window exposed a gravity-gate inversion: source
+`NDrone2_DoGravity` (`ACTION.ELF 0x141e58`) skips its fallback only when
+`Drone+0x4f8` bit `0x200` is set outside level `0x700004a`; when clear, it
+continues through the collision predicate. The host had the level/bit test
+reversed. After correcting it, slot 4's vertical position matches through
+frames 33906–33913; slot 5 position still diverges, including under
+`--mp-seed-each` (and slot 5 state at 33908), so bot animation/root motion
+remains unresolved there.
+
+At CTF frame 33667, source `NDrone2_Steer` (`ACTION.ELF 0x14ef78–0x14efbc`)
+multiplies the heading error by `Drone+0x4a0` directly and adds it to
+`Drone+0x4b4`; it does not apply another frame-rate factor. Slots 4 and 6
+both have turn-rate `0.2`, with source targets `-0.73259139` and `0.022638781`
+at `+0x694`. Those targets match the host's LinkCreep/ATAN2 destination. The
+host had scaled the already tick-adjusted `0.2` by `60/30`, applying a `0.4`
+turn fraction instead of `0.2`. `move_step` now uses the captured turn rate
+directly. The source object's yaw stores in this tick occur at
+`NDrone2_ControlSTANDARD+0x3a8` (`0x149498`) and
+`control_movement_object_handler+0x39c/+0x56c` (`0x133a94`, `0x133c64`).
+The corrected frame-33667 seed-each replay compares 0/1 transitions, and
+frames 33668–33670 compare 0/3.
+The writer for `Drone+0x4a0` is `NDrone2_DefaultInit`
+(`asm/action/nonmatchings/cod/044058/NDrone2_DefaultInit__FP10DIVars_tag.s`):
+it divides `.1` by `FRAME_RATE_DIV` before storing the field. The host spawn
+path therefore sets `.1 * FRAME_RATE_MUL`; `DroneSystem` receives its startup
+timing before the first bot/NPC spawn, including `--logic-hz30`, while seeded
+raw state remains unscaled. This preserves the source writer's `.2` at 30 Hz
+and `.1` at 60 Hz.
 
 At offscreen frame 34054, slot 5's source layer has
 `blend_time/blend_duration = 1/1` and cached `effective_weight = 0`; the host

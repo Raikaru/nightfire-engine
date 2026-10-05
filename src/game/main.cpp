@@ -450,7 +450,8 @@ int run(int argc, char** argv) {
     WeaponSystem& weapons = *weapon_system;
     weapons.set_bank(weapon_bank.get());
     world.add_system(std::move(weapon_system));
-    if (drone_cli.enabled()) drone_cli.setup(world, level, *weapon_bank, action_elf, gf, weapons, bin_name);
+    if (drone_cli.enabled())
+        drone_cli.setup(world, level, *weapon_bank, action_elf, gf, weapons, bin_name, FrameTiming{float(logic_hz)});
     weapons.set_drone_system(drone_cli.system());   // null without --sp (idle-fidget threat gate)
     // Body animation (PlayerAnimator, the movement-side foot height): replay rows that carry the recorded
     // height drive the capsule exactly (oracle parity); otherwise the animator inside Player::update supplies

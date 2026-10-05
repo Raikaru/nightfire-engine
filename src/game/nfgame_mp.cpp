@@ -263,6 +263,7 @@ int run_match(const MatchLaunch& request) {
         bo.characters = launch.bot_characters;
         bo.log = launch.bot_log;
         bo.log_states = launch.bot_log_states;
+        bo.logic_hz = launch.logic_hz;
         bot_match = std::make_unique<bots::BotMatch>(gf, dir, bin_name, level, world, action_elf, tuning_text,
                                                      strings ? &*strings : nullptr, bo);
     }

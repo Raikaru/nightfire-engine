@@ -161,6 +161,7 @@ struct SpSession::Impl {
         dcfg.elf = &ctx.action_elf;
         dcfg.level_id = level_id;
         dcfg.difficulty = launch.difficulty;
+        dcfg.initial_timing = timing;
         dcfg.tuning = drone::DroneTuning::load(tuning_text, level_id);
         nav = std::make_unique<NavNetwork>(*level, world->collision(), NavLimits::for_level(level_id));
         auto sys = std::make_unique<drone::DroneSystem>(*world, *bank, dcfg);

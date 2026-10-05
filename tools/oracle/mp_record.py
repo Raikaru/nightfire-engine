@@ -237,7 +237,7 @@ def nested_pointer_spec(first_offset, second_offset=None):
     if not 0 <= first_offset <= 0x1FFF:
         raise ValueError(f"nested pointer offset out of range: {first_offset:#x}")
     second = 0x7FFF if second_offset is None else second_offset
-    if not 0 <= second <= 0x7FFE:
+    if second_offset is not None and not 0 <= second <= 0x7FFE:
         raise ValueError(f"nested pointer offset out of range: {second:#x}")
     return 0x80000000 | (first_offset << 15) | second
 
@@ -276,8 +276,10 @@ def decode_dynamic_snapshots(bytag, descriptors, raw):
     for spec in descriptors:
         if spec["tag"] == "pi":
             raw_pi = bytag.get(("pi", spec["key"]))
-            if raw_pi is not None:
-                bytag[("pi", spec["key"])] = raw_pi[A.PI_STATE:A.PI_STATE + 0x18]
+            if (raw_pi is not None
+                    and bytag.get(("dynamic_count", ("pi", spec["key"])), 0)):
+                bytag[("pi", spec["key"])] = raw_pi[
+                    A.PI_STATE:A.PI_STATE + 0x18]
 
         if spec["tag"] == "route_nodes":
             route_raw = bytag.get(("route_nodes", spec["key"]))
@@ -287,6 +289,18 @@ def decode_dynamic_snapshots(bytag, descriptors, raw):
                 route_count = struct.unpack_from("<H", drone_raw, route_offset)[0]
                 bytag[("route_nodes", spec["key"])] = route_raw[:route_count * 2]
 
+    for spec in descriptors:
+        if not spec["tag"].endswith("_owner_raw"):
+            continue
+        owner_raw = bytag.get((spec["tag"], spec["key"]))
+        if owner_raw is None:
+            continue
+        prefix = spec["tag"][:-10]
+        anim = ANIM_SUBOBJECT_OFFSET
+        for name, offset in (("root_height", 0x5C), ("distance_step", 0x64),
+                             ("distance_accum", 0x6C), ("foot_height", 0xCC)):
+            bytag[(f"{prefix}_{name}", spec["key"])] = owner_raw[
+                anim + offset:anim + offset + 4]
 
 def update_animation_from_snapshot(bytag, state, key, prefix, owner, obj):
     layer_tag = f"{prefix}_layer_raw"
@@ -394,6 +408,7 @@ ANIM_MAX_LAYERS = 64
 ANIM_SET_LIST_OFFSET = 0x98
 ANIM_SET_RAW_SIZE = 0x34
 ANIM_SET_MAX_NODES = 4
+ANIM_OWNER_RAW_SIZE = 0x140
 
 
 def refresh_animation_slot(pine, cache, k, obj=None, kind="bot"):
@@ -850,14 +865,13 @@ def main():
                 if cache["bl"].get(s):
                     dynamic_specs.append(dynamic_snapshot(
                         "bl_raw", s, cache["objs"][s] + A.OBJ_BL, A.BL_RAW_SIZE))
-                    target = cache["weapon_anim_targets"].get(s)
-                    if target:
-                        tags.append(("weapon_anim_state", s))
-                        ranges.append((target + 0xF4, 2))
-                        if args.weapon_anim_raw:
-                            dynamic_specs.append(dynamic_snapshot(
-                                "weapon_anim_raw", s, cache["bl"][s] + 0x7E8,
-                                0x100))
+                    dynamic_specs.append(dynamic_snapshot(
+                        "weapon_anim_raw", s, cache["bl"][s] + 0x7E8,
+                        0x100))
+                    dynamic_specs.append(dynamic_snapshot(
+                        "human_anim_owner_raw", s, cache["bl"][s] + 0x7E8,
+                        ANIM_OWNER_RAW_SIZE,
+                        filter_spec=nested_pointer_spec(ANIM_OWNER_OFFSET)))
                 if cache["cb"].get(s):
                     dynamic_specs.append(dynamic_snapshot(
                         "cb_raw", s, cache["objs"][s] + A.OBJ_COLL, A.CB_RAW_SIZE))
@@ -878,39 +892,59 @@ def main():
                     filter_spec=nested_pointer_spec(AI_ROUTE_NODE_POINTER_OFFSET)))
                 script_ptr = pine.read32(d + A.DRONE_ANIM_SCRIPT)
                 drone_anim_ptrs[k] = script_ptr
-            for k, state in cache["bot_anim"].items():
-                add_animation_ranges(ranges, tags, k, state, "anim")
+            for k in range(4):
+                obj = cache["objs"][4 + k]
+                if not obj:
+                    continue
+                state = cache["bot_anim"].get(k)
+                if state:
+                    add_animation_ranges(ranges, tags, k, state, "anim")
                 dynamic_specs.append(dynamic_snapshot(
-                    "anim_layer_raw", k,
-                    cache["objs"][4 + k] + ANIM_OWNER_OFFSET,
+                    "anim_owner_raw", k, obj + ANIM_OWNER_OFFSET,
+                    ANIM_OWNER_RAW_SIZE))
+                dynamic_specs.append(dynamic_snapshot(
+                    "anim_layer_raw", k, obj + ANIM_OWNER_OFFSET,
                     ANIM_LAYER_RAW_SIZE, max_count=8, next_offset=0x48,
                     child_offset=0x50, child_size=ANIM_SEQ_RAW_SIZE,
                     indexed=True, child_tag="anim_seq_raw",
                     head_tag="anim_list_head",
                     filter_spec=nested_pointer_spec(
                         ANIM_SUBOBJECT_OFFSET + ANIM_LAYER_HEAD_OFFSET)))
-            for slot, state in cache["human_body_anim"].items():
-                add_animation_ranges(ranges, tags, slot, state, "human_body_anim")
+            for slot in range(n_humans):
+                obj = cache["objs"][slot]
+                if not obj:
+                    continue
+                state = cache["human_body_anim"].get(slot)
+                if state:
+                    add_animation_ranges(
+                        ranges, tags, slot, state, "human_body_anim")
+                dynamic_specs.append(dynamic_snapshot(
+                    "human_body_anim_owner_raw", slot,
+                    obj + ANIM_OWNER_OFFSET, ANIM_OWNER_RAW_SIZE))
                 dynamic_specs.append(dynamic_snapshot(
                     "human_body_anim_layer_raw", slot,
-                    cache["objs"][slot] + ANIM_OWNER_OFFSET,
+                    obj + ANIM_OWNER_OFFSET,
                     ANIM_LAYER_RAW_SIZE, max_count=8, next_offset=0x48,
                     child_offset=0x50, child_size=ANIM_SEQ_RAW_SIZE,
                     indexed=True, child_tag="human_body_anim_seq_raw",
                     head_tag="human_body_anim_list_head",
                     filter_spec=nested_pointer_spec(
                         ANIM_SUBOBJECT_OFFSET + ANIM_LAYER_HEAD_OFFSET)))
-            for slot, state in cache["human_anim_sets"].items():
+            for slot in range(n_humans):
+                obj = cache["objs"][slot]
+                if not obj:
+                    continue
                 dynamic_specs.append(dynamic_snapshot(
                     "human_anim_set_raw", slot,
-                    cache["objs"][slot] + ANIM_OWNER_OFFSET,
+                    obj + ANIM_OWNER_OFFSET,
                     ANIM_SET_RAW_SIZE, max_count=ANIM_SET_MAX_NODES,
-                    head_tag="human_anim_set_head",
-                    next_offset=4, indexed=True,
+                    head_tag="human_anim_set_head", next_offset=4,
+                    indexed=True,
                     filter_spec=nested_pointer_spec(ANIM_SET_LIST_OFFSET)))
             if args.weapon_anim_raw:
-                for slot, state in cache["human_anim"].items():
-                    add_animation_ranges(ranges, tags, slot, state, "human_anim")
+                for slot in range(n_humans):
+                    if not cache["bl"].get(slot):
+                        continue
                     dynamic_specs.append(dynamic_snapshot(
                         "human_anim_layer_raw", slot,
                         cache["bl"][slot] + 0x7E8,
@@ -1097,15 +1131,18 @@ def main():
         changed_player_anim_slots = set()
         changed_anim_set_slots = set()
         changed_route_slots = set()
-        changed_drone_script_slots = set()
         if args.seedable:
             for k in range(4):
                 drone_raw = bytag.get(("dr_raw", k))
                 bv_raw = bytag.get(("bv_raw", k))
                 drone_addr = (struct.unpack_from(
                     "<I", bv_raw, A.BOT_DRONE + 4)[0] if bv_raw else 0)
+                drone_raw = bytag.get(("dr_raw", k))
                 if drone_addr != cache["drone"].get(k, 0):
-                    transition_missing.append(f"pl[{k + 4}].drone")
+                    if drone_raw is not None and drone_addr:
+                        cache["drone"][k] = drone_addr
+                    else:
+                        cache["drone"].pop(k, None)
                 if drone_raw is None:
                     if cache["drone"].get(k):
                         transition_missing.append(f"pl[{k + 4}].drone_raw")
@@ -1113,7 +1150,6 @@ def main():
                 script_ptr = struct.unpack_from(
                     "<I", drone_raw, A.DRONE_ANIM_SCRIPT)[0]
                 if script_ptr != drone_anim_ptrs.get(k, 0):
-                    changed_drone_script_slots.add(k + 4)
                     if not bytag.get((
                             "dynamic_complete", ("dr_anim_script_raw", k)), False):
                         transition_missing.append(
@@ -1124,6 +1160,9 @@ def main():
                     continue
                 owner = struct.unpack_from("<I", obj_raw, ANIM_OWNER_OFFSET)[0]
                 state = cache["human_body_anim"].get(slot)
+                if state is None and valid_ee_pointer(owner, 0x120):
+                    state = {"obj": cache["objs"][slot]}
+                    cache["human_body_anim"][slot] = state
                 body_updated = update_animation_from_snapshot(
                     bytag, state, slot, "human_body_anim", owner,
                     cache["objs"][slot])
@@ -1133,6 +1172,9 @@ def main():
                     changed_player_anim_slots.add(slot)
                     transition_missing.append(f"pl[{slot}].body_anim")
                 state = cache["human_anim_sets"].get(slot)
+                if state is None and valid_ee_pointer(owner, 0x120):
+                    state = {"owner": owner}
+                    cache["human_anim_sets"][slot] = state
                 if not update_anim_sets_from_snapshot(bytag, state, slot, owner):
                     refresh_player_anim_sets(pine, cache, slot)
                     changed_anim_set_slots.add(slot)
@@ -1150,11 +1192,6 @@ def main():
                         cache["weapon_anim_targets"][slot] = target
                     else:
                         cache["weapon_anim_targets"].pop(slot, None)
-                    if args.weapon_anim_raw:
-                        refresh_animation_slot(
-                            pine, cache, slot, obj=target, kind="human")
-                        changed_animation_slots.add(slot)
-                    transition_missing.append(f"pl[{slot}].weapon_anim_state")
                     pointer_changed = True
             for k in range(4):
                 state = cache["bot_anim"].get(k)
@@ -1162,6 +1199,9 @@ def main():
                 if obj_raw is None:
                     continue
                 owner = struct.unpack_from("<I", obj_raw, ANIM_OWNER_OFFSET)[0]
+                if state is None and valid_ee_pointer(owner, 0x120):
+                    state = {"obj": cache["objs"][4 + k]}
+                    cache["bot_anim"][k] = state
                 if not update_animation_from_snapshot(
                         bytag, state, k, "anim", owner, cache["objs"][4 + k]):
                     refresh_animation_slot(pine, cache, k)
@@ -1169,18 +1209,20 @@ def main():
                     pointer_changed = True
             if args.weapon_anim_raw:
                 for slot in range(n_humans):
-                    state = cache["human_anim"].get(slot)
-                    target = cache["weapon_anim_targets"].get(slot, 0)
                     raw_obj = bytag.get(("weapon_anim_raw", slot))
                     if raw_obj is None:
+                        cache["human_anim"].pop(slot, None)
                         continue
+                    target = cache["weapon_anim_targets"].get(slot, 0)
                     owner = struct.unpack_from("<I", raw_obj, ANIM_OWNER_OFFSET)[0]
+                    state = cache["human_anim"].get(slot)
+                    if state is None or state.get("obj") != target:
+                        state = {"obj": target}
+                        cache["human_anim"][slot] = state
                     if not update_animation_from_snapshot(
                             bytag, state, slot, "human_anim", owner, target):
-                        refresh_animation_slot(
-                            pine, cache, slot, obj=target, kind="human")
                         changed_animation_slots.add(slot)
-                        pointer_changed = True
+                        transition_missing.append(f"pl[{slot}].anim")
             for k in range(4):
                 drone_raw = bytag.get(("dr_raw", k))
                 if drone_raw is None:
@@ -1417,6 +1459,7 @@ def main():
                 "stamp": struct.unpack_from("<i", och, A.OBJ_STAMP)[0],
             }
             if args.seedable:
+                entry["obj_raw"] = och.hex()
                 model_raw = bytag.get(("obj_model_raw", s))
                 if model_raw is not None:
                     entry["obj_model_raw"] = model_raw.hex()
@@ -1466,12 +1509,12 @@ def main():
                 blr = bytag[("bl_raw", s)]
                 entry["bl_raw"] = blr.hex()
                 anim_raw = bytag.get(("weapon_anim_raw", s))
-                if anim_raw is not None and s not in changed_animation_slots:
+                if (args.weapon_anim_raw and anim_raw is not None
+                        and s not in changed_animation_slots):
                     entry["weapon_anim_raw"] = anim_raw.hex()
-                anim_state_raw = bytag.get(("weapon_anim_state", s))
-                if anim_state_raw is not None and (
-                        f"pl[{s}].weapon_anim_state" not in transition_missing):
-                    entry["weapon_anim_state"] = struct.unpack("<h", anim_state_raw)[0]
+                if anim_raw is not None:
+                    entry["weapon_anim_state"] = struct.unpack_from(
+                        "<h", anim_raw, 0xF4)[0]
                 entry["vel"] = list(struct.unpack_from("<3f", blr, 0x10))
                 entry["fall_vel"] = list(struct.unpack_from("<3f", blr, 0x50))
                 entry["ammo_pool"] = list(struct.unpack_from("<33H", blr, 368))

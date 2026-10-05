@@ -421,7 +421,7 @@ public:
         float dest_dist = 0;            // +0x660 2-D distance feet -> dest
         float arrive_radius = 0.3f;     // +0x664
         float dest_angle = 0;           // +0x694 heading to steer to
-        float turn_rate = 0.1f;         // +0x4a0 fraction of the heading error turned per tick
+        float turn_rate = 0.1f;         // +0x4a0: 0.1 per 60-Hz frame; NDrone2_DefaultInit scales by FRAME_RATE_MUL
         float speed = 0;                // +0x474 actual 2-D displacement of the last tick
         Vec3 root_motion{};             // this tick's anim root motion in world space
         RouteStatus route_status = RouteStatus::Reset;

@@ -43,7 +43,7 @@ public:
     // Creates the DroneSystem (added to `world` after the weapons), the nav network and the demo drones.
     // With --sp also creates the single-player layer (SpSystem: placed NPCs, spawners, cover) ahead of it.
     void setup(World& world, Level& level, CharacterBank& bank, const Elf32& elf, GameFiles& gf, WeaponSystem& weapons,
-               const std::string& bin_name);
+               const std::string& bin_name, FrameTiming initial_timing = FrameTiming{});
     // Call after every world tick (frame counter of the world): scripted hits and log lines.
     void after_tick(World& world);
     // Drains MissionSystem::take_spawns() into SpSystem::spawn_scripted (Drone_CoderCreate for cutscene
