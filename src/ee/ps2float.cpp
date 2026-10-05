@@ -23,10 +23,7 @@ u32 pack(u32 sign, int exp, u32 mant24, u32& flags) {
     return sign | (u32(exp) << 23) | (mant24 & 0x7FFFFFu);
 }
 
-int msb(u128 v) {
-    const u64 hi = u64(v >> 64);
-    return hi ? 127 - std::countl_zero(hi) : 63 - std::countl_zero(u64(v));
-}
+int msb(u64 v) { return 63 - std::countl_zero(v); }
 
 }  // namespace
 
@@ -47,21 +44,22 @@ u32 add_exact(u32 a, u32 b, u32& flags) {
     }
     const u32 sign = a & kSignBit;
     const bool subtract = (a ^ b) & kSignBit;
-    const u128 ma = u128((a & 0x7FFFFFu) | 0x800000u) << 64;
-    u128 mb = u128((b & 0x7FFFFFu) | 0x800000u) << 64;
+    const u64 ma = u64((a & 0x7FFFFFu) | 0x800000u) << 32;
+    u64 mb = u64((b & 0x7FFFFFu) | 0x800000u) << 32;
 
-    // Align b. With 64 guard bits every shift up to 64 is exact; beyond that a sticky bit is kept so that the
-    // subtraction still truncates correctly (the truncated result of A - b with b's tail lost equals A - (b' + 1)).
+    // Align b. With 32 guard bits every shift up to 32 is exact; beyond that a sticky bit is kept so that the
+    // subtraction still truncates correctly: for an integer N and 0 < f < 1, no multiple of 2^k (k >= 1) lies in
+    // (N - 1, N), so trunc(A - b' - f) at the result LSB equals trunc(A - (b' + 1)).
     const int d = ea - eb;
     bool lost = false;
-    if (d >= 128) {
+    if (d >= 64) {
         lost = true;
         mb = 0;
     } else if (d > 0) {
-        lost = (mb & ((u128(1) << d) - 1)) != 0;
+        lost = (mb & ((u64(1) << d) - 1)) != 0;
         mb >>= d;
     }
-    u128 r;
+    u64 r;
     if (subtract) {
         if (lost) mb += 1;
         r = ma - mb;
@@ -70,7 +68,7 @@ u32 add_exact(u32 a, u32 b, u32& flags) {
         r = ma + mb;
     }
     const int p = msb(r);
-    const int e = ea + (p - 87);
+    const int e = ea + (p - 55);
     const u32 m = p >= 23 ? u32(r >> (p - 23)) : u32(r << (23 - p));
     return pack(sign, e, m, flags);
 }
