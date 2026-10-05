@@ -219,19 +219,22 @@ participant/per-bot tables cover only eight participants/four bots. The bot deci
    wobble of the height leaves the body where it is. The port applies height *drops* vertically and freezes
   *rises*: the climb comes from pushes against the deep fresh-foot capsule, whose penetration depth
   self-corrects to the recorded height (a lifted capsule would break marginal contact and fall).
-  `AnimObjectNew` initializes that offset from the model's stored `entity_params+0x24` minimum Y divided by skin Y
-  scale, a flag-selected baseline, and `+0.02` (not from decoded skinned-mesh vertices).
+   `AnimObjectNew` initializes that offset from the model's stored `entity_params+0x24` minimum Y divided by skin Y
+   scale, a flag-selected baseline, and `+0.02` (not from decoded skinned-mesh vertices).
   Fresh transitions (crouch timer high) and non-crouch transitions still lift vertically. A
   non-transitioning crouch that ends the frame airborne reverts the shift. Values for the multiplayer
   skin 0x05000089: 1.0328 idle, a 1.050..1.077 double hump every ~13.5 frames at 60 Hz while walking,
   ~0.61 crouched, ~0.93 crouch-walking. `Player::stand_height` is the input: replay rows that carry the recorded
   value drive the capsule exactly (oracle parity); otherwise the `PlayerAnimator` the player owns supplies it.
   `nfgame_mp` advances that animator once per logic frame after the player and weapon updates, using the frame's
-  walk velocity (stance follows weapon switches via `Player::set_body_weapon`). It reads back
+  walk velocity; each slot resolves its selected character through `MP_skins` (skin hash and chunk-file hash), not
+  the first MP-named skin in the bank. Stance follows weapon switches via `Player::set_body_weapon`; readback is
   `CharacterInstance::foot_height` (steady states match the recording: idle within 2 mm, crouched within 1 mm at
   the matching weapon category). Animator-driven free runs stay within ~1 cm of the recorded-height runs on
   every oracle scenario. Two gaps remain on the Characters side: the stance-flip transition arcs (the recorded
   stand-to-crouch root rises 1.03 -> 1.10 before falling to 0.61; the animator snaps) and a ~2 mm idle-root offset.
+  `--mp-seed-each` restores simulation and body-animation state from row N-1, then ticks with row N's recorded pad;
+  it lets the animator publish row N's foot height instead of freezing the restored previous-row height.
 - Water, zero-G and scan mode (`player_water.cpp`, `player_zerog.cpp`, `player_scan.cpp`), ladders and
   creep walls (`player_climb.cpp`, `ladder.cpp`, `object_world.cpp`), grapple/wire/zip line
   (`player_rope.cpp`, `grapple.cpp`, `wire.cpp`) and vehicles/movers (below) are implemented and hooked

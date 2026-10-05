@@ -103,6 +103,8 @@ struct MpSkin {
     std::uint32_t file_hash;  // +4 chunk file hash (0x01xxxxxx) holding the model
     std::uint32_t kind;       // +8 (4, 5 or 6)
 };
+// Reads the source MP_skins row for a character index (skin hash, model chunk-file hash, and animation kind).
+MpSkin mp_skin_for_character(const Elf32& action_elf, std::uint32_t character_index);
 
 // A playable character (human skin and bot). Indices are the `value` field: the character index used
 // in MPSettings slots, mpjoin, mpbots and every table below.

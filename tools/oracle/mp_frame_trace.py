@@ -15,7 +15,7 @@ ENTRY_ORIGINAL = (0x03E00008, 0x27BD0010)  # jr ra; addiu sp,sp,16
 CODE_BASE = 0x01FE6000
 CONFIG_BASE = 0x01FE8000
 MAX_DESCRIPTORS = 1022  # direct 8-byte ranges in the 0x2000-byte config window
-DYNAMIC_DESCRIPTOR_SIZE = 28  # seven words: root, size, count, links, output
+DYNAMIC_DESCRIPTOR_SIZE = 32  # eight words: root, sizes, links, output, filter
 CONFIG_SIZE = 0x2000
 EE_RAM_START = 0x00100000
 EE_RAM_END = 0x02000000
@@ -25,6 +25,7 @@ RING_END = 0x00100000
 RING_LIMIT_ADDR = 0x01FEA000   # exclusive end of the configured snapshot ring
 RING_HEADER_SIZE = 16
 SNAPSHOT_HEADER_SIZE = 16
+DYNAMIC_HEADER_SIZE = 12
 GS_DONE = 0x002A3798
 GS_FRAME = 0x002A379C
 GS_FRAME_START = 0x002A37A4
@@ -155,7 +156,7 @@ def frame_hook_words():
     a.label("next_descriptor")
     a.emit(_i(0x09, 9, 9, -1))
     a.branch(0x05, 9, 0, "descriptor")
-    # Dynamic records follow the direct range table: count, then 7-word
+    # Dynamic records follow the direct range table: count, then 8-word
     # pointer/list descriptors. Each output block is {count, complete, items}.
     a.label("dynamic_count")
     a.emit(_i(0x23, 24, 9, 0))
@@ -173,8 +174,8 @@ def frame_hook_words():
     a.emit(_i(0x2B, 15, 0, 0))   # count = 0
     a.emit(_i(0x09, 0, 25, 1))
     a.emit(_i(0x2B, 15, 25, 4))  # complete = 1
-    a.emit(_i(0x09, 15, 5, 8))   # a1 = data area
-    a.emit(_i(0x09, 7, 6, -8))   # a2 = reserved data bytes
+    a.emit(_i(0x09, 15, 5, 12))  # a1 = data area
+    a.emit(_i(0x09, 7, 6, -12))  # a2 = reserved data bytes
     a.label("dynamic_zero")
     a.branch(0x04, 6, 0, "dynamic_zero_done")
     a.emit(_i(0x28, 5, 0, 0))
@@ -182,8 +183,30 @@ def frame_hook_words():
     a.emit(_i(0x09, 6, 6, -1))
     a.branch(0x05, 6, 0, "dynamic_zero")
     a.label("dynamic_zero_done")
-    a.emit(_i(0x09, 15, 5, 8))
+    a.emit(_i(0x09, 15, 5, 12))
+    a.emit(_i(0x23, 8, 8, 0))    # t0 = root pointer-cell address
+    a.emit(_i(0x23, 24, 25, 28)) # t9 = root traversal mode / offsets
+    a.emit(_i(0x09, 0, 1, -1))
+    a.branch(0x04, 25, 1, "dynamic_root_simple")
+    a.emit(0)
+    a.emit(_i(0x23, 8, 2, 0))    # v0 = parent pointer
+    a.emit(_r(0, 25, 1, 15, 0x02))
+    a.emit(_i(0x0C, 1, 1, 0x1FFF))
+    a.emit(_r(2, 1, 8, 0, 0x21))
+    a.emit(_i(0x23, 8, 2, 0))    # v0 = first child pointer
+    a.emit(_i(0x0C, 25, 25, 0x7FFF))
+    a.emit(_i(0x09, 0, 1, 0x7FFF))
+    a.branch(0x04, 25, 1, "dynamic_root_nested_done")
+    a.emit(0)
+    a.emit(_r(2, 25, 8, 0, 0x21))
+    a.emit(_i(0x23, 8, 2, 0))    # v0 = second child pointer
+    a.label("dynamic_root_nested_done")
+    a.branch(0x04, 0, 0, "dynamic_root_done")
+    a.emit(0)
+    a.label("dynamic_root_simple")
     a.emit(_i(0x23, 8, 2, 0))    # v0 = *root
+    a.label("dynamic_root_done")
+    a.emit(_i(0x2B, 15, 2, 8))   # same-frame pointee/list head
     a.emit(_r(0, 0, 3, 0, 0x21)) # v1 = actual count
     a.label("dynamic_node")
     a.branch(0x04, 2, 0, "dynamic_done")
@@ -239,7 +262,7 @@ def frame_hook_words():
     a.emit(_i(0x2B, 15, 0, 4))
     a.label("dynamic_done")
     a.emit(_r(15, 7, 15, 0, 0x21)) # next reserved output block
-    a.emit(_i(0x09, 24, 24, 28))
+    a.emit(_i(0x09, 24, 24, 32))
     a.emit(_i(0x09, 9, 9, -1))
     a.branch(0x05, 9, 0, "dynamic_descriptor")
     a.label("publish")
@@ -364,7 +387,7 @@ def configure(pine, ranges, dynamic_descriptors=()):
         spec["child_size"] = child_size
         spec["next_offset"] = next_offset
         spec["child_offset"] = child_offset
-        spec["output_size"] = 8 + count * (size + child_size)
+        spec["output_size"] = DYNAMIC_HEADER_SIZE + count * (size + child_size)
     config_bytes = (16 + 8 * len(ranges) + 4
                     + DYNAMIC_DESCRIPTOR_SIZE * len(dynamic))
     if config_bytes > CONFIG_SIZE:
@@ -395,7 +418,8 @@ def configure(pine, ranges, dynamic_descriptors=()):
     for index, spec in enumerate(dynamic):
         fields = (spec["root"], spec["size"], spec["max_count"],
                   spec["next_offset"], spec["child_offset"],
-                  spec["child_size"], spec["output_size"])
+                  spec["child_size"], spec["output_size"],
+                  spec.get("filter_spec", 0xFFFFFFFF))
         dynamic_ops.extend(
             (WRITE32, dyn_base + 4 + index * DYNAMIC_DESCRIPTOR_SIZE + 4*word,
              "<I", value & 0xFFFFFFFF)

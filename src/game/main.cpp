@@ -28,6 +28,7 @@
 #include "assets/cutscene.hpp"
 #include "assets/elf.hpp"
 #include "assets/game_files.hpp"
+#include "assets/mp_data.hpp"
 #include "assets/level.hpp"
 #include "assets/mission_data.hpp"
 #include "assets/sound_archive.hpp"
@@ -453,20 +454,16 @@ int run(int argc, char** argv) {
     weapons.set_drone_system(drone_cli.system());   // null without --sp (idle-fidget threat gate)
     // Body animation (PlayerAnimator, the movement-side foot height): replay rows that carry the recorded
     // height drive the capsule exactly (oracle parity); otherwise the animator inside Player::update supplies
-    // it live. Skins follow the mode: the Mp_ body for arenas (as in nfgame_mp), Player_Init's per-level skin
-    // for story maps. Replay runs with recorded heights never tick the animator, so they stay bit-identical.
+    // it live. Skins follow the mode: MP_skins character 0 for a bare arena, Player_Init's per-level skin for story maps.
+    // Replay runs with recorded heights never tick the animator, so they stay bit-identical.
     std::vector<AnimSet> body_anim_sets = read_anim_sets(action_elf);
     const SkinDef* body_skin = nullptr;
+    std::uint32_t body_model_file_hash = 0;
     if (multiplayer) {
-        for (const auto& [hash, def] : weapon_bank->skins()) {
-            (void)hash;
-            const std::string name = weapon_bank->skin_name(def);
-            if (name.size() > 3 && (name[0] == 'M' || name[0] == 'm') && (name[1] == 'p' || name[1] == 'P') &&
-                name[2] == '_') {
-                body_skin = &def;
-                break;
-            }
-        }
+        const MpSkin mp_skin = mp_skin_for_character(action_elf, 0);
+        body_model_file_hash = mp_skin.file_hash;
+        body_skin = weapon_bank->skin(mp_skin.skin_hash);
+        if (!body_skin) throw std::runtime_error("MP_skins character skin is not loaded in this arena bank");
     } else {
         body_skin = weapon_bank->skin(single_player_skin(level_id_from_bin_name(bin_name)));
     }
@@ -478,7 +475,8 @@ int run(int argc, char** argv) {
             category = int(weapons.table().weapon(weapon_id).category);
         }
         player.set_body_animator(
-            std::make_unique<PlayerAnimator>(*weapon_bank, *body_skin, body_anim_sets, weapon_id, category));
+            std::make_unique<PlayerAnimator>(*weapon_bank, *body_skin, body_anim_sets, weapon_id, category,
+                                             body_model_file_hash));
     }
     // Single-player mission flow (objectives, doors, triggers, cutscenes): skipped for arenas
     // and with --no-mission (bare movement for oracle traces). The World owns the system;

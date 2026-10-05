@@ -23,6 +23,12 @@ Bytes table(const Elf32& elf, std::string_view name, std::size_t entry_size, std
     return elf.at(sym->value, sym->size);
 }
 
+MpSkin load_skin(Bytes skins, std::size_t index) {
+    const std::size_t offset = index * kSkinSize;
+    return {load<std::uint32_t>(skins, offset), load<std::uint32_t>(skins, offset + 4),
+            load<std::uint32_t>(skins, offset + 8)};
+}
+
 MpMenuItem load_item(Bytes t, std::size_t index) {
     std::size_t o = index * kItemSize;
     MpMenuItem item;
@@ -146,6 +152,12 @@ constexpr std::pair<std::uint16_t, std::size_t> kRewardScenarios[] = {
 
 }  // namespace
 
+MpSkin mp_skin_for_character(const Elf32& action_elf, std::uint32_t character_index) {
+    if (character_index >= kMpCharacters) throw FormatError("MP character index is out of range");
+    const Bytes skins = table(action_elf, "MP_skins", kSkinSize, kMpCharacters);
+    return load_skin(skins, character_index);
+}
+
 std::optional<std::uint32_t> mp_reward_character(std::uint16_t id) {
     for (const auto& [reward, character] : kRewardCharacters)
         if (reward == id) return character;
@@ -198,8 +210,7 @@ MpData load_mp_data(GameFiles& files, const std::filesystem::path& gamedir, cons
         c.small_sprite = small[i].sprite;
         c.short_name = kShortNameBase + i;
         c.stats = load_stats(stats, i * kBotStatsSize);
-        c.skin = {load<std::uint32_t>(skins, i * kSkinSize), load<std::uint32_t>(skins, i * kSkinSize + 4),
-                  load<std::uint32_t>(skins, i * kSkinSize + 8)};
+        c.skin = load_skin(skins, i);
         d.characters.push_back(c);
     }
 

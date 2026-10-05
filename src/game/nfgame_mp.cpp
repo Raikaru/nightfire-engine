@@ -21,6 +21,7 @@
 #include "assets/character.hpp"
 #include "assets/game_files.hpp"
 #include "assets/level.hpp"
+#include "assets/mp_data.hpp"
 #include "game/player_anim.hpp"
 
 #include "game/arena_view.hpp"
@@ -300,19 +301,11 @@ int run_match(const MatchLaunch& request) {
     std::vector<AnimSet> headless_anim_sets;
     if (scripted) {
         headless_anim_sets = read_anim_sets(action_elf);
-        const SkinDef* body_skin = nullptr;
-        for (const auto& [hash, def] : weapon_bank->skins()) {
-            (void)hash;
-            const std::string name = weapon_bank->skin_name(def);
-            if (name.size() > 3 && (name[0] == 'M' || name[0] == 'm') &&
-                (name[1] == 'p' || name[1] == 'P') && name[2] == '_') {
-                body_skin = &def;
-                break;
-            }
-        }
-        if (!body_skin && !weapon_bank->skins().empty()) body_skin = &weapon_bank->skins().begin()->second;
-        if (!body_skin) throw std::runtime_error("MP player animation has no character skin");
         for (int i = 0; i < options.humans; ++i) {
+            const std::uint32_t character = std::uint32_t(arena.settings().slots[std::size_t(i)].character);
+            const MpSkin mp_skin = mp_skin_for_character(action_elf, character);
+            const SkinDef* body_skin = weapon_bank->skin(mp_skin.skin_hash);
+            if (!body_skin) throw std::runtime_error("MP_skins character skin is not loaded in this arena bank");
             int weapon_id = 1;
             int category = 1;
             if (const PlayerWeapons* state = session.weapons().state(i)) {
@@ -320,7 +313,8 @@ int run_match(const MatchLaunch& request) {
                 category = int(session.weapons().table().weapon(weapon_id).category);
             }
             world.player(i)->set_body_animator(
-                std::make_unique<PlayerAnimator>(*weapon_bank, *body_skin, headless_anim_sets, weapon_id, category));
+                std::make_unique<PlayerAnimator>(*weapon_bank, *body_skin, headless_anim_sets, weapon_id, category,
+                                                 mp_skin.file_hash));
         }
         if (importer) {
             for (int i = 0; i < options.humans; ++i) {
@@ -384,8 +378,6 @@ int run_match(const MatchLaunch& request) {
                 timer_frame = recorded_timer_frame;
                 if (launch.mp_seed_each) {
                     importer->restore_at(world.frame(), world, session, bot_match.get(), true);
-                    for (int i = 0; i < options.humans; ++i)
-                        world.player(i)->set_stand_height_from_replay(true);
                     for (int i = 0; i < options.humans; ++i) {
                         const auto* state = session.weapons().state(i);
                         PlayerAnimator* body = world.player(i)->body_animator();
