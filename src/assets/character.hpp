@@ -356,6 +356,7 @@ public:
         int direction = 1, drive_type = 0;
         bool loop = true, ended = false, have_root = false, fresh = false, strafe = false, anim_set = false;
         Vec3 previous_root{}, root_delta{};
+        std::uint32_t command_mask = 0;
     };
     // Restores source animation cursors and sampled-root predecessors between ticks.
     bool restore_layers(const std::vector<LayerSnapshot>& layers, float distance_accumulator);
@@ -400,7 +401,7 @@ public:
     float foot_height(float model_min_y, bool flag_400 = true) const;
     void extract_root_motion(bool on) { extract_root_ = on; dirty_ = true; }
 
-    // Events crossed since the last call (frames in (previous tick, this tick], wrapping over a loop).
+    // Events dispatched by the source-equivalent pre- and post-advance AnimProcessScriptCmds passes.
     std::vector<AnimEvent> take_events();
 
     // Gameplay supplies its stream so AnimProcessScriptCmds side effects occur during the animation tick,
@@ -464,7 +465,8 @@ private:
         int direction = 1;                     // +1 fading in / steady, -1 fading out
         float distance = 0, distance_step = 0;
         float pair_weight = 0;                 // Distance layers: weight of the Phase layer blended into them
-        int prev_int = 1;                      // frame at the previous tick, for event crossing (scripts start at 1)
+        int prev_int = 1;                      // previous tick's integer frame for post-advance command processing
+        std::uint32_t command_mask = 0;      // AnimProcessScriptCmds' per-command active mask (+0x7C)
         bool have_root = false;
         Vec3 prev_root{}, root_delta{};        // root translation of the last sample, and the last tick's change
         // AnimSetUpdate ORs 0x8d000000 onto walk/strafe layers: script flags 0x1000000/0x4000000 zero the
@@ -487,7 +489,7 @@ private:
     Layer* find_layer(std::uint32_t id);
     void tick_layer(Layer& l, float mul, bool body);
     void sample_root(Layer& l, float previous_frame);
-    void emit_events(const Layer& l, int previous, int current);
+    void emit_events(Layer& l, int previous, int current);
     void start_strafe(int side);
     void tick_facial(Layer& l);
     Pose layer_pose(const Layer& l) const;

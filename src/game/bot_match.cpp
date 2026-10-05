@@ -44,6 +44,7 @@ void BotMatch::install(ArenaSession& session) {
     drones_ = drones.get();
     drones_->set_nav(nav_.get());
     drones_->set_weapons(&session.weapons());
+    session.weapons().set_drone_system(drones_);   // Player_SetWeaponAnimObj threat gate
 
     BotSystem::Config bc;
     bc.world = &world_;

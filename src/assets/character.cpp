@@ -1052,14 +1052,16 @@ void CharacterInstance::update_locomotion(float speed, float max_speed, float st
 
 void CharacterInstance::tick_layer(Layer& l, float mul, bool body) {
     const float previous_frame = l.frame;
+    if (body && l.script) emit_events(l, int(l.previous_frame), int(l.frame));
+    const float first_tick = l.fresh ? 0.25f : 1.0f;
     if (l.fresh) {
-        // AnimScriptTick processes commands at the initial frame before the time advance below.
+        // AnimScriptTick runs the new layer's prepass before its fractional same-frame update.
         l.fresh = false;
     }
     float f = l.frame;
     switch (l.drive) {
         case Drive::Time:
-            f += l.speed * mul;   // AnimScriptTick scales Time advance by FRAME_RATE_MUL
+            f += l.speed * mul * first_tick;   // AnimScriptTick scales Time advance by FRAME_RATE_MUL
             break;
         case Drive::Distance:
             l.distance += l.distance_step;
@@ -1132,39 +1134,52 @@ void CharacterInstance::sample_root(Layer& l, float previous_frame) {
     l.prev_root = root;
 }
 
-// A command at frame f fires when the layer's frame moves across it: (previous, current] going forward, mirrored
-// backwards, and either side of the wrap when the frame jumped around a loop.
-void CharacterInstance::emit_events(const Layer& l, int previous, int current) {
-    auto crossed = [&](int f) {
-        if (l.speed >= 0) return current >= previous ? (f > previous && f <= current) : (f > previous || f <= current);
-        return current <= previous ? (f < previous && f >= current) : (f < previous || f >= current);
+// AnimScriptTick runs AnimProcessScriptCmds both before and after AnimScriptEnd. The original command test is
+// inclusive at both ends; +0x7C records commands active in the interval so the shared boundary is dispatched once.
+void CharacterInstance::emit_events(Layer& l, int previous, int current) {
+    const bool forward = l.speed >= 0;
+    auto active = [&](int frame) {
+        if (forward)
+            return current >= previous ? (frame >= previous && frame <= current)
+                                       : (frame >= previous || frame <= current);
+        return current <= previous ? (frame <= previous && frame >= current)
+                                   : (frame <= previous || frame >= current);
     };
-    for (const auto& c : l.script->cmds) {
-        if (c.op != kScriptSound && c.op != kScriptEvent) continue;
-        if (c.words.size() < 2 || !crossed(int(c.words[0]))) continue;
-        AnimEvent e;
-        e.script = l.script->hash;
-        e.frame = int(c.words[0]);
-        e.footstep_type = (l.script->hash == 0x06000099 || l.script->hash == 0x060000AE) ? 1 : 2;
-        if (c.op == kScriptSound) {
-            if (game_rng_) (void)game_rng_->rand_int(500);   // AnimProcessScriptCmds sound pitch: Rand_Rand(500).
-            e.kind = AnimEventKind::Sound;
-            e.arg = c.words[1];
-        } else {
-            e.arg = c.words.size() > 2 ? c.words[2] : 0;
-            switch (c.words[1]) {
-                case kEventFootstep: e.kind = AnimEventKind::Footstep; e.foot = AnimEvent::kToggle; break;
-                case kEventFootLeft: e.kind = AnimEventKind::Footstep; e.foot = AnimEvent::kLeft; break;
-                case kEventFootRight: e.kind = AnimEventKind::Footstep; e.foot = AnimEvent::kRight; break;
-                case kEventToggleHand: e.kind = AnimEventKind::ToggleHand; break;
-                case kEventCallback: e.kind = AnimEventKind::Callback; break;
-                case kEventStopSounds: e.kind = AnimEventKind::StopSounds; break;
-                case kEventEffect: e.kind = AnimEventKind::Effect; break;
-                case kEventFire: e.kind = AnimEventKind::Fire; break;
-                default: continue;
+    const std::size_t count = l.script->cmds.size();
+    for (std::size_t i = 0; i < count; ++i) {
+        const ScriptCmd& c = l.script->cmds[i];
+        if ((c.op != kScriptSound && c.op != kScriptEvent) || c.words.size() < 2) continue;
+        const std::uint32_t mask = std::uint32_t{1} << ((count - 1 - i) & 31);
+        const bool now_active = active(int(c.words[0]));
+        const bool already_active = (l.command_mask & mask) != 0;
+        if (now_active && !already_active) {
+            AnimEvent e;
+            e.script = l.script->hash;
+            e.frame = int(c.words[0]);
+            e.footstep_type = (l.script->hash == 0x06000099 || l.script->hash == 0x060000AE) ? 1 : 2;
+            bool dispatch = true;
+            if (c.op == kScriptSound) {
+                if (game_rng_) (void)game_rng_->rand_int(500);   // AnimProcessScriptCmds sound pitch: Rand_Rand(500).
+                e.kind = AnimEventKind::Sound;
+                e.arg = c.words[1];
+            } else {
+                e.arg = c.words.size() > 2 ? c.words[2] : 0;
+                switch (c.words[1]) {
+                    case kEventFootstep: e.kind = AnimEventKind::Footstep; e.foot = AnimEvent::kToggle; break;
+                    case kEventFootLeft: e.kind = AnimEventKind::Footstep; e.foot = AnimEvent::kLeft; break;
+                    case kEventFootRight: e.kind = AnimEventKind::Footstep; e.foot = AnimEvent::kRight; break;
+                    case kEventToggleHand: e.kind = AnimEventKind::ToggleHand; break;
+                    case kEventCallback: e.kind = AnimEventKind::Callback; break;
+                    case kEventStopSounds: e.kind = AnimEventKind::StopSounds; break;
+                    case kEventEffect: e.kind = AnimEventKind::Effect; break;
+                    case kEventFire: e.kind = AnimEventKind::Fire; break;
+                    default: dispatch = false; break;
+                }
             }
+            if (dispatch) events_.push_back(e);
         }
-        events_.push_back(e);
+        if (now_active) l.command_mask |= mask;
+        else l.command_mask &= ~mask;
     }
 }
 
@@ -1206,11 +1221,11 @@ bool CharacterInstance::restore_layers(const std::vector<LayerSnapshot>& snapsho
         layer.distance_step = snapshot.distance_step;
         layer.pair_weight = snapshot.pair_weight;
         layer.prev_int = int(snapshot.previous_frame);
+        layer.command_mask = snapshot.command_mask;
         layer.have_root = snapshot.have_root;
         layer.prev_root = snapshot.previous_root;
         layer.root_delta = snapshot.root_delta;
         layer.mask_root_xz = (snapshot.flags & (0x01000000u | 0x04000000u)) != 0;
-        layer.mask_root_y = (snapshot.flags & 0x02000000u) != 0;
         layer.fresh = snapshot.fresh;
         layer.strafe = snapshot.strafe;
         layer.anim_set = snapshot.anim_set;

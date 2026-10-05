@@ -1175,9 +1175,12 @@ their room's cell, while forced type-2 objects with radius above `0.5` are
 selected only when a straddled portal cell is visible. Seed restoration keeps
 the source model, display-mask, object-flag, object-type, and model-flag bytes
 so this host view pass applies the same predicates. In `--mp-seed-each`, camera
-and view selection are also refreshed immediately after restoring the source
-checkpoint, before the next `Game_Run`-equivalent tick, matching the source
-draw marker already present at that point in the recording.
+and view selection are refreshed immediately after restoring the source
+checkpoint, before the next `Game_Run`-equivalent tick. `mp_record.py` samples
+at the `Game_Run` return hook, after the logic update and before the following
+`Game_Draw`; the restored `obj+0xfc` is therefore pre-draw state. This refresh
+replays that row's missing draw-side visibility update once, rather than
+applying a draw marker already present in the checkpoint.
 
 The recorder's bot-layer `effective_weight` is the raw `sAnimScript+0x9c`
 cache, distinct from blend time/duration at `+0xa8/+0xac`. `AnimFrameResolve`

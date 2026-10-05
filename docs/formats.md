@@ -614,8 +614,9 @@ more-bone rig are additionally tolerated, with the extra bones held at bind pose
 `u32 hash; u16 length (frames); u16 (count & 0x1FF | flags << 9)`, then `count` commands
 `u8 op; u8 n; u16 words[n + 3 (op 0) | n + 2 (op 1..4) | n (op > 4)]`. Op 0 = start sequence `[start_frame, end_frame,
 sequence id (0x04000000 | id)]`; the sequence plays frame `t - start + 1` while the script is at frame `t`. Op 1 =
-sound at `[frame, sfx id]`; when an active sound command is crossed, `AnimProcessScriptCmds` draws `Rand_Rand(500)`
-for the sound's pitch variation before `Sound_Play3D` (ACTION.ELF `0x1C21E4`). Op 4 carries animation events
+sound at `[frame, sfx id]`; `AnimScriptTick` processes commands before and after advancing the layer, with inclusive frame
+endpoints and a per-command active mask preventing a shared boundary from firing twice. `AnimProcessScriptCmds` draws
+`Rand_Rand(500)` for sound pitch variation before `Sound_Play3D` (ACTION.ELF `0x1C21E4`). Op 4 carries animation events
 (`[frame, event, arg]`); codes 0..7 cover footsteps, hand toggle, callback, stop sounds, foot-left/right, effect and
 fire. Ops 2, 3, and values above 4 are skipped. ACTION.ELF's `AnimSet_*` tables (10 script ids each) map gameplay
 roles to scripts.

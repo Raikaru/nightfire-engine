@@ -628,6 +628,7 @@ BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
     d.smi.pending = raw_u8(drone_raw, 0x120) != 0;
     d.smi.result = raw_i32(drone_raw, 0x124);
     d.health = raw_f32(drone_raw, 0xac);
+    d.alertness = raw_f32(drone_raw, 0x50c);
     d.max_health = raw_f32(drone_raw, 0xb0);
     d.last_damage = raw_f32(drone_raw, 0x150);
     d.bullet_damage_mod = raw_f32(drone_raw, 0x100);

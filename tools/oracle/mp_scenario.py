@@ -26,6 +26,7 @@ own shorter duration; increase `--nav-ms` if needed.
 import argparse
 import os
 import socket
+import subprocess
 import struct
 import sys
 import time
@@ -57,7 +58,9 @@ def hold(btn, secs=2.0):
 def shot(path):
     if not path:
         return
-    os.system(f"WAYLAND_DISPLAY=wayland-0 spectacle -b -n -o {path} >/dev/null 2>&1")
+    # Spectacle batch mode produces no file on the X11 display used by PCSX2.
+    subprocess.run(["import", "-window", "root", path], check=False,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def main():
@@ -183,40 +186,23 @@ def main():
     # Keep the Arena wheel's early validation happy when the requested team mode
     # is committed directly at Confirm; the intended teams are re-poked there.
     poke_roster(0 if args.direct_scenario_at_confirm else None)
-    # On a slow interpreter the ready prompt can eat the transition tap. Probe
-    # the scenario mask around one additional tap so we do not accidentally
-    # select Quick Game when the wheel already opened.
-    pine.write(WRITE32, A.MPSETTINGS + A.MPS_SCENARIO_MASK, 0xAAAAAAAA)
-    hold("cross")
-    time.sleep(args.page_settle)
-    if pine.read32(A.MPSETTINGS + A.MPS_SCENARIO_MASK) != 0xAAAAAAAA:
-        vpad("press", "triangle", 400)
-        time.sleep(args.page_settle)
-        pine.write(WRITE32, A.MPSETTINGS + A.MPS_SCENARIO_MASK, 0xAAAAAAAA)
-
+    # The ready confirmation enters the wheel at Quick Game; scenario indices
+    # are the number of down steps from there.
     snap("03-scenario")
-    # The wheel opens with Arena highlighted. Quick Game has already been
-    # passed on the preceding ready/options page, so do not step down again.
     target_mask = A.MP_SCENARIOS[args.scenario][0]
-    wheel_mask = A.MP_SCENARIOS[1][0] if args.direct_scenario_at_confirm else target_mask
-    for attempt in range(14):
-        pine.write(WRITE8, A.MENU_UNLOCK_EVERYTHING, 1)
-        pine.write(WRITE32, A.MPSETTINGS + A.MPS_SCENARIO_MASK, 0xAAAAAAAA)
-        vpad("press", "cross", 400)
-        time.sleep(args.page_settle)
-        m = pine.read32(A.MPSETTINGS + A.MPS_SCENARIO_MASK)
-        if m == wheel_mask:
-            break
-        print(f"  scenario select gave {m:#x}, cycling", flush=True)
-        vpad("press", "triangle", 400)
-        time.sleep(args.page_settle)
-        if m == 0xAAAAAAAA:
-            time.sleep(args.page_settle)   # select never fired: page not ready, retry same row
-        else:
-            vpad("press", "down", 400)
-            time.sleep(args.settle)
-    else:
-        raise SystemExit("scenario wheel never selected mask %#x" % wheel_mask)
+    wheel_index = 1 if args.direct_scenario_at_confirm else args.scenario
+    wheel_mask = A.MP_SCENARIOS[wheel_index][0]
+    for _ in range(wheel_index):
+        vpad("press", "down", 400)
+        time.sleep(args.settle)
+    pine.write(WRITE8, A.MENU_UNLOCK_EVERYTHING, 1)
+    pine.write(WRITE32, A.MPSETTINGS + A.MPS_SCENARIO_MASK, 0xAAAAAAAA)
+    vpad("press", "cross", 400)
+    time.sleep(args.page_settle)
+    selected_mask = pine.read32(A.MPSETTINGS + A.MPS_SCENARIO_MASK)
+    if selected_mask != wheel_mask:
+        raise SystemExit("scenario select gave %#x, wanted %#x" %
+                         (selected_mask, wheel_mask))
     snap("04-scenario-sel")
     want_map = A.MP_MAPS[args.map][0]
     # The map wheel commits its highlighted row on cross. Use a valid ID as
