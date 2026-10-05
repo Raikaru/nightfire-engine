@@ -52,6 +52,14 @@ constexpr std::size_t kMaxNameBytes = 32;
 constexpr std::size_t kMaxServerNameBytes = 64;
 constexpr std::size_t kMaxMapNameBytes = 64;
 constexpr std::size_t kOwnerMovementBytes = 206;
+constexpr bool valid_server_capacity(std::uint8_t players, std::uint8_t max_players,
+                                     std::uint8_t bots, std::uint8_t slots) {
+    if (slots != 8 && slots != 10 && slots != 16) return false;
+    const std::uint8_t human_limit = slots == 16 ? 16 : 4;
+    const std::uint8_t bot_limit = slots == 8 ? 4 : slots == 10 ? 6 : kMaxServerBots;
+    return max_players == human_limit && players <= human_limit && bots <= bot_limit &&
+           unsigned(players) + unsigned(bots) <= slots;
+}
 
 void put16(std::vector<std::uint8_t>& out, std::uint16_t v) {
     out.push_back(std::uint8_t(v)); out.push_back(std::uint8_t(v >> 8));
@@ -296,8 +304,7 @@ bool decode_server_query(std::span<const std::uint8_t> payload, std::uint32_t& q
 
 std::vector<std::uint8_t> encode_server_info(const ServerInfo& info) {
     if (info.name.size() > kMaxServerNameBytes || info.map.size() > kMaxMapNameBytes ||
-        info.max_players > 16 || info.players > info.max_players || info.bots > kMaxServerBots ||
-        (info.slot_count != 8 && info.slot_count != 10 && info.slot_count != 16))
+        !valid_server_capacity(info.players, info.max_players, info.bots, info.slot_count))
         return {};
     std::vector<std::uint8_t> out;
     out.reserve(24 + info.name.size() + info.map.size());
@@ -321,10 +328,10 @@ bool decode_server_info(std::span<const std::uint8_t> payload, ServerInfo& info)
     if (payload.size() < 24) return false;
     const std::size_t name_size = payload[19], map_size = payload[20];
     const std::uint8_t slot_count = payload[payload.size() - 2];
+    const std::uint8_t bots = payload[payload.size() - 3];
     if (payload[18] > 1 || name_size > kMaxServerNameBytes || map_size > kMaxMapNameBytes ||
-        payload.size() != 24 + name_size + map_size || payload[16] > payload[17] || payload[17] > 16 ||
-        payload[payload.size() - 3] > kMaxServerBots || payload.back() > 1 ||
-        (slot_count != 8 && slot_count != 10 && slot_count != 16))
+        payload.size() != 24 + name_size + map_size ||
+        !valid_server_capacity(payload[16], payload[17], bots, slot_count) || payload.back() > 1)
         return false;
     ServerInfo decoded;
     decoded.query_id = get32(payload.data());
@@ -335,7 +342,7 @@ bool decode_server_info(std::span<const std::uint8_t> payload, ServerInfo& info)
     decoded.password_required = payload[18] != 0;
     decoded.name.assign(reinterpret_cast<const char*>(payload.data() + 21), name_size);
     decoded.map.assign(reinterpret_cast<const char*>(payload.data() + 21 + name_size), map_size);
-    decoded.bots = payload[payload.size() - 3];
+    decoded.bots = bots;
     decoded.slot_count = slot_count;
     decoded.modified_rules = payload.back() != 0;
     info = std::move(decoded);

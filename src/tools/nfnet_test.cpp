@@ -68,7 +68,7 @@ int main() {
     ok &= check(encode_hello(data_hash, "x", std::string(kMaxPasswordBytes + 1, 'x')).empty(),
                 "oversized password rejected");
 
-    ServerInfo info{0x12345678, "Nightfire Local", "07000024.bin", 2, 3, 8, true};
+    ServerInfo info{0x12345678, "Nightfire Local", "07000024.bin", 2, 3, 16, true};
     info.match_revision = 0x8877665544332211ull;
     info.bots = 12;
     info.slot_count = 16;
@@ -92,10 +92,50 @@ int main() {
     info.bots = std::uint8_t(kMaxServerBots + 1);
     ok &= check(encode_server_info(info).empty(), "server info encoder rejects excess bot count");
     info.bots = kMaxServerBots;
+    info.players = 0;
     ok &= check(decode_server_info(encode_server_info(info), decoded_info) &&
                     decoded_info.bots == kMaxServerBots && decoded_info.slot_count == 16 &&
                     decoded_info.modified_rules,
-                "server info supports extended bots, slots, and custom-rule badge");
+                "extended server info accepts sixteen bot slots");
+
+    ServerInfo ps2_boundary = info;
+    ps2_boundary.max_players = 4;
+    ps2_boundary.slot_count = 8;
+    ps2_boundary.players = 4;
+    ps2_boundary.bots = 4;
+    auto ps2_bytes = encode_server_info(ps2_boundary);
+    ok &= check(decode_server_info(ps2_bytes, decoded_info) && decoded_info.players == 4 &&
+                    decoded_info.max_players == 4 && decoded_info.bots == 4,
+                "PS2 server info accepts four humans and four bots");
+    auto wrong_capacity = ps2_bytes;
+    wrong_capacity[17] = 5;
+    ok &= check(!decode_server_info(wrong_capacity, decoded_info), "server info rejects mismatched human capacity");
+    ps2_boundary.max_players = 5;
+    ok &= check(encode_server_info(ps2_boundary).empty(), "server info encoder rejects mismatched human capacity");
+    ps2_boundary.max_players = 4;
+    auto too_many_legacy_bots = ps2_bytes;
+    too_many_legacy_bots[too_many_legacy_bots.size() - 3] = 5;
+    ok &= check(!decode_server_info(too_many_legacy_bots, decoded_info), "PS2 server info rejects a fifth bot");
+    ps2_boundary.bots = 5;
+    ok &= check(encode_server_info(ps2_boundary).empty(), "server info encoder enforces legacy bot ceiling");
+
+    ServerInfo gc_boundary = ps2_boundary;
+    gc_boundary.slot_count = 10;
+    gc_boundary.bots = 6;
+    auto gc_bytes = encode_server_info(gc_boundary);
+    ok &= check(decode_server_info(gc_bytes, decoded_info) && decoded_info.bots == 6 &&
+                    decoded_info.slot_count == 10,
+                "GC/Xbox server info accepts six bots");
+    auto too_many_gc_bots = gc_bytes;
+    too_many_gc_bots[too_many_gc_bots.size() - 3] = 7;
+    ok &= check(!decode_server_info(too_many_gc_bots, decoded_info), "GC/Xbox server info rejects a seventh bot");
+
+    ServerInfo over_capacity = info;
+    over_capacity.players = 1;
+    ok &= check(encode_server_info(over_capacity).empty(), "server info encoder rejects occupied slots over capacity");
+    auto extended_bytes = encode_server_info(info);
+    extended_bytes[16] = 1;
+    ok &= check(!decode_server_info(extended_bytes, decoded_info), "server info decoder rejects occupied slots over capacity");
     std::uint32_t query_id = 0;
     ok &= check(decode_server_query(encode_server_query(info.query_id), query_id) && query_id == info.query_id,
                 "server query round-trip");

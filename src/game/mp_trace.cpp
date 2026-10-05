@@ -18,6 +18,7 @@ const char* rng_call_name(nf::GameRngCall call) {
         case nf::GameRngCall::Random: return "Random";
         case nf::GameRngCall::RandInt: return "RandInt";
         case nf::GameRngCall::FRand: return "FRand";
+        case nf::GameRngCall::FRandHalf: return "FRandHalf";
         case nf::GameRngCall::MVar2: return "MVar2";
     }
     return "Unknown";

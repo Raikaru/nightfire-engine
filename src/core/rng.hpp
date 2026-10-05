@@ -31,7 +31,7 @@
 
 namespace nf {
 
-enum class GameRngCall : std::uint8_t { Random, RandInt, FRand, MVar2 };
+enum class GameRngCall : std::uint8_t { Random, RandInt, FRand, FRandHalf, MVar2 };
 
 struct GameRngTraceRecord {
     std::uint64_t frame;
@@ -117,6 +117,14 @@ public:
         step();
         const float result = ee_mul(range, ee_mul(convert(), kInv2Pow32));
         if (trace_) trace_->record(GameRngCall::FRand, std::bit_cast<std::uint32_t>(result), loc);
+        return result;
+    }
+
+    // `Rand_FRandHalf(range)`: range * uniform - range * 0.5, in source operation order.
+    float frand_half(float range, const std::source_location& loc = std::source_location::current()) {
+        step();
+        const float result = ee_sub(ee_mul(range, ee_mul(convert(), kInv2Pow32)), ee_mul(range, 0.5f));
+        if (trace_) trace_->record(GameRngCall::FRandHalf, std::bit_cast<std::uint32_t>(result), loc);
         return result;
     }
 

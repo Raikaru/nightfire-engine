@@ -262,6 +262,15 @@ private:
         int part = bodypart::kNone;
     };
 
+    struct ImpactEmitter {
+        std::uint32_t id = 0;
+        int particle_count = 0, budget = 1, empty_ticks = 0;
+        float life = 0.0f, life_random = 0.0f, spawn_budget = 0.0f;
+        bool one_shot_full = false;
+        std::vector<float> ages, lives;
+    };
+    void update_impact_emitters(FrameTiming timing);
+    void create_impact_emitter(std::uint32_t id);
     void ensure_player(int slot, World& world);
     void tick_player(int slot, World& world, FrameTiming timing);
     void process_health_events(int slot, PlayerWeapons& state, Player& player);
@@ -325,6 +334,7 @@ private:
     std::vector<int> target_ids_;
     int next_target_id_ = World::kMaxPlayers;
     std::vector<Projectile> projectiles_;
+    std::vector<ImpactEmitter> impact_emitters_;
     WeaponEvents events_;
     World* world_ = nullptr;   // valid during tick() and fire()
     FrameTiming timing_;

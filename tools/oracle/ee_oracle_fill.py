@@ -163,6 +163,7 @@ def main(argv=None):
                            "--elf", str(pathlib.Path(args.elf).resolve()),
                            "--nfmips", str(pathlib.Path(args.nfmips).resolve()),
                            "--timeout", str(args.timeout)]
+                command += ["--timing-inputs", str(reference)]
                 if args.inputs:
                     command += ["--inputs", str(pathlib.Path(args.inputs).resolve())]
                 if args.watch_human_hp is not None:
