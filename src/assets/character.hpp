@@ -340,7 +340,8 @@ public:
     struct LayerInfo {
         std::uint32_t script;      // script (06xxxxxx) or sequence hash the layer plays
         float frame, previous_frame, speed; // sAnimScript +0x90 / +0x94 / +0x98
-        float blend_time, blend_duration, weight; // +0xA8 / +0xAC, effective layer weight
+        float blend_time, blend_duration; // sAnimScript +0xA8 / +0xAC
+        float weight;                     // cached AnimFrameResolve result, sAnimScript +0x9C
         int direction;             // +1 / -1 fading out
         bool distance_driven, phase_locked, strafe;
         float pair_weight;         // +0x88 (Distance layers)
@@ -349,7 +350,7 @@ public:
 
     struct LayerSnapshot {
         std::uint32_t script = 0, flags = 0, id = 0, primary = 0;
-        float frame = 1, previous_frame = 1, speed = 1, blend_time = 1, blend_duration = 1;
+        float frame = 1, previous_frame = 1, speed = 1, blend_time = 1, blend_duration = 1, weight = 0;
         float pair_weight = 0, distance = 0, distance_step = 0;
         int direction = 1, drive_type = 0;
         bool loop = true, ended = false, have_root = false, fresh = false, strafe = false;
@@ -444,6 +445,7 @@ private:
         std::uint32_t id = 0;                  // creation stamp (script+0x84): older layers resolve first
         std::uint32_t primary = 0;             // Phase layers: id of the Distance layer they follow
         float blend_time = 1, blend_duration = 1;
+        mutable float resolved_weight = 0; // AnimFrameResolve cache (+0x9C), refreshed when the pose resolves
         int direction = 1;                     // +1 fading in / steady, -1 fading out
         float distance = 0, distance_step = 0;
         float pair_weight = 0;                 // Distance layers: weight of the Phase layer blended into them
@@ -463,7 +465,7 @@ private:
         bool strafe = false;
         const DistanceTable* table = nullptr;
         bool anim_set = false;                 // created by update_locomotion
-        float weight() const { return blend_time / blend_duration; }
+        float weight() const { return resolved_weight; }
     };
 
     bool make_layer(std::uint32_t clip, bool loop, bool facial, Layer& out) const;

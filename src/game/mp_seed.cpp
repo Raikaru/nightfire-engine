@@ -927,6 +927,7 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                     layer.previous_frame = float_number(row.at("previous_frame"));
                     layer.speed = float_number(row.at("speed"));
                     layer.blend_time = float_number(row.at("blend_time"));
+                    layer.weight = f32_at(layer_raw, 0x9c);
                     layer.blend_duration = float_number(row.at("blend_duration"));
                     layer.direction = row.at("fade_direction").string() == "in" ? 1 :
                                       row.at("fade_direction").string() == "out" ? -1 : 0;

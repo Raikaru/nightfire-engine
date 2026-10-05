@@ -1045,23 +1045,25 @@ The resulting reachable-id set has **33 ids**:
 `{1, 2, 6, 10, 12, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 30, 36, 42, 44, 46, 50, 51,
 52, 53, 54, 55, 58, 59, 66, 69, 80, 82}`.
 
-Each directly grantable id was run from Skyrail Arena checkpoint frame **11527** for 121 source
-rows (source frames 11527–11647), then seeded into the engine for 120 aligned ticks (11528–11647).
-The port-0 profile held R1/fire on 11528–11540 and tapped it on 11550/11558; pressed alternate/mode
-(Square) on 11564; held aim (L1) on 11570–11590, with Up/zoom-in on 11576–11581 and Down/zoom-out
-on 11584–11587; tapped reload (Cross) on 11596; and pressed next-weapon (R2) on 11608/11616.
-Raw Sony pad bits are `R1=0x8`, `Square=0x80`, `L1=0x4`, `Up=0x1000`, `Down=0x4000`,
-`Cross=0x40`, `R2=0x2`. In source rows the expected mapped fire/aim/zoom actions were present.
-`nfmips mp-oracle --give-weapon` now invokes `Player_WeaponSelect` after granting a weapon and
-waits for the original owner current-weapon byte to become the requested id before recording;
-each row below compares that active-source run against `nfgame --mp-seed-each`.
+Each reachable id was selected in the source run from the Skyrail Arena checkpoint at frame **11527**,
+producing 121 source rows (11527–11647). The port-0 profile held R1/fire on 11528–11540 and tapped
+it on 11550/11558; pressed alternate/mode (Square) on 11564; held aim (L1) on 11570–11590, with
+Up/zoom-in on 11576–11581 and Down/zoom-out on 11584–11587; tapped reload (Cross) on 11596; and
+pressed next-weapon (R2) on 11608/11616. Raw Sony pad bits are `R1=0x8`, `Square=0x80`, `L1=0x4`,
+`Up=0x1000`, `Down=0x4000`, `Cross=0x40`, `R2=0x2`. The captured source rows contain the mapped
+fire/aim/zoom actions. `nfmips mp-oracle --give-weapon` invokes the original `Player_WeaponSelect`
+and waits for its owner current-weapon byte to equal the requested id before recording. Id 1 is
+special: the source rejects `Player_EquipWeapon(1)`, so the harness only requests its source fallback
+selection; it does not invent ownership or ammunition. The engine was run with `--mp-seed-each` for
+all ids, but id 1's source row at 11560 is not `seed_ready`, limiting that comparison to 32 ticks.
+All other rows compare 120 aligned ticks (11528–11647).
 
 `mp_compare.py diff` results (first field divergence; RNG is the comparator's first reported field,
 not proof that the RNG value itself causes later state differences):
 
 | id | frames aligned | divergent frames | first divergence |
 |---:|---:|---:|---|
-| 1 | — | — | Spawn-only fists fallback; `Player_EquipWeapon(1)` rejects the grant from this checkpoint |
+| 1 | 32 | 23 | 11528 `rng[0]` (seed-each stops before source frame 11560) |
 | 2 | 120 | 24 | 11528 `rng[0]` |
 | 6 | 120 | 100 | 11528 `projectiles[0].in_air` |
 | 10 | 120 | 24 | 11528 `rng[0]` |
@@ -1095,12 +1097,12 @@ not proof that the RNG value itself causes later state differences):
 | 80 | 120 | 70 | 11528 `rng[0]` |
 | 82 | 120 | 69 | 11528 `rng[0]` |
 
-Id 1 remains the non-selectable spawn fallback rather than a weapon that `Player_EquipWeapon` can
-grant; its complete spawn-time behavior needs an oracle started through `MP_EquipPlayer`, not a
-synthetic inventory write. The 32 grantable ids all had source `owner_current == owner_selected ==
-requested id` before their first recorded tick. The source profiles for ids 2 and 17 included both
-aim and zoom controls and completed all 121 rows without a `StepLimit` trap. `PS2Sinf3`'s positive
-and negative angle-reduction loops also have a direct regression command:
+Id 1 was selected through the original `Player_WeaponSelect` fallback path without granting ownership or
+ammo. It is the only row limited to 32 seed-each ticks because source frame 11560 is not seed-ready.
+The other 32 ids reached `owner_current == owner_selected == requested id` and each yielded all 120
+aligned seed-each ticks. The source profiles for ids 2 and 17 included aim and zoom controls and
+completed all 121 rows without a `StepLimit` trap. `PS2Sinf3`'s positive and negative angle-reduction
+loops also have a direct regression command:
 
 ```sh
 build-MpWeapons/nfmips /path/to/ACTION.ELF sinf3-selftest

@@ -1178,9 +1178,9 @@ bool CharacterInstance::restore_layers(const std::vector<LayerSnapshot>& snapsho
             snapshot.direction < -1 || snapshot.direction > 1 ||
             !std::isfinite(snapshot.frame) || !std::isfinite(snapshot.previous_frame) ||
             !std::isfinite(snapshot.speed) || !std::isfinite(snapshot.blend_time) ||
-            !std::isfinite(snapshot.blend_duration) || !std::isfinite(snapshot.pair_weight) ||
-            !std::isfinite(snapshot.distance) || !std::isfinite(snapshot.distance_step) ||
-            snapshot.blend_duration < 0.0f)
+            !std::isfinite(snapshot.blend_duration) || !std::isfinite(snapshot.weight) ||
+            !std::isfinite(snapshot.pair_weight) || !std::isfinite(snapshot.distance) ||
+            !std::isfinite(snapshot.distance_step) || snapshot.blend_duration < 0.0f)
             return false;
         Layer layer;
         if (!make_layer(snapshot.script, snapshot.loop, false, layer) ||
@@ -1196,6 +1196,7 @@ bool CharacterInstance::restore_layers(const std::vector<LayerSnapshot>& snapsho
         layer.drive = Drive(snapshot.drive_type);
         layer.blend_time = snapshot.blend_time;
         layer.blend_duration = snapshot.blend_duration;
+        layer.resolved_weight = snapshot.weight;
         layer.direction = snapshot.direction;
         layer.distance = snapshot.distance;
         layer.distance_step = snapshot.distance_step;
@@ -1416,6 +1417,8 @@ Pose CharacterInstance::layer_pose(const Layer& l) const {
 }
 
 const Palette& CharacterInstance::palette() const {
+    for (const auto& layer : layers_)
+        layer.resolved_weight = layer.blend_time / layer.blend_duration;
     if (!dirty_) return palette_;
     // Body: oldest layer first, every newer pose blended in with weight 1 - (weight of the layer before it).
     // AnimFrameResolve: the normal layers fold oldest first; a strafe layer (flag 0x4000) is blended over the
