@@ -69,6 +69,7 @@ int cmd_maps(GameFiles& gf) {
     return 0;
 }
 
+
 // Counts of the GS material state and animation data seen across the disc (see docs/formats.md).
 struct MaterialStats {
     std::map<std::string, std::size_t> blend, alpha_test;

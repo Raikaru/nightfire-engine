@@ -221,13 +221,131 @@ def valid_ee_pointer(addr, size):
 
 def dynamic_snapshot(tag, key, root, size, *, max_count=1,
                     next_offset=0xFFFFFFFF, child_offset=0xFFFFFFFF,
-                    child_size=0, indexed=False, child_tag=None):
+                    child_size=0, indexed=False, child_tag=None, head_tag=None,
+                    filter_spec=0xFFFFFFFF):
     return {
         "tag": tag, "key": key, "root": root, "size": size,
         "max_count": max_count, "next_offset": next_offset,
         "child_offset": child_offset, "child_size": child_size,
-        "indexed": indexed, "child_tag": child_tag,
+        "indexed": indexed, "child_tag": child_tag, "head_tag": head_tag,
+        "filter_spec": filter_spec,
     }
+
+
+def nested_pointer_spec(first_offset, second_offset=None):
+    """Encode a pointer chain: root -> +first -> pointer -> [+second -> pointer]."""
+    if not 0 <= first_offset <= 0x1FFF:
+        raise ValueError(f"nested pointer offset out of range: {first_offset:#x}")
+    second = 0x7FFF if second_offset is None else second_offset
+    if not 0 <= second <= 0x7FFE:
+        raise ValueError(f"nested pointer offset out of range: {second:#x}")
+    return 0x80000000 | (first_offset << 15) | second
+
+
+def decode_dynamic_snapshots(bytag, descriptors, raw):
+    offset = 0
+    for spec in descriptors:
+        count, complete, head = struct.unpack_from("<III", raw, offset)
+        offset += 12
+        if spec.get("head_tag"):
+            bytag[(spec["head_tag"], spec["key"])] = struct.pack("<I", head)
+        group_key = (spec["tag"], spec["key"])
+        bytag[("dynamic_count", group_key)] = count
+        bytag[("dynamic_complete", group_key)] = bool(complete)
+        for index in range(spec["max_count"]):
+            item_offset = offset + index * (spec["size"] + spec["child_size"])
+            if index >= count:
+                continue
+            item = raw[item_offset:item_offset + spec["size"]]
+            key = ((spec["key"], index) if spec["indexed"] else spec["key"])
+            bytag[(spec["tag"], key)] = item
+            child_offset = spec["child_offset"]
+            child_tag = spec.get("child_tag")
+            if child_tag and child_offset != 0xFFFFFFFF:
+                child_ptr = struct.unpack_from("<I", item, child_offset)[0]
+                if valid_ee_pointer(child_ptr, spec["child_size"]):
+                    child_start = item_offset + spec["size"]
+                    child = raw[child_start:child_start + spec["child_size"]]
+                    child_key = ((spec["key"], index)
+                                 if spec["indexed"] else spec["key"])
+                    bytag[(child_tag, child_key)] = child
+        offset += spec["max_count"] * (spec["size"] + spec["child_size"])
+    if offset != len(raw):
+        raise RuntimeError(
+            f"dynamic frame payload length mismatch: {offset} != {len(raw)}")
+    for spec in descriptors:
+        if spec["tag"] == "pi":
+            raw_pi = bytag.get(("pi", spec["key"]))
+            if raw_pi is not None:
+                bytag[("pi", spec["key"])] = raw_pi[A.PI_STATE:A.PI_STATE + 0x18]
+
+        if spec["tag"] == "route_nodes":
+            route_raw = bytag.get(("route_nodes", spec["key"]))
+            drone_raw = bytag.get(("dr_raw", spec["key"]))
+            if route_raw is not None and drone_raw is not None:
+                route_offset = AI_ROUTE_OFFSET + 0x82
+                route_count = struct.unpack_from("<H", drone_raw, route_offset)[0]
+                bytag[("route_nodes", spec["key"])] = route_raw[:route_count * 2]
+
+
+def update_animation_from_snapshot(bytag, state, key, prefix, owner, obj):
+    layer_tag = f"{prefix}_layer_raw"
+    group_key = (layer_tag, key)
+    complete = bytag.get(("dynamic_complete", group_key), False)
+    count = bytag.get(("dynamic_count", group_key), 0)
+    head_raw = bytag.get((f"{prefix}_list_head", key))
+    if (state is None or not valid_ee_pointer(owner, 0x120)
+            or head_raw is None or not complete):
+        return False
+    head = struct.unpack("<I", head_raw)[0]
+    layers = []
+    cursor = head
+    for index in range(count):
+        raw = bytag.get((layer_tag, (key, index)))
+        if raw is None or not valid_ee_pointer(cursor, ANIM_LAYER_RAW_SIZE):
+            return False
+        seq = struct.unpack_from("<I", raw, 0x50)[0]
+        if seq and bytag.get((f"{prefix}_seq_raw", (key, index))) is None:
+            return False
+        layers.append({
+            "address": cursor,
+            "seq_primary": seq if valid_ee_pointer(seq, ANIM_SEQ_RAW_SIZE) else 0,
+        })
+        cursor = struct.unpack_from("<I", raw, 0x48)[0]
+    if cursor:
+        return False
+    state.update({"obj": obj, "owner": owner,
+                  "anim": owner + ANIM_SUBOBJECT_OFFSET, "head": head,
+                  "layers": layers, "chain_complete": True})
+    return True
+
+
+def update_anim_sets_from_snapshot(bytag, state, key, owner):
+    group_key = ("human_anim_set_raw", key)
+    count = bytag.get(("dynamic_count", group_key), 0)
+    if (state is None or not valid_ee_pointer(owner, 0x120)
+            or not bytag.get(("dynamic_complete", group_key), False)):
+        return False
+    head_raw = bytag.get(("human_anim_set_head", key))
+    if head_raw is None:
+        return False
+    head = struct.unpack("<I", head_raw)[0]
+    nodes = []
+    cursor = head
+    previous = 0
+    for index in range(count):
+        raw = bytag.get(("human_anim_set_raw", (key, index)))
+        if raw is None or not valid_ee_pointer(cursor, ANIM_SET_RAW_SIZE):
+            return False
+        if struct.unpack_from("<I", raw)[0] != previous:
+            return False
+        nodes.append({"address": cursor})
+        previous, cursor = cursor, struct.unpack_from("<I", raw, 4)[0]
+    if cursor:
+        return False
+    state.update({"owner": owner, "head": head, "nodes": nodes,
+                  "chain_complete": True})
+    return True
 
 def objective_addresses(blobs):
     addresses = set()
@@ -363,13 +481,13 @@ def refresh_animations(pine, cache):
         refresh_animation_slot(pine, cache, k)
 
 def add_animation_ranges(ranges, tags, k, state, prefix):
-    """Add scalar animation state; pointees are added to the EE hook table."""
+    """Add scalar animation state; list heads and pointees are in the hook."""
     anim = state["anim"]
-    tags += [(f"{prefix}_list_head", k), (f"{prefix}_root_height", k),
+    tags += [(f"{prefix}_root_height", k),
              (f"{prefix}_distance_step", k), (f"{prefix}_distance_accum", k),
              (f"{prefix}_foot_height", k)]
-    ranges += [(anim + 0x2C, 4), (anim + 0x5C, 4),
-               (anim + 0x64, 4), (anim + 0x6C, 4), (anim + 0xCC, 4)]
+    ranges += [(anim + 0x5C, 4), (anim + 0x64, 4),
+               (anim + 0x6C, 4), (anim + 0xCC, 4)]
 
 
 def anim_layer_rows(bytag, k, descriptor, prefix="anim"):
@@ -705,7 +823,6 @@ def main():
         if freeze_pose is not None:
             freeze_object_pose(pine, cache["objs"][args.freeze_bot], freeze_pose)
         projectile_old_head = cache["dynamic_head"]
-        source_cell_ranges = {}
         ranges, tags, dynamic_specs = [], [], []
         ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4), (A.GS_FRAME, 4),
                    (A.VBLANK_COUNT, 4)]
@@ -731,63 +848,99 @@ def main():
             ranges.append((A.MPSETTINGS, A.MP_SLOT_STRIDE * A.MP_NSLOTS))
             for s in range(n_humans):
                 if cache["bl"].get(s):
-                    tags.append(("bl_raw", s))
-                    ranges.append((cache["bl"][s], A.BL_RAW_SIZE))
+                    dynamic_specs.append(dynamic_snapshot(
+                        "bl_raw", s, cache["objs"][s] + A.OBJ_BL, A.BL_RAW_SIZE))
                     target = cache["weapon_anim_targets"].get(s)
                     if target:
                         tags.append(("weapon_anim_state", s))
                         ranges.append((target + 0xF4, 2))
                         if args.weapon_anim_raw:
-                            tags.append(("weapon_anim_raw", s))
-                            ranges.append((target, 0x100))
+                            dynamic_specs.append(dynamic_snapshot(
+                                "weapon_anim_raw", s, cache["bl"][s] + 0x7E8,
+                                0x100))
                 if cache["cb"].get(s):
-                    tags.append(("cb_raw", s))
-                    ranges.append((cache["cb"][s], A.CB_RAW_SIZE))
+                    dynamic_specs.append(dynamic_snapshot(
+                        "cb_raw", s, cache["objs"][s] + A.OBJ_COLL, A.CB_RAW_SIZE))
             drone_anim_ptrs = {}
             for k, d in cache["drone"].items():
                 bv = A.BOT_VARS + k * A.BOT_VARS_STRIDE
-                tags += [("dr_raw", k), ("bv_raw", k)]
-                ranges += [(d, A.DRONE_RAW_SIZE), (bv, A.BOT_VARS_STRIDE)]
+                tags.append(("bv_raw", k))
+                ranges.append((bv, A.BOT_VARS_STRIDE))
+                drone_root = bv + A.BOT_DRONE + 4
+                dynamic_specs.append(dynamic_snapshot(
+                    "dr_raw", k, drone_root, A.DRONE_RAW_SIZE))
+                dynamic_specs.append(dynamic_snapshot(
+                    "dr_anim_script_raw", k, drone_root,
+                    ANIM_SCRIPT_RAW_SIZE,
+                    filter_spec=nested_pointer_spec(A.DRONE_ANIM_SCRIPT)))
+                dynamic_specs.append(dynamic_snapshot(
+                    "route_nodes", k, drone_root, 0x200,
+                    filter_spec=nested_pointer_spec(AI_ROUTE_NODE_POINTER_OFFSET)))
                 script_ptr = pine.read32(d + A.DRONE_ANIM_SCRIPT)
                 drone_anim_ptrs[k] = script_ptr
-                if valid_ee_pointer(script_ptr, ANIM_SCRIPT_RAW_SIZE):
-                    tags.append(("dr_anim_script_raw", k))
-                    ranges.append((script_ptr, ANIM_SCRIPT_RAW_SIZE))
-                route_node = cache["route_nodes"].get(k)
-                if route_node and route_node[2]:
-                    tags.append(("route_nodes", k))
-                    ranges.append((route_node[0], route_node[2]))
             for k, state in cache["bot_anim"].items():
                 add_animation_ranges(ranges, tags, k, state, "anim")
+                dynamic_specs.append(dynamic_snapshot(
+                    "anim_layer_raw", k,
+                    cache["objs"][4 + k] + ANIM_OWNER_OFFSET,
+                    ANIM_LAYER_RAW_SIZE, max_count=8, next_offset=0x48,
+                    child_offset=0x50, child_size=ANIM_SEQ_RAW_SIZE,
+                    indexed=True, child_tag="anim_seq_raw",
+                    head_tag="anim_list_head",
+                    filter_spec=nested_pointer_spec(
+                        ANIM_SUBOBJECT_OFFSET + ANIM_LAYER_HEAD_OFFSET)))
             for slot, state in cache["human_body_anim"].items():
                 add_animation_ranges(ranges, tags, slot, state, "human_body_anim")
+                dynamic_specs.append(dynamic_snapshot(
+                    "human_body_anim_layer_raw", slot,
+                    cache["objs"][slot] + ANIM_OWNER_OFFSET,
+                    ANIM_LAYER_RAW_SIZE, max_count=8, next_offset=0x48,
+                    child_offset=0x50, child_size=ANIM_SEQ_RAW_SIZE,
+                    indexed=True, child_tag="human_body_anim_seq_raw",
+                    head_tag="human_body_anim_list_head",
+                    filter_spec=nested_pointer_spec(
+                        ANIM_SUBOBJECT_OFFSET + ANIM_LAYER_HEAD_OFFSET)))
             for slot, state in cache["human_anim_sets"].items():
-                tags.append(("human_anim_set_head", slot))
-                ranges.append((state["owner"] + ANIM_SET_LIST_OFFSET, 4))
-                for index, node in enumerate(state["nodes"]):
-                    tags.append(("human_anim_set_raw", (slot, index)))
-                    ranges.append((node["address"], ANIM_SET_RAW_SIZE))
+                dynamic_specs.append(dynamic_snapshot(
+                    "human_anim_set_raw", slot,
+                    cache["objs"][slot] + ANIM_OWNER_OFFSET,
+                    ANIM_SET_RAW_SIZE, max_count=ANIM_SET_MAX_NODES,
+                    head_tag="human_anim_set_head",
+                    next_offset=4, indexed=True,
+                    filter_spec=nested_pointer_spec(ANIM_SET_LIST_OFFSET)))
             if args.weapon_anim_raw:
                 for slot, state in cache["human_anim"].items():
                     add_animation_ranges(ranges, tags, slot, state, "human_anim")
+                    dynamic_specs.append(dynamic_snapshot(
+                        "human_anim_layer_raw", slot,
+                        cache["bl"][slot] + 0x7E8,
+                        ANIM_LAYER_RAW_SIZE, max_count=8, next_offset=0x48,
+                        child_offset=0x50, child_size=ANIM_SEQ_RAW_SIZE,
+                        indexed=True, child_tag="human_anim_seq_raw",
+                        head_tag="human_anim_list_head",
+                        filter_spec=nested_pointer_spec(
+                            ANIM_SUBOBJECT_OFFSET + ANIM_LAYER_HEAD_OFFSET)))
             for k, state in cache["bot_anim"].items():
                 owner = state["owner"]
                 if valid_ee_pointer(owner, A.CB_RAW_SIZE):
-                    tags.append(("cb_raw", 4 + k))
-                    ranges.append((owner, A.CB_RAW_SIZE))
+                    dynamic_specs.append(dynamic_snapshot(
+                        "cb_raw", 4 + k,
+                        cache["objs"][4 + k] + A.OBJ_COLL, A.CB_RAW_SIZE))
         for s, o in enumerate(cache["objs"]):
             if o:
                 tags.append(("obj", s))
                 ranges.append((o, 0x100))
                 if args.seedable:
-                    cell = pine.read32(o + A.OBJ_CELL)
-                    if valid_ee_pointer(cell, A.CELL_RAW_SIZE):
-                        source_cell_ranges[s] = cell
-                        tags.append(("source_cell", s))
-                        ranges.append((cell, A.CELL_RAW_SIZE))
+                    dynamic_specs.append(dynamic_snapshot(
+                        "source_cell", s, o + A.OBJ_CELL, A.CELL_RAW_SIZE))
+                    dynamic_specs.append(dynamic_snapshot(
+                        "obj_model_raw", s, o + 0xD8, 0x28))
         for obj, data in cache["projectiles"].items():
-            tags += [("projectile_obj", obj), ("projectile_data", obj)]
-            ranges += [(obj, 0x100), (data, A.BULLET_RAW_SIZE)]
+            tags.append(("projectile_obj", obj))
+            ranges.append((obj, 0x100))
+            dynamic_specs.append(dynamic_snapshot(
+                "projectile_data", obj, obj + A.OBJ_CUSTOM_DATA,
+                A.BULLET_RAW_SIZE))
         tags.append(("projectile_head0", 0))
         ranges.append((A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT, 4))
         for s in range(n_humans):
@@ -833,15 +986,17 @@ def main():
                         tags.append(("goal_target_link", target))
                         ranges.append((target, 4))
         if args.seedable:
-            for k, path in cache["ai_paths"].items():
-                if not path["valid"]:
-                    continue
-                tags.append(("ai_path_raw", k))
-                ranges.append((path["address"], AI_PATH_RAW_SIZE))
-                for offset, pointer in path["children"].items():
-                    if valid_ee_pointer(pointer, AI_PATH_CHILD_RAW_SIZE):
-                        tags.append(("ai_path_child_raw", (k, offset)))
-                        ranges.append((pointer, AI_PATH_CHILD_RAW_SIZE))
+            for k in cache["drone"]:
+                root = A.BOT_VARS + k * A.BOT_VARS_STRIDE + A.BOT_DRONE + 4
+                dynamic_specs.append(dynamic_snapshot(
+                    "ai_path_raw", k, root, AI_PATH_RAW_SIZE,
+                    filter_spec=nested_pointer_spec(AI_PATH_POINTER_OFFSET)))
+                for offset in AI_PATH_CHILD_POINTER_OFFSETS:
+                    dynamic_specs.append(dynamic_snapshot(
+                        "ai_path_child_raw", (k, offset), root,
+                        AI_PATH_CHILD_RAW_SIZE,
+                        filter_spec=nested_pointer_spec(
+                            AI_PATH_POINTER_OFFSET, offset)))
         for obj, (info, pos, pickup_idx) in cache["pinfo"].items():
             tags += [("pkstamp", obj), ("pkvisit", obj)]
             ranges += [(obj + A.OBJ_STAMP, 4),
@@ -849,6 +1004,8 @@ def main():
             if info:
                 tags.append(("pi", obj))
                 ranges.append((info + A.PI_STATE, 0x18))
+                dynamic_specs.append(dynamic_snapshot(
+                    "pi", obj, obj + A.PICKUPINFO_OFF, 0x38))
             tags.append(("pkflags", obj))
             ranges.append((obj + A.OBJ_FLAGS, 1))
         if args.seedable:
@@ -880,10 +1037,16 @@ def main():
             refresh_projectile_cache(
                 pine, cache, pine.read32(A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT))
             continue
-        schema = tuple(ranges)
+        dynamic_signature = tuple(
+            (spec["tag"], spec["key"], spec["root"], spec["size"],
+             spec["max_count"], spec["next_offset"], spec["child_offset"],
+             spec["child_size"], spec["indexed"], spec.get("child_tag"),
+             spec.get("head_tag"), spec.get("filter_spec", 0xFFFFFFFF))
+            for spec in dynamic_specs)
+        schema = (tuple(ranges), dynamic_signature)
         if (schema != frame_schema
                 or (first is None and pine.read32(F.CONFIG_BASE) != len(ranges))):
-            frame_ring = F.configure_ranges(pine, ranges)
+            frame_ring = F.configure_ranges(pine, ranges, dynamic_specs)
             frame_schema = schema
             print(f"  ... frame ring: {frame_ring['payload_size']} bytes, "
                   f"{frame_ring['capacity']} slots", flush=True)
@@ -898,6 +1061,9 @@ def main():
         bytag = {}
         for (kind, s), ch in zip(tags, chunks):
             bytag.setdefault((kind, s), ch)
+        if frame_ring["dynamic_size"]:
+            decode_dynamic_snapshots(
+                bytag, frame_ring["dynamic_descriptors"], chunks[len(tags)])
         if (struct.unpack("<I", bytag[("done", 0)])[0] != frame_meta["done"]
                 or struct.unpack("<I", bytag[("frame", 0)])[0] != frame_meta["frame"]
                 or struct.unpack("<I", bytag[("timer_frame", 0)])[0]
@@ -916,6 +1082,11 @@ def main():
         objective_ptrs = []
         transition_missing = []
         if args.seedable:
+            for spec in frame_ring["dynamic_descriptors"]:
+                key = (spec["tag"], spec["key"])
+                if not bytag.get(("dynamic_complete", key), False):
+                    transition_missing.append(
+                        f"snapshot:{spec['tag']}[{spec['key']}]")
             objective_ptrs = objective_addresses(
                 [bytag[("objx", name)] for name, _, _ in FULL_BLOBS])
             if objective_ptrs != cache["objective_ptrs"]:
@@ -930,68 +1101,42 @@ def main():
         if args.seedable:
             for k in range(4):
                 drone_raw = bytag.get(("dr_raw", k))
+                bv_raw = bytag.get(("bv_raw", k))
+                drone_addr = (struct.unpack_from(
+                    "<I", bv_raw, A.BOT_DRONE + 4)[0] if bv_raw else 0)
+                if drone_addr != cache["drone"].get(k, 0):
+                    transition_missing.append(f"pl[{k + 4}].drone")
                 if drone_raw is None:
+                    if cache["drone"].get(k):
+                        transition_missing.append(f"pl[{k + 4}].drone_raw")
                     continue
                 script_ptr = struct.unpack_from(
                     "<I", drone_raw, A.DRONE_ANIM_SCRIPT)[0]
-                if (script_ptr != drone_anim_ptrs.get(k, 0)
-                        or (script_ptr and not valid_ee_pointer(
-                            script_ptr, ANIM_SCRIPT_RAW_SIZE))):
+                if script_ptr != drone_anim_ptrs.get(k, 0):
                     changed_drone_script_slots.add(k + 4)
-                    transition_missing.append(
-                        f"pl[{k + 4}].drone_anim_script")
+                    if not bytag.get((
+                            "dynamic_complete", ("dr_anim_script_raw", k)), False):
+                        transition_missing.append(
+                            f"pl[{k + 4}].drone_anim_script")
             for slot in range(n_humans):
-                state = cache["human_body_anim"].get(slot)
                 obj_raw = bytag.get(("obj", slot))
                 if obj_raw is None:
                     continue
                 owner = struct.unpack_from("<I", obj_raw, ANIM_OWNER_OFFSET)[0]
-                body_head = bytag.get(("human_body_anim_list_head", slot))
-                body_head = struct.unpack("<I", body_head)[0] if body_head else 0
-                if (state is None or owner != state["owner"] or body_head != state["head"]):
+                state = cache["human_body_anim"].get(slot)
+                body_updated = update_animation_from_snapshot(
+                    bytag, state, slot, "human_body_anim", owner,
+                    cache["objs"][slot])
+                if not body_updated:
                     refresh_animation_slot(
                         pine, cache, slot, obj=cache["objs"][slot], kind="human_body")
                     changed_player_anim_slots.add(slot)
                     transition_missing.append(f"pl[{slot}].body_anim")
-                else:
-                    for index, layer in enumerate(state["layers"]):
-                        raw = bytag[("human_body_anim_layer_raw", (slot, index))]
-                        next_ptr = struct.unpack_from("<I", raw, 0x48)[0]
-                        seq_ptr = struct.unpack_from("<I", raw, 0x50)[0]
-                        seq_ptr = seq_ptr if valid_ee_pointer(seq_ptr, ANIM_SEQ_RAW_SIZE) else 0
-                        expected_next = (
-                            state["layers"][index + 1]["address"]
-                            if index + 1 < len(state["layers"]) else 0)
-                        if next_ptr != expected_next or seq_ptr != layer["seq_primary"]:
-                            refresh_animation_slot(
-                                pine, cache, slot, obj=cache["objs"][slot], kind="human_body")
-                            changed_player_anim_slots.add(slot)
-                            transition_missing.append(f"pl[{slot}].body_anim")
-                            break
                 state = cache["human_anim_sets"].get(slot)
-                if state is None or owner != state["owner"]:
+                if not update_anim_sets_from_snapshot(bytag, state, slot, owner):
                     refresh_player_anim_sets(pine, cache, slot)
                     changed_anim_set_slots.add(slot)
                     transition_missing.append(f"pl[{slot}].anim_sets")
-                    continue
-                set_head = bytag.get(("human_anim_set_head", slot))
-                set_head = struct.unpack("<I", set_head)[0] if set_head else 0
-                if set_head != state["head"]:
-                    refresh_player_anim_sets(pine, cache, slot)
-                    changed_anim_set_slots.add(slot)
-                    transition_missing.append(f"pl[{slot}].anim_sets")
-                    continue
-                for index, node in enumerate(state["nodes"]):
-                    raw = bytag[("human_anim_set_raw", (slot, index))]
-                    next_ptr = struct.unpack_from("<I", raw, 4)[0]
-                    expected_next = (
-                        state["nodes"][index + 1]["address"]
-                        if index + 1 < len(state["nodes"]) else 0)
-                    if next_ptr != expected_next:
-                        refresh_player_anim_sets(pine, cache, slot)
-                        changed_anim_set_slots.add(slot)
-                        transition_missing.append(f"pl[{slot}].anim_sets")
-                        break
             pointer_changed = False
             for slot in range(n_humans):
                 bl_raw = bytag.get(("bl_raw", slot))
@@ -1017,32 +1162,11 @@ def main():
                 if obj_raw is None:
                     continue
                 owner = struct.unpack_from("<I", obj_raw, ANIM_OWNER_OFFSET)[0]
-                if state is None:
-                    if valid_ee_pointer(owner, 0x120):
-                        refresh_animation_slot(pine, cache, k)
-                        changed_animation_slots.add(k + 4)
-                        pointer_changed = True
-                    continue
-                head = struct.unpack("<I", bytag[("anim_list_head", k)])[0]
-                if (owner != state["owner"] or head != state["head"]
-                        or state["obj"] != cache["objs"][4 + k]):
+                if not update_animation_from_snapshot(
+                        bytag, state, k, "anim", owner, cache["objs"][4 + k]):
                     refresh_animation_slot(pine, cache, k)
                     changed_animation_slots.add(k + 4)
                     pointer_changed = True
-                    continue
-                for index, layer in enumerate(state["layers"]):
-                    raw = bytag[("anim_layer_raw", (k, index))]
-                    next_ptr = struct.unpack_from("<I", raw, 0x48)[0]
-                    seq_ptr = struct.unpack_from("<I", raw, 0x50)[0]
-                    seq_ptr = seq_ptr if valid_ee_pointer(seq_ptr, ANIM_SEQ_RAW_SIZE) else 0
-                    expected_next = (
-                        state["layers"][index + 1]["address"]
-                        if index + 1 < len(state["layers"]) else 0)
-                    if next_ptr != expected_next or seq_ptr != layer["seq_primary"]:
-                        refresh_animation_slot(pine, cache, k)
-                        changed_animation_slots.add(k + 4)
-                        pointer_changed = True
-                        break
             if args.weapon_anim_raw:
                 for slot in range(n_humans):
                     state = cache["human_anim"].get(slot)
@@ -1051,38 +1175,12 @@ def main():
                     if raw_obj is None:
                         continue
                     owner = struct.unpack_from("<I", raw_obj, ANIM_OWNER_OFFSET)[0]
-                    if state is None:
-                        if valid_ee_pointer(owner, 0x120):
-                            refresh_animation_slot(
-                                pine, cache, slot, obj=target, kind="human")
-                            changed_animation_slots.add(slot)
-                            pointer_changed = True
-                        continue
-                    head = struct.unpack(
-                        "<I", bytag[("human_anim_list_head", slot)])[0]
-                    if (owner != state["owner"] or head != state["head"]
-                            or state["obj"] != target):
+                    if not update_animation_from_snapshot(
+                            bytag, state, slot, "human_anim", owner, target):
                         refresh_animation_slot(
                             pine, cache, slot, obj=target, kind="human")
                         changed_animation_slots.add(slot)
                         pointer_changed = True
-                        continue
-                    for index, layer in enumerate(state["layers"]):
-                        raw = bytag[("human_anim_layer_raw", (slot, index))]
-                        next_ptr = struct.unpack_from("<I", raw, 0x48)[0]
-                        seq_ptr = struct.unpack_from("<I", raw, 0x50)[0]
-                        seq_ptr = seq_ptr if valid_ee_pointer(
-                            seq_ptr, ANIM_SEQ_RAW_SIZE) else 0
-                        expected_next = (
-                            state["layers"][index + 1]["address"]
-                            if index + 1 < len(state["layers"]) else 0)
-                        if (next_ptr != expected_next
-                                or seq_ptr != layer["seq_primary"]):
-                            refresh_animation_slot(
-                                pine, cache, slot, obj=target, kind="human")
-                            changed_animation_slots.add(slot)
-                            pointer_changed = True
-                            break
             for k in range(4):
                 drone_raw = bytag.get(("dr_raw", k))
                 if drone_raw is None:
@@ -1105,7 +1203,9 @@ def main():
                     f"pl[{slot}].anim" for slot in sorted(changed_animation_slots))
                 transition_missing.extend(
                     f"bot_ai_paths[{slot}].route_node_raw"
-                    for slot in sorted(changed_route_slots))
+                    for slot in sorted(changed_route_slots)
+                    if not bytag.get((
+                        "dynamic_complete", ("route_nodes", slot - 4)), False))
  
         if last is not None and frame0 == last:
             time.sleep(0.005)
@@ -1317,15 +1417,17 @@ def main():
                 "stamp": struct.unpack_from("<i", och, A.OBJ_STAMP)[0],
             }
             if args.seedable:
-                entry["obj_raw"] = och.hex()
+                model_raw = bytag.get(("obj_model_raw", s))
+                if model_raw is not None:
+                    entry["obj_model_raw"] = model_raw.hex()
                 entry["substate"] = struct.unpack_from("<H", och, A.OBJ_SUBSTATE)[0]
                 entry["eye"] = list(struct.unpack_from("<3f", och, 0x70))
                 cell_ptr = struct.unpack_from("<I", och, A.OBJ_CELL)[0]
                 entry["cell_ptr"] = cell_ptr
-                cell_addr = source_cell_ranges.get(s)
                 cell_raw = bytag.get(("source_cell", s))
                 if cell_ptr:
-                    if cell_addr == cell_ptr and cell_raw is not None:
+                    if (cell_raw is not None and bytag.get((
+                            "dynamic_complete", ("source_cell", s)), False)):
                         entry["cell_raw"] = cell_raw.hex()
                     else:
                         transition_missing.append(f"pl[{s}].cell_raw")
@@ -1395,7 +1497,8 @@ def main():
                     entry["aim_flags"] = struct.unpack_from("<H", cbr, 0x60)[0]
                 if "hp" in entry:
                     entry["alive"] = entry["hp"] > 0.0 and entry["type"] == 3
-            if s >= 4 and ("drone", s - 4) in bytag:
+            if (s >= 4 and ("drone", s - 4) in bytag
+                    and ("dr_raw", s - 4) in bytag):
                 k = s - 4
                 if args.seedable:
                     drone_raw = bytag[("dr_raw", k)]
@@ -1404,18 +1507,17 @@ def main():
                     cell_ptr = struct.unpack_from(
                         "<I", bytag[("obj", s)], A.OBJ_CELL)[0]
                     entry["cell_ptr"] = cell_ptr
-                    cell_addr = source_cell_ranges.get(s)
                     cell_raw = bytag.get(("source_cell", s))
                     if cell_ptr:
-                        if cell_addr == cell_ptr and cell_raw is not None:
+                        if (cell_raw is not None and bytag.get((
+                                "dynamic_complete", ("source_cell", s)), False)):
                             entry["cell_raw"] = cell_raw.hex()
                         else:
                             transition_missing.append(f"pl[{s}].cell_raw")
                     entry["alive"] = (
                         struct.unpack_from("<f", drone_raw, A.DRONE_HEALTH)[0] > 0.0)
                     script_raw = bytag.get(("dr_anim_script_raw", k))
-                    if (script_raw is not None
-                            and s not in changed_drone_script_slots):
+                    if script_raw is not None:
                         entry["drone_anim_script"] = {
                             "entry": struct.unpack_from("<I", script_raw, 0x5C)[0],
                             "script_id": struct.unpack_from("<I", script_raw, 0x74)[0],
@@ -1495,42 +1597,28 @@ def main():
             parts.append(entry)
         rec["pl"] = parts
         if args.seedable:
-            path_changed = False
-            changed_path_slots = set()
             for k in range(4):
                 drone_raw = bytag.get(("dr_raw", k))
                 if drone_raw is None:
                     continue
                 address = struct.unpack_from(
                     "<I", drone_raw, AI_PATH_POINTER_OFFSET)[0]
-                path = cache["ai_paths"].get(k, {})
                 path_raw = bytag.get(("ai_path_raw", k))
+                path_complete = bytag.get((
+                    "dynamic_complete", ("ai_path_raw", k)), False)
                 if valid_ee_pointer(address, AI_PATH_RAW_SIZE):
-                    if path.get("address") != address or path_raw is None:
-                        refresh_ai_path_slot(pine, cache, k)
-                        changed_path_slots.add(k + 4)
-                        path_changed = True
-                    else:
-                        children = ai_path_child_pointers(path_raw)
-                        if children != path["children"]:
-                            cache["ai_paths"][k] = {
-                                "address": address, "children": children, "valid": True,
-                            }
-                            changed_path_slots.add(k + 4)
-                            path_changed = True
-                elif path.get("address") != address or path.get("valid"):
+                    if path_raw is None or not path_complete:
+                        transition_missing.append(f"bot_ai_paths[{k + 4}]")
+                        continue
+                    cache["ai_paths"][k] = {
+                        "address": address,
+                        "children": ai_path_child_pointers(path_raw),
+                        "valid": True,
+                    }
+                else:
                     cache["ai_paths"][k] = {
                         "address": address, "children": {}, "valid": False,
                     }
-                    changed_path_slots.add(k + 4)
-                    path_changed = True
-            if path_changed:
-                if not rec.get("partial"):
-                    resyncs += 1
-                rec["partial"] = True
-                rec["resync"] = 1
-                rec["state_missing"].extend(
-                    f"bot_ai_paths[{slot}]" for slot in sorted(changed_path_slots))
             route_node_descriptors = {}
             route_node_raws = {}
             for k in range(4):
@@ -1545,18 +1633,11 @@ def main():
                 size = count * 2
                 route_node_descriptors[k] = (address, count, size)
                 route_node_raws[k] = (
-                    None if k + 4 in changed_route_slots else
-                    (b"" if size == 0 else bytag.get(("route_nodes", k))))
+                    b"" if size == 0 else bytag.get(("route_nodes", k)))
 
             ai_path_rows = []
             for k in range(4):
                 drone = cache["drone"].get(k)
-                if k + 4 in changed_path_slots:
-                    ai_path_rows.append({
-                        "bot_slot": k + 4, "present": True, "complete": False,
-                        "frame": frame0, "timer_frame": timer_frame0,
-                    })
-                    continue
                 if not drone or ("dr_raw", k) not in bytag:
                     ai_path_rows.append({
                         "bot_slot": k + 4, "present": False, "complete": False,

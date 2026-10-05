@@ -46,9 +46,20 @@ std::uint32_t stance_transition(int category, bool to_crouch) {
 // reproduces the recorded walk cycle.
 constexpr float kDistanceScale = 0.5f;
 
-float skin_model_min_y(CharacterBank& bank, const SkinDef& skin) {
+float skin_model_min_y(CharacterBank& bank, const SkinDef& skin, std::uint32_t model_file_hash) {
     if (skin.skinned.empty()) throw FormatError("player skin has no skinned mesh");
-    const auto ref = bank.find_model(bank.resolve_skinned(skin.skinned.front(), 0));
+    const std::uint32_t model_hash = bank.resolve_skinned(skin.skinned.front(), 0);
+    if (model_file_hash != 0) {
+        for (std::size_t chunk = 0; chunk < bank.chunks().size(); ++chunk) {
+            const ChunkFile& file = bank.chunks()[chunk];
+            if (file.entry.hash != model_file_hash) continue;
+            for (std::size_t model = 0; model < file.chunk.models.size(); ++model)
+                if (std::uint32_t(file.chunk.models[model].hash) == model_hash)
+                    return file.chunk.models[model].params[5];
+        }
+        throw FormatError("MP_skins chunk file does not contain the player's skin mesh");
+    }
+    const auto ref = bank.find_model(model_hash);
     if (!ref) throw FormatError("player skin mesh is not loaded");
     // AnimObjectNew reads celglist entity_params+0x24, i.e. the model's stored minimum Y, not decoded mesh bounds.
     return bank.model(*ref).params[5];
@@ -57,8 +68,8 @@ float skin_model_min_y(CharacterBank& bank, const SkinDef& skin) {
 }  // namespace
 
 PlayerAnimator::PlayerAnimator(CharacterBank& bank, const SkinDef& skin, const std::vector<AnimSet>& sets, int weapon_id,
-                               int category)
-    : skin_(skin), sets_(sets), character_(bank, skin), model_min_y_(skin_model_min_y(bank, skin)),
+                               int category, std::uint32_t model_file_hash)
+    : skin_(skin), sets_(sets), character_(bank, skin), model_min_y_(skin_model_min_y(bank, skin, model_file_hash)),
       weapon_id_(weapon_id), category_(category) {
     character_.use_explicit_blend_weights();
     select_set();

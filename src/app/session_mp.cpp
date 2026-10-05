@@ -253,26 +253,20 @@ struct MpSession::Impl {
         const std::vector<AnimSet> sets = read_anim_sets(ctx.action_elf);
         anim_sets = std::make_unique<std::vector<AnimSet>>(sets);
         for (std::size_t i = 0; i < session->arena().settings().slot_count; ++i) {
-            // First MP skin of the bank (the arena setup's skins resolve through the same bank).
-            const SkinDef* skin = nullptr;
-            for (const auto& [hash, def] : bank->skins()) {
-                (void)hash;
-                const std::string name = bank->skin_name(def);
-                if (name.size() > 3 && (name[0] == 'M' || name[0] == 'm') && (name[1] == 'p' || name[1] == 'P') &&
-                    name[2] == '_') {
-                    skin = &def;
-                    break;
-                }
-            }
-            if (!skin && !bank->skins().empty()) skin = &bank->skins().begin()->second;
-            if (!skin) {
+            const ArenaSettings::Slot& slot = session->arena().settings().slots[i];
+            if (!slot.present) {
                 bodies.push_back(nullptr);
                 continue;
             }
+            const MpCharacter* character = ctx.mp_data.find_character(std::uint32_t(slot.character));
+            if (!character) throw std::runtime_error("MP slot has an invalid character index");
+            const SkinDef* skin = bank->skin(character->skin.skin_hash);
+            if (!skin) throw std::runtime_error("MP_skins character skin is not loaded in this arena bank");
             int weapon_id = 1, category = 1;
             if (const PlayerWeapons* st = session->weapons().state(int(i)))
                 weapon_id = st->current, category = int(session->weapons().table().weapon(weapon_id).category);
-            bodies.push_back(std::make_unique<PlayerAnimator>(*bank, *skin, *anim_sets, weapon_id, category));
+            bodies.push_back(std::make_unique<PlayerAnimator>(*bank, *skin, *anim_sets, weapon_id, category,
+                                                               character->skin.file_hash));
         }
 
         archive = std::make_unique<SoundArchive>(std::filesystem::path(ctx.gamedir));

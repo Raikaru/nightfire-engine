@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <array>
@@ -22,7 +23,7 @@ public:
     // `category` = weapon_data[weapon].+0x84 (1 handgun, 2 SMG, 3 rifle, 4 handgun 2H, 5 launcher, 6 twin handguns,
     // 999 single-player rifle stance, anything else unarmed). The bank (which decodes the skin mesh once, for its bounding box) must outlive the animator.
     PlayerAnimator(CharacterBank& bank, const SkinDef& skin, const std::vector<AnimSet>& sets, int weapon_id,
-                   int category);
+                   int category, std::uint32_t model_file_hash = 0);
 
     void set_weapon(int weapon_id, int category, GameRng* rng);
     bool restore_source_state(int current_weapon, int current_category, bool crouched,

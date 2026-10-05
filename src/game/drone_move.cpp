@@ -2,6 +2,7 @@
 #include "game/drone_move.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
 
 #include "game/drone_anim.hpp"
@@ -485,6 +486,11 @@ void move_step(Drone& d) {
         // Steer: heading error turned by a fraction each tick (0.1 per 60 Hz frame, DefaultInit +0x4a0).
         const float err = angle_diff(d.yaw, d.mv.dest_angle);
         const float k = std::min(1.0f, d.mv.turn_rate * 60.0f / d.rate());
+        if (d.player_slot == 4 || d.player_slot == 6)
+            std::fprintf(stderr, "YAW slot=%d yaw=%a dest=%a err=%a turn_rate=%a rate=%a mul=%a k=%a out=%a\n",
+                         d.player_slot, double(d.yaw), double(d.mv.dest_angle), double(err),
+                         double(d.mv.turn_rate), double(d.rate()), double(d.sys->timing().FRAME_RATE_MUL),
+                         double(k), double(wrap_pi(d.yaw + err * k)));
         d.yaw = wrap_pi(d.yaw + err * k);
     } else if (d.mv.fly) {
         // Scripted flight (abseil / astronaut): accelerate toward the destination, face it.
