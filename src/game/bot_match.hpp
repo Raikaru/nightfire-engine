@@ -30,6 +30,7 @@ struct BotMatchOptions {
     std::string characters;        // --bot-char list (indices or names); defaults: Drake, Kiko, Rook, then 6..
     bool log = false;              // --bot-log
     bool log_states = false;       // --bot-log-states
+    int logic_hz = 60;             // startup FRAME_RATE used while DefaultInit seeds bot turn rates
 };
 
 class BotMatch {

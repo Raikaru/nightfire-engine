@@ -148,6 +148,7 @@ class _StreamPine:
     def read_ranges(self, ranges):
         return [self.read_block(address, size) for address, size in ranges]
 
+
     def close(self):
         if self.closed:
             return
@@ -162,6 +163,58 @@ class _StreamPine:
         if code:
             raise RuntimeError(f"nfmips oracle exited with status {code}")
 
+def _dynamic_snapshot_bytes(pine, descriptors):
+    output = bytearray()
+    for spec in descriptors:
+        root = spec["root"]
+        mode = spec.get("filter_spec", 0xFFFFFFFF)
+        complete = True
+        if mode == 0xFFFFFFFF:
+            head = pine.read32(root)
+        else:
+            parent = pine.read32(root)
+            first = (mode >> 15) & 0x1FFF
+            second = mode & 0x7FFF
+            head = 0
+            if parent:
+                if R.valid_ee_pointer(parent, 4):
+                    head = pine.read32(parent + first)
+                else:
+                    complete = False
+            if head and second != 0x7FFF:
+                if R.valid_ee_pointer(head, 4):
+                    head = pine.read32(head + second)
+                else:
+                    complete = False
+        records = []
+        cursor = head
+        for _ in range(spec["max_count"]):
+            if not cursor:
+                break
+            if not R.valid_ee_pointer(cursor, spec["size"]):
+                complete = False
+                break
+            item = pine.read_block(cursor, spec["size"])
+            child = b""
+            child_offset = spec["child_offset"]
+            if child_offset != 0xFFFFFFFF and spec["child_size"]:
+                child_ptr = struct.unpack_from("<I", item, child_offset)[0]
+                if child_ptr:
+                    if R.valid_ee_pointer(child_ptr, spec["child_size"]):
+                        child = pine.read_block(child_ptr, spec["child_size"])
+                    else:
+                        complete = False
+            records.append(item + child.ljust(spec["child_size"], b"\0"))
+            next_offset = spec["next_offset"]
+            cursor = (0 if next_offset == 0xFFFFFFFF else
+                      struct.unpack_from("<I", item, next_offset)[0])
+        if cursor:
+            complete = False
+        output += struct.pack("<III", len(records), int(complete), head)
+        output += b"".join(records)
+        output += bytes(spec["max_count"] * (spec["size"] + spec["child_size"])
+                        - sum(map(len, records)))
+    return bytes(output)
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "fill":
@@ -244,17 +297,31 @@ def main():
                         f"frames {first_input_frame}..{last_input_frame}")
             instances.append(pine)
             return pine
-        def configure_ranges(pine, ranges):
-            payload_size = sum(size for _, size in ranges)
+        def configure_ranges(pine, ranges, dynamic_descriptors=()):
+            dynamic = [dict(spec) for spec in dynamic_descriptors]
+            for spec in dynamic:
+                spec["next_offset"] = spec.get("next_offset", 0xFFFFFFFF)
+                spec["child_offset"] = spec.get("child_offset", 0xFFFFFFFF)
+                spec["child_size"] = spec.get("child_size", 0)
+                spec["output_size"] = (
+                    F.DYNAMIC_HEADER_SIZE
+                    + spec["max_count"] * (spec["size"] + spec["child_size"]))
+            dynamic_size = sum(spec["output_size"] for spec in dynamic)
+            payload_size = sum(size for _, size in ranges) + dynamic_size
             return {"payload_size": payload_size,
                     "slot_size": payload_size + F.SNAPSHOT_HEADER_SIZE,
-                    "capacity": 1, "source": "nfmips"}
+                    "capacity": 1, "source": "nfmips",
+                    "dynamic_size": dynamic_size,
+                    "dynamic_descriptors": dynamic}
         def read_next(pine, state, timeout):
             if pine.emitted:
                 if not pine.advance():
                     return None
             pine.emitted += 1
             chunks = pine.read_ranges(state["ranges"])
+            if state["dynamic_descriptors"]:
+                chunks.append(_dynamic_snapshot_bytes(
+                    pine, state["dynamic_descriptors"]))
             return ({"done": pine.done, "frame": pine.frame,
                      "timer_frame": pine.timer_frame, "overflow_delta": 0}, chunks)
 
@@ -266,8 +333,9 @@ def main():
         try:
             R.Pine = pine_factory
             R.vpad = lambda *words: b"ok"
-            F.configure_ranges = lambda pine, ranges: {
-                **configure_ranges(pine, ranges), "ranges": list(ranges)}
+            F.configure_ranges = lambda pine, ranges, dynamic_descriptors=(): {
+                **configure_ranges(pine, ranges, dynamic_descriptors),
+                "ranges": list(ranges)}
             F.read_next = read_next
             record_args = ["mp_record.py", args.out, "--frames", str(args.rows - 1),
                            "--seedable", "--timeout", str(args.timeout)]

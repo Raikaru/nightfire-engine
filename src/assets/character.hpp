@@ -474,8 +474,8 @@ private:
         // or drone/bot/cutscene writer sets layer bit 25 anywhere in the ACTION.ELF corpus, and every disc
         // script header carries flags 0x3C/0x7C only — settable only through set_layer_root_y_mask().
         bool mask_root_y = false;
-        // Fresh layers hold frame 1.0 through their first tick (the 0x20000000 one-shot; Phase follow is
-        // exempt). Distance still accumulates, blends still step, no events fire.
+        // The 0x20000000 one-shot processes script commands at the initial frame before the first time advance.
+        // Distance still accumulates and blends step on that same tick.
         bool fresh = true;
         bool strafe = false;
         const DistanceTable* table = nullptr;

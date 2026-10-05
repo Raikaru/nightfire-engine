@@ -81,7 +81,21 @@ void DroneBotBody::fire(int) {
     d_->one_shot = false;
 }
 
-void DroneBotBody::aim_at_opponent() {}   // DroneWeap_AimTarget_IsOpponent: the aim point is BOT_opponentTargetting's
+void DroneBotBody::aim_at_opponent() {
+    if (!d_->opponent.valid() || (d_->anim.cur_flags & 0x380u) != 0) return;
+    BotBrain* brain = d_->ext_as<BotBrain>();
+    if (brain && (brain->v.bits & bitflag::kRecovering) != 0) return;
+    const auto target = sys_.target_pos(d_->opponent);
+    if (!target) return;
+    const float target_yaw = drone::atan2_approx((*target)[0] - d_->pos[0], (*target)[2] - d_->pos[2]);
+    if (d_->anim.cur_state == 0x1e || d_->anim.cur_state == 0x1f) {
+        // DroneWeap_AimTarget_IsOpponent eases these two animation states halfway toward the target.
+        d_->mv.dest_angle = d_->yaw - 0.5f * drone::angle_diff(target_yaw, d_->yaw);
+    } else {
+        // Its ordinary branch calls NDrone2_SetAngleToObj directly; do not apply SetAngleToObj's separate yaw-lock gate.
+        d_->mv.dest_angle = target_yaw;
+    }
+}
 
 void DroneBotBody::reset_firing() {
     d_->burst_left = 0;

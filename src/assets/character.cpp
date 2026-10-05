@@ -1052,6 +1052,10 @@ void CharacterInstance::update_locomotion(float speed, float max_speed, float st
 
 void CharacterInstance::tick_layer(Layer& l, float mul, bool body) {
     const float previous_frame = l.frame;
+    if (l.fresh) {
+        // AnimScriptTick processes commands at the initial frame before the time advance below.
+        l.fresh = false;
+    }
     float f = l.frame;
     switch (l.drive) {
         case Drive::Time:
@@ -1083,12 +1087,9 @@ void CharacterInstance::tick_layer(Layer& l, float mul, bool body) {
             break;
         }
     }
-    if (l.fresh && l.drive != Drive::Phase) {
-        f = previous_frame;   // the 0x20000000 one-shot: hold (distance already accumulated above)
-        l.fresh = false;
-    }
+    // AnimScriptEnd sets the stopped flag only when its end frame is strictly less than the advanced frame.
     const std::int16_t end_frame = l.script ? std::int16_t(l.script->length) : std::int16_t(l.length);
-    const bool reached_end = !l.loop && int(f) >= int(end_frame);
+    const bool reached_end = !l.loop && float(end_frame) < f;
     if (f < 1.0f || f > l.length || reached_end) {
         if (l.loop) {
             f = f < 1.0f ? f + l.length : f - l.length;

@@ -469,35 +469,33 @@ float WeaponSystem::script_frame(const PlayerWeapons& p) const {
 // sound-pitch draw; this pass dispatches the corresponding audio at the player position.
 void WeaponSystem::advance_anim(int slot, PlayerWeapons& p, const World& world) {
     if (!p.anim) return;
-    const int steps = std::max(1, int(std::lround(timing_.FRAME_RATE_MUL)));
     const AnimScript* script = bank_ && p.anim_script ? bank_->script(p.anim_script) : nullptr;
-    for (int i = 0; i < steps; ++i) {
-        if (p.anim_reverse) {
-            p.reverse_frame = std::max(1.0f, p.reverse_frame - 1.0f);
-            p.anim->set_frame(p.reverse_frame);
-            continue;
-        }
-        if (p.anim_script != 0 && !p.anim->finished()) {
-            p.anim->set_game_rng(&game_rng());
-            p.anim->tick();
-        }
-        for (const AnimEvent& event : p.anim->take_events())
-            if (event.kind == AnimEventKind::ToggleHand) p.laser_pointer_enabled = !p.laser_pointer_enabled;
-        const float after = p.anim->frame();
-        float before = p.anim_frame_prev;
-        if (after < before) before = 0;   // a looping script wrapped
-        if (script) {
-            for (const ScriptCmd& c : script->cmds) {
-                if (c.op != 1 || c.words.size() < 2) continue;
-                const float f = c.words[0];
-                if (f > before && f <= after) {
-                    const Player* pl = world.player(slot);
-                    sound(c.words[1], pl ? pl->pos : Vec3{}, false, slot);
-                }
+    // AnimScriptTick scales script time by the recorded per-frame multiplier; don't round it to whole ticks.
+    if (p.anim_reverse) {
+        p.reverse_frame = std::max(1.0f, p.reverse_frame - timing_.FRAME_RATE_MUL);
+        p.anim->set_frame(p.reverse_frame);
+        return;
+    }
+    if (p.anim_script != 0 && !p.anim->finished()) {
+        p.anim->set_game_rng(&game_rng());
+        p.anim->tick(timing_.FRAME_RATE_MUL);
+    }
+    for (const AnimEvent& event : p.anim->take_events())
+        if (event.kind == AnimEventKind::ToggleHand) p.laser_pointer_enabled = !p.laser_pointer_enabled;
+    const float after = p.anim->frame();
+    float before = p.anim_frame_prev;
+    if (after < before) before = 0;   // a looping script wrapped
+    if (script) {
+        for (const ScriptCmd& c : script->cmds) {
+            if (c.op != 1 || c.words.size() < 2) continue;
+            const float f = c.words[0];
+            if (f > before && f <= after) {
+                const Player* pl = world.player(slot);
+                sound(c.words[1], pl ? pl->pos : Vec3{}, false, slot);
             }
         }
-        p.anim_frame_prev = after;
     }
+    p.anim_frame_prev = after;
 }
 
 void WeaponSystem::start_reload(PlayerWeapons& p, const WeaponDef& d) {
@@ -576,7 +574,7 @@ void WeaponSystem::anim_update(int slot, PlayerWeapons& p, World& world, FrameTi
             const WeaponDef& d = table_.weapon(p.current);
             set_weapon_anim(p);
             if (d.anim_draw != 0) {
-                play_script(p, d.anim_draw, false);
+                play_script(p, d.anim_draw, false, 1.25f);   // Player_SetWeaponAnimObj calls AnimScriptAddSpeed(1.25f).
                 p.anim_state = WeaponAnim::RaiseWait;
                 sound(is_gadget(d.id) ? 641 : 642, {}, false, slot);
             } else {

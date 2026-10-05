@@ -67,6 +67,7 @@ struct DroneConfig {
     float fade_seconds = 1.0f;            // Fade state length (NDrone2_FadeOut)
     bool blind_drones = false;            // switch_BLIND_DRONES: perception returns "nothing"
     bool multiplayer = false;             // MPSettings+0x184: bots' perception/firing branches
+    FrameTiming initial_timing{};         // timing used by NDrone2_DefaultInit before the first tick
     DroneTuning tuning;
 };
 

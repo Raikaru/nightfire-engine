@@ -79,12 +79,13 @@ bool DroneCli::parse(int argc, char** argv, int& i) {
 }
 
 void DroneCli::setup(World& world, Level& level, CharacterBank& bank, const Elf32& elf, GameFiles& gf,
-                     WeaponSystem& weapons, const std::string& bin_name) {
+                     WeaponSystem& weapons, const std::string& bin_name, FrameTiming initial_timing) {
     DroneConfig cfg;
     cfg.elf = &elf;
     cfg.level_id = level_id_from_name(bin_name);
     const bool mp = cfg.level_id >= 0x7000021 && cfg.level_id <= 0x700004c;
     cfg.difficulty = mp ? 1 : difficulty_;   // multiplayer forces difficulty 1 (P_MPCONFIRM_Handler)
+    cfg.initial_timing = initial_timing;
     if (const GameFile* tuning = gf.find("TuningVars.txt")) {
         const auto bytes = gf.read(*tuning);
         cfg.tuning = DroneTuning::load(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()), cfg.level_id);
