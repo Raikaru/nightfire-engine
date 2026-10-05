@@ -789,10 +789,16 @@ def main():
         ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4), (A.GS_FRAME, 4)]
         tags += [("done1", 0), ("frame1", 0), ("timer_frame1", 0)]
 
-        if any(addr < 0x00100000 or addr + size > 0x02000000
-               for addr, size in ranges):
+        invalid_ranges = [
+            (tag, addr, size) for tag, (addr, size) in zip(tags, ranges)
+            if addr < 0x00100000 or addr + size > 0x02000000
+        ]
+        if invalid_ranges:
             # A cached dynamic pointer went stale between resolution and batch
             # assembly; do not send a malformed EE address to PINE.
+            print(f"  ... stale snapshot ranges at frame {pine.read32(A.GS_FRAME_START)}: "
+                  + ", ".join(f"{tag}={addr:#x}+{size:#x}"
+                              for tag, addr, size in invalid_ranges), flush=True)
             resyncs += 1
             time.sleep(0.005)
             resolve(pine)
@@ -811,6 +817,9 @@ def main():
         if snapshot is None:
             continue
         frame_meta, chunks = snapshot
+        if frame_meta["overflow_delta"]:
+            print(f"  ... ring dropped {frame_meta['overflow_delta']} samples near frame "
+                  f"{frame_meta['frame']}", flush=True)
         bytag = {}
         for (kind, s), ch in zip(tags, chunks):
             bytag.setdefault((kind, s), ch)
@@ -826,6 +835,8 @@ def main():
         frame1 = struct.unpack("<I", bytag[("frame1", 0)])[0]
         timer_frame1 = struct.unpack("<I", bytag[("timer_frame1", 0)])[0]
         if frame0 != frame1 or timer_frame0 != timer_frame1 or done0 != done1:
+            print(f"  ... torn snapshot dropped: frame {frame0}/{frame1}, "
+                  f"timer {timer_frame0}/{timer_frame1}, done {done0}/{done1}", flush=True)
             continue
         objective_ptrs = []
         transition_missing = []

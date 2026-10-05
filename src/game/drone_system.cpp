@@ -393,7 +393,9 @@ void DroneSystem::emit_noise(const Vec3& pos, float loudness, int source) {
 }
 
 // Drone_InitComms runs before control_movement_object_handler walks the object list.
-void DroneSystem::before_object_update(World&, FrameTiming) {
+void DroneSystem::before_object_update(World&, FrameTiming timing) {
+    timing_ = timing;
+    if (nav_) nav_->begin_frame(now());
     los_rays = 0;
     count_enemies = count_friends = count_neutral = 0;
     process_opponents(*this);
@@ -409,8 +411,8 @@ void DroneSystem::tick(World&, FrameTiming timing) {
         delayed_.erase(delayed_.begin());
         post(m);
     }
-    if (nav_) nav_->begin_frame(now());
     if (!object_prelude_done_) {
+        if (nav_) nav_->begin_frame(now());
         los_rays = 0;
         count_enemies = count_friends = count_neutral = 0;
         process_opponents(*this);
@@ -454,7 +456,10 @@ void DroneSystem::after_tick(World& world, FrameTiming) {
         d.source_view_room = rooms.track(d.source_view_room, d.source_view_pos, d.pos, world.collision());
         d.source_view_pos = d.pos;
     }
+}
 
+void DroneSystem::after_camera_update(World& world, FrameTiming) {
+    const RoomMap& rooms = world.rooms();
     constexpr float kDefaultFov = 1.0471976f;
     constexpr float kPs2Aspect = 4.0f / 3.0f;
     for (int slot = 0; slot < World::kMaxPlayers; ++slot) {
@@ -484,8 +489,8 @@ void DroneSystem::after_tick(World& world, FrameTiming) {
                 depth * tan_half_y + radius * y_radius >= vertical;
             if (!in_frustum) continue;
             d.anim.source_object_anim = 2;
+        }
     }
-}
 }
 
 }  // namespace nf::drone
