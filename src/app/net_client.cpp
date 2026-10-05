@@ -99,8 +99,12 @@ struct NetworkSession::Impl {
         std::string error;
         if (!socket.bind(0, &error)) throw std::runtime_error("network client " + error);
         hello.header.message = nf::net::Message::Hello;
-        hello.payload = nf::net::encode_hello(hash, options.name, options.password, options.local_players);
-        if (hello.payload.empty()) throw std::runtime_error("invalid local player count or password length");
+        std::uint8_t auto_aim_mask = 0;
+        for (std::size_t local = 0; local < options.local_players && local < nf::net::kMaxLocalPlayers; ++local)
+            if (options.auto_aim[local]) auto_aim_mask |= std::uint8_t(1u << local);
+        hello.payload =
+            nf::net::encode_hello(hash, options.name, options.password, options.local_players, auto_aim_mask);
+        if (hello.payload.empty()) throw std::runtime_error("invalid local player count, auto-aim flags, or password length");
         hello = reliability.prepare(std::move(hello), true, Clock::now());
     }
 

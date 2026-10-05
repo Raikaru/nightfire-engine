@@ -22,6 +22,7 @@ walks remain incremental and are retried after a torn or invalid link.
 import argparse
 import atexit
 import json
+import math
 import os
 import pathlib
 import shutil
@@ -34,7 +35,7 @@ import time
 import mp_addrs as A
 import mp_frame_trace as F
 import mp_rng_trace as R
-from pine import Pine, WRITE32
+from pine import Pine, WRITE8, WRITE32
 
 
 def vpad(*words):
@@ -647,7 +648,7 @@ def main():
     ap.add_argument("--script")
     ap.add_argument("--full-every", type=int, default=30)
     ap.add_argument("--seedable", action="store_true",
-                    help="emit v5 seed fields, including resolved bot animation layers each frame")
+                    help="emit v6 seed fields, including resolved animation chains")
     ap.add_argument("--weapon-anim-raw", action="store_true",
                     help="capture coherent 0x100-byte human BLData+0x7e8 objects (requires --seedable)")
     ap.add_argument("--rng-calls", action="store_true",
@@ -658,6 +659,8 @@ def main():
                     help="hold this MP bot's initial position and yaw while recording")
     ap.add_argument("--face-bot", type=int, choices=range(4, 8),
                     help="place the human 8 units behind this frozen bot, facing it")
+    ap.add_argument("--autoaim", choices=(0, 1), type=int,
+                    help="set P0 PlayerSetting+2 after pointer resolution")
     ap.add_argument("--timeout", type=float, default=1200.0)
     ap.add_argument("--checkpoint-dir", help="copy periodic PINE savestates into this frame-keyed directory")
     ap.add_argument("--checkpoint-every", type=int, default=60,
@@ -709,8 +712,10 @@ def main():
             face_obj = pine.read32(A.MPGAME + A.MPG_OBJ)
             if not face_obj or pine.read_block(face_obj + A.OBJ_TYPE, 1)[0] != 3:
                 raise RuntimeError("slot 0 does not contain a live human player")
-            face_pose = ((freeze_pose[0][0], freeze_pose[0][1],
-                          freeze_pose[0][2] - 8.0), 0.0)
+            bot_yaw = freeze_pose[1]
+            face_pose = ((freeze_pose[0][0] - 8.0 * math.sin(bot_yaw),
+                          freeze_pose[0][1],
+                          freeze_pose[0][2] - 8.0 * math.cos(bot_yaw)), bot_yaw)
             freeze_object_pose(pine, face_obj, face_pose)
             bl = pine.read32(face_obj + A.OBJ_BL)
             if bl:
@@ -801,6 +806,8 @@ def main():
         return objs
 
     resolve(pine)
+    if args.autoaim is not None:
+        pine.write(WRITE8, A.PLAYER_SETTING + 2, args.autoaim)
     if args.freeze_bot is not None:
         bot_obj = cache["objs"][args.freeze_bot]
         if not freeze_pose:
@@ -1281,7 +1288,11 @@ def main():
                    "frame_rate_int": frame_rate_int,
                    "frame_rate_mul": frame_rate_mul,
                    "rec_frame_rate": rec_frame_rate, "mpg": mpg.hex(),
-                   "mps": bytag[("mps", 0)].hex(), "rng": bytag[("rng", 0)].hex(),
+                   "mps": bytag[("mps", 0)].hex(),
+                   "mode": struct.unpack_from(
+                       "<I", bytag[("mps", 0)],
+                       A.MPS_SCENARIO_MASK - A.MPS_MP_ACTIVE)[0],
+                   "rng": bytag[("rng", 0)].hex(),
                    "projectiles": [], "projectiles_available": False,
                    "state_missing": ["projectiles"]}
             if rng_trace is not None:
@@ -1326,7 +1337,10 @@ def main():
         rec["rng_words"] = list(struct.unpack("<4I", bytag[("rng", 0)]))
         sw = bytag[("sw", 0)]
         rec["sw"] = {"fd": sw[1], "fe": sw[2]}
-        rec["mps"] = bytag[("mps", 0)].hex()
+        mps_raw = bytag[("mps", 0)]
+        rec["mps"] = mps_raw.hex()
+        rec["mode"] = struct.unpack_from(
+            "<I", mps_raw, A.MPS_SCENARIO_MASK - A.MPS_MP_ACTIVE)[0]
         if args.seedable:
             roster = bytag[("mp_roster", 0)]
             rec["mp_roster"] = []

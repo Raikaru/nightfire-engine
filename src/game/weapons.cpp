@@ -955,7 +955,13 @@ void WeaponSystem::update_autoaim(int slot, PlayerWeapons& p, World& world) {
     }
     const WeaponDef& d = table_.weapon(p.current);
     const bool grapple = p.current == 80 || p.current == 81;   // ids 80/81 always scan, weight 1.0
-    if (p.aim || ((!autoaim_.enabled || !world.settings(slot).auto_aim) && !grapple)) {
+    if (p.aim) {
+        // Player_AutoAim decays the cursor during manual aim but leaves the target pointer intact.
+        p.lock_yaw *= 0.5f;
+        p.lock_pitch *= 0.5f;
+        return;
+    }
+    if ((!autoaim_.enabled || !world.settings(slot).auto_aim) && !grapple) {
         p.lock_yaw *= 0.5f;
         p.lock_pitch *= 0.5f;
         if (std::fabs(p.lock_yaw) < 1e-4f && std::fabs(p.lock_pitch) < 1e-4f) p.lock_victim = -1;

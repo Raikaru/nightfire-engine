@@ -123,6 +123,7 @@ struct MpLaunch {
     MpSettings settings;              // players compacted to slots 0.., duration in seconds, explosive scenery masked to 0/1, active
     std::string level_bin;            // FILES.BIN name of the level (GameState level = settings.level_id)
     std::vector<MpParticipant> participants;  // humans then bots, in slot order
+    std::array<bool, 4> auto_aim{true, true, true, true};  // per local human; player 1 comes from the active profile
     std::int32_t time_limit_seconds;  // MPGame+0x194 as MP_Init sets it (Demolition/Protection without limit: 60)
     std::uint32_t participant_count;  // MPSettings+0x194
     std::vector<std::uint32_t> needed_characters;  // MP_setLoadingSkins: characters whose MP_skins row is flagged

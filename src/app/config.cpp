@@ -56,6 +56,7 @@ void set_key(AppConfig& c, const std::string& key, const std::string& value) {
     else if (key == "invert_y") c.invert_y = b;
     else if (key == "vibration") c.vibration = b;
     else if (key == "auto_aim") c.auto_aim = b;
+    else if (key == "mp_auto_aim") c.mp_auto_aim = b;
     else if (key == "crosshairs") c.crosshairs = b;
     else if (key == "crouch_toggle") c.crouch_toggle = b;
     else if (key == "manual_aim") c.manual_aim = b;
@@ -106,6 +107,7 @@ bool save_config(const std::filesystem::path& path, const AppConfig& c) {
     out << "sfx_volume=" << c.sfx_volume << "\nmusic_volume=" << c.music_volume << "\n";
     out << "controller_style=" << c.controller_style << "\ninvert_y=" << (c.invert_y ? 1 : 0) << "\n";
     out << "vibration=" << (c.vibration ? 1 : 0) << "\nauto_aim=" << (c.auto_aim ? 1 : 0) << "\n";
+    out << "mp_auto_aim=" << (c.mp_auto_aim ? 1 : 0) << "\n";
     out << "crosshairs=" << (c.crosshairs ? 1 : 0) << "\ncrouch_toggle=" << (c.crouch_toggle ? 1 : 0) << "\n";
     out << "manual_aim=" << (c.manual_aim ? 1 : 0) << "\nweapon_auto_switch=" << (c.weapon_auto_switch ? 1 : 0) << "\n";
     out << "hud_always_on=" << (c.hud_always_on ? 1 : 0) << "\n";

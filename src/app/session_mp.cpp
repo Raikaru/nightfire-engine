@@ -68,6 +68,7 @@ Mat4 player_model_matrix(const Player& p) {
 MpDirect MpSession::from_launch(const MpLaunch& launch) {
     MpDirect d;
     d.level_bin = launch.level_bin;
+    d.auto_aim = launch.auto_aim;
     d.options.enabled = true;
     d.options.rules = launch.settings.rules;
     d.options.mode = launch.settings.mode;
@@ -180,6 +181,8 @@ struct MpSession::Impl {
         // start on the defaults (Classic Bond) and change theirs in their own pause menu.
         world->settings(0).controller_style = std::clamp(config.controller_style, 0, 7);
         world->settings(0).invert_look = config.invert_y;
+        for (std::size_t slot = 0; slot < direct.auto_aim.size(); ++slot)
+            world->settings(slot).auto_aim = direct.auto_aim[slot];
         MatchOptions options = direct.options;
         options.enabled = true;
         if (options.bots > 0) {
@@ -1233,6 +1236,7 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
         s.ui.end();
     };
     bool start_pose_applied = false;
+    bool local_auto_aim_applied = false;
     while (running && running_match && (frames < 0 || input_frames < frames)) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -1250,6 +1254,13 @@ MpResult MpSession::run_network_interactive(NetworkSession& network, long frames
             }
         }
         network.poll();
+        if (network.connected() && !local_auto_aim_applied) {
+            for (std::size_t local = 0; local < network.local_players(); ++local) {
+                const std::size_t slot = std::size_t(network.slot()) + local;
+                if (slot < nf::World::kMaxPlayers) s.world->settings(slot).auto_aim = s.direct.auto_aim[local];
+            }
+            local_auto_aim_applied = true;
+        }
         if (start_pose && !start_pose_applied && network.connected() && network.slot() < nf::World::kMaxPlayers) {
             if (nf::Player* player = s.world->player(network.slot()))
                 player->place_at_rest(start_pose->position, start_pose->yaw, start_pose->pitch,

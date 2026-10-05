@@ -107,7 +107,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::vector<Entry> entries;
-    std::printf("nfmaster: UDP %d; registrations expire after 60 seconds\n", port);
+    std::printf("nfmaster: UDP %d; gameplay protocol=%u, registry protocol=%u; registrations expire after 60 seconds\n",
+                port, unsigned(nf::net::kProtocolVersion), unsigned(kVersion));
     for (;;) {
         const auto now = Clock::now();
         for (const auto& packet : socket.receive()) {

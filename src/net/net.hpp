@@ -12,7 +12,7 @@
 
 namespace nf::net {
 
-constexpr std::uint16_t kProtocolVersion = 7;
+constexpr std::uint16_t kProtocolVersion = 8;
 constexpr std::uint8_t kOwnerMovementSchemaVersion = 2;
 constexpr std::uint8_t kMaxServerBots = 16;
 constexpr std::size_t kDataHashBytes = 32;
@@ -61,16 +61,11 @@ std::vector<std::uint8_t> encode(const Packet& packet);
 std::optional<Packet> decode(std::span<const std::uint8_t> bytes);
 
 std::vector<std::uint8_t> encode_hello(const std::array<std::uint8_t, kDataHashBytes>& data_hash,
-                                      std::string_view player_name, std::string_view password = {},
-                                      std::uint8_t local_players = 1);
+                                      std::string_view player_name, std::string_view password,
+                                      std::uint8_t local_players, std::uint8_t auto_aim_mask);
 bool decode_hello(std::span<const std::uint8_t> payload,
                   std::array<std::uint8_t, kDataHashBytes>& data_hash, std::string& player_name,
-                  std::string& password, std::uint8_t& local_players);
-bool decode_hello(std::span<const std::uint8_t> payload,
-                  std::array<std::uint8_t, kDataHashBytes>& data_hash, std::string& player_name,
-                  std::string& password);
-bool decode_hello(std::span<const std::uint8_t> payload,
-                  std::array<std::uint8_t, kDataHashBytes>& data_hash, std::string& player_name);
+                  std::string& password, std::uint8_t& local_players, std::uint8_t& auto_aim_mask);
 struct ServerInfo {
     std::uint32_t query_id = 0;
     std::string name;

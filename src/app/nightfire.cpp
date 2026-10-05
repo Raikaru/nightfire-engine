@@ -157,6 +157,7 @@ void sync_config_to_frontend(const AppConfig& cfg, Frontend& frontend) {
     o.sfx_volume = cfg.sfx_volume;
     o.vibration = cfg.vibration;
     o.auto_aim = cfg.auto_aim;
+    o.mp_auto_aim = cfg.mp_auto_aim;
     o.crosshairs = cfg.crosshairs;
     o.crouch_toggle = cfg.crouch_toggle;
     o.manual_aim = cfg.manual_aim;
@@ -283,6 +284,7 @@ bool run_frontend(AppContext& ctx, Window& window, ui::Renderer& ui, ui::TextRen
     cfg.sfx_volume = o.sfx_volume;
     cfg.vibration = o.vibration;
     cfg.auto_aim = o.auto_aim;
+    cfg.mp_auto_aim = o.mp_auto_aim;
     cfg.crosshairs = o.crosshairs;
     cfg.crouch_toggle = o.crouch_toggle;
     cfg.manual_aim = o.manual_aim;
@@ -660,6 +662,7 @@ int run(int argc, char** argv) {
         options.name = args.player_name;
         options.chat = args.chat;
         options.local_players = std::uint8_t(args.local_players);
+        options.auto_aim[0] = cfg.mp_auto_aim;
         options.loss_percent = args.net_sim_loss;
         options.latency_ms = args.net_sim_latency;
         options.jitter_ms = args.net_sim_jitter ? nf::net::kDefaultNetSimJitterMs : 0;
@@ -667,6 +670,7 @@ int run(int argc, char** argv) {
         MpDirect direct_mp;
         direct_mp.level_bin = args.map;
         direct_mp.inputs[0] = args.inputs;
+        direct_mp.auto_aim = options.auto_aim;
         direct_mp.options.enabled = true;
         direct_mp.options.humans = args.local_players;
         if (!server_info.empty()) {
@@ -720,6 +724,7 @@ int run(int argc, char** argv) {
     if (args.mp) {
         MpDirect direct_mp;
         direct_mp.options.enabled = true;
+        direct_mp.auto_aim[0] = cfg.mp_auto_aim;
         for (std::size_t i = 0; i < args.mp_args.size(); ++i) {
             const std::string& m = args.mp_args[i];
             if (direct_mp.options.parse(args.mp_args, i)) continue;
@@ -813,6 +818,7 @@ int run(int argc, char** argv) {
                     continue;
                 }
                 NetworkClientOptions connection = std::move(*options);
+                connection.auto_aim[0] = cfg.mp_auto_aim;
                 connection.loss_percent = args.net_sim_loss;
                 connection.latency_ms = args.net_sim_latency;
                 connection.jitter_ms = args.net_sim_jitter ? nf::net::kDefaultNetSimJitterMs : 0;
@@ -825,6 +831,7 @@ int run(int argc, char** argv) {
                     NetworkSession network(*ctx, connection);
                     MpDirect direct_mp;
                     direct_mp.level_bin = map;
+                    direct_mp.auto_aim = connection.auto_aim;
                     direct_mp.options.enabled = true;
                     direct_mp.options.mode = mode;
                     direct_mp.options.humans = int(connection.local_players);
@@ -902,11 +909,13 @@ int run(int argc, char** argv) {
                     client_options.password = args.password;
                     client_options.name = args.player_name;
                     client_options.local_players = std::uint8_t(args.local_players);
+                    client_options.auto_aim = mp.auto_aim;
                     client_options.loss_percent = args.net_sim_loss;
                     client_options.latency_ms = args.net_sim_latency;
                     client_options.jitter_ms = args.net_sim_jitter ? nf::net::kDefaultNetSimJitterMs : 0;
                     MpDirect client_mp;
                     client_mp.level_bin = before.map;
+                    client_mp.auto_aim = mp.auto_aim;
                     client_mp.options = mp.options;
                     client_mp.options.mode = before.mode;
                     client_mp.options.humans = args.local_players;

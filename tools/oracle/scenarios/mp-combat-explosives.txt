@@ -3,11 +3,11 @@
 # interval; fire off-axis, then aligned, and record >=180 frames for projectile
 # flight/direct-impact splash. Frag52 uses its own timed-fuse scenario.
 0 release
-2 axis LX 0.15
+2 axis LX 0.4
 12 down r1
 16 up r1
-20 axis LX -0.15
-30 axis LX 0
+20 axis LX -0.4
+38 axis LX 0
 82 down r1
 86 up r1
 150 release

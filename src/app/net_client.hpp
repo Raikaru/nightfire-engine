@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <span>
 #include <string>
@@ -22,6 +23,7 @@ struct NetworkClientOptions {
     int latency_ms = 0;
     unsigned jitter_ms = 0;
     std::uint8_t local_players = 1;
+    std::array<bool, nf::net::kMaxLocalPlayers> auto_aim{true, true, true, true};
 };
 class NetworkSession {
 public:
