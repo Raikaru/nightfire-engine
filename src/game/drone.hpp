@@ -285,9 +285,15 @@ public:
     Vec3 source_view_center{};            // previous obj+0x80 world-sphere center for control_handle_cel_change
     Vec3 source_view_cel_position{};      // previous obj+0x30 point used by Cel_ObjectLeftCel when obj+0xfa bit 0x80 is clear
     Vec3 source_view_center_offset{};     // source view sphere center at obj+0x80 relative to obj+0x30
-    float source_view_radius = 0;         // source view sphere radius at obj+0x8c
+    float source_view_radius = 0;         // obj+0x8c, used by Vision_InView and Collide_StraddleCels
     bool source_view_sphere_valid = false;
     bool source_view_cell_uses_sphere = false; // obj+0xfa bit 0x80 selects obj+0x80/+0x70 instead of obj+0x30/+0x40
+    bool source_view_object_valid = false; // seeded obj_tag fields used by View_AddForcedObjects
+    bool source_view_has_model = false;     // obj+0xd8 != 0
+    std::uint16_t source_view_display_mask = 0; // obj+0xf8 & object_display_mask
+    std::uint32_t source_view_object_flags = 0; // obj+0xf0
+    std::uint8_t source_view_object_type = 0; // obj+0xff (2 selects Collide_StraddleCels)
+    std::uint16_t source_view_model_flags = 0; // obj+0xfa; View_AddObjects tests bits 0x110
     float yaw = 0;                      // obj+0x54, forward = (sin yaw, 0, cos yaw)
     Vec3 velocity{};                    // world-space walk velocity (units/s) set by locomotion
     Vec3 fall_velocity{};               // gravity part (units/s)

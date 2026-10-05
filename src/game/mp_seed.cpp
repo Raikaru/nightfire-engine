@@ -1008,6 +1008,12 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                 }
                 bot->drone->source_view_cell_uses_sphere =
                     bot->drone->source_view_sphere_valid && (u16_at(obj, 0xfa) & 0x80) != 0;
+                bot->drone->source_view_object_valid = true;
+                bot->drone->source_view_has_model = u32_at(obj, 0xd8) != 0;
+                bot->drone->source_view_display_mask = u16_at(obj, 0xf8);
+                bot->drone->source_view_object_flags = u32_at(obj, 0xf0);
+                bot->drone->source_view_object_type = byte_at(obj, 0xff);
+                bot->drone->source_view_model_flags = u16_at(obj, 0xfa);
                 bot->drone->source_view_center = bot->drone->pos;
                 if (uint_number(source.at("seed_version")) >= 5)
                     bot->drone->source_view_center = vec3_at(obj, 0x80);

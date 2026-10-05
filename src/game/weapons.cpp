@@ -25,8 +25,6 @@ constexpr int kNoWeapon = 71;       // Player_WeaponNone
 constexpr int kFists = 1;
 // Player_Init replaces weapon_data[1].model_gfx with the default Bond fist skin before creating the anim object.
 constexpr std::uint32_t kFistsModelGfx = 0x050000B0;
-constexpr int kFidgetDeep = 600;      // +2362 frames for the +204 path (20 s at 30 Hz logic)
-constexpr int kFidgetHold = 600;      // +2366 = 20 s at 30 Hz once a +212 starts
 
 bool is_gadget(int id) { return id >= 74 && id < 95; }
 
@@ -538,7 +536,7 @@ void WeaponSystem::reset_zoom_for_weapon(PlayerWeapons& p) {
 }
 
 void WeaponSystem::anim_update(int slot, PlayerWeapons& p, World& world, FrameTiming timing) {
-    (void)timing;
+    const int idle_duration = timing.FRAME_RATE_INT * 20;   // Player_SetWeaponAnimObj: FRAME_RATE_INT * 0x14
     const ActionInput& in = world.input(slot);
     const WeaponDef& cur = table_.weapon(p.current);
     const WeaponDef& prev = table_.weapon(p.previous);
@@ -548,7 +546,7 @@ void WeaponSystem::anim_update(int slot, PlayerWeapons& p, World& world, FrameTi
         if (script) play_script(p, script, true);
         p.anim_state = WeaponAnim::Idle;
     };
-    if (p.anim_state != WeaponAnim::Idle) { p.idle_frames = 0; p.fidget_frames = kFidgetHold; }   // +2362=0, +2366 pinned (decomp state!=0 branch)
+    if (p.anim_state != WeaponAnim::Idle) { p.idle_frames = 0; p.fidget_frames = idle_duration; }   // +2362=0, +2366 pinned
     switch (p.anim_state) {
         case WeaponAnim::Lower:
         case WeaponAnim::LowerAlt: {
@@ -704,7 +702,7 @@ void WeaponSystem::anim_update(int slot, PlayerWeapons& p, World& world, FrameTi
             // Idle fidget machine (spec 760, Player_SetWeaponAnimObj state 0): +2362 counts Idle frames
             // (cleared on state/phase change, pinned by PlayerSetting[340]); +2366 spaces +212 repeats.
             if (world.settings(slot).idle_count_hold) p.idle_frames = 0;   // PlayerSetting[340]: pin +2362
-            else if (p.idle_frames < kFidgetDeep) p.idle_frames++;   // +2362 counts Idle frames
+            else ++p.idle_frames;   // +2362 increments once per Idle logic tick
             // Quiet = no aim and sticks in the deadzone (cursor proxy: the original tests BLData+288/292,
             // which only move outside the stick deadzone; uncompensated centred sticks read ~0.008 here).
             const auto centred = [&](int a) { return std::fabs(in.actionf(a)) < 0.05f; };
@@ -715,7 +713,7 @@ void WeaponSystem::anim_update(int slot, PlayerWeapons& p, World& world, FrameTi
             const bool threat = drones_ && drones_->any_visible_threat();
             if (p.fidget_frames > 0) p.fidget_frames--;
             // Source phase dispatch handles active phases before phase-0 +204 deep-idle selection.
-            if (p.idle_phase == 0 && p.idle_frames >= kFidgetDeep && cur.anim_deepidle != 0) {
+            if (p.idle_phase == 0 && p.idle_frames >= idle_duration && cur.anim_deepidle != 0) {
                 play_script(p, cur.anim_deepidle, false);
                 if (p.anim_script == cur.anim_deepidle) {
                     p.idle_phase = 1;
@@ -736,7 +734,7 @@ void WeaponSystem::anim_update(int slot, PlayerWeapons& p, World& world, FrameTi
                             if (p.anim_script == cur.anim_misc) {
                                 p.idle_phase = 1;
                                 p.idle_frames = 0;
-                                p.fidget_frames = kFidgetHold;
+                                p.fidget_frames = idle_duration;
                             }
                         }
                     }
@@ -894,8 +892,8 @@ void WeaponSystem::weapon_firing(int slot, PlayerWeapons& p, World& world, Frame
 
     const bool state_ok = p.anim_state == WeaponAnim::Idle || p.anim_state == WeaponAnim::FireHold ||
                           (p.anim_state == WeaponAnim::Firing && !d.has(wf1::kNoRetrigger));
-    // The source accepts the fire edge into the trigger counter while drawing, but leaves cooldown and
-    // firing effects untouched until the animation state is idle, firing, or fire-hold.
+    // Fire edges may arm the trigger counter during a draw, but only ready animation states can start a shot.
+    // The cooldown itself continues to advance while those states are waiting.
     if (pressed && gate && p.cooldown <= 0.0f) {
         if (state_ok) {
             // Guided missile in flight (F2 & 0x4, owner in substate 10): the trigger blows it up in the air
@@ -910,7 +908,10 @@ void WeaponSystem::weapon_firing(int slot, PlayerWeapons& p, World& world, Frame
         p.shots_left = d.fire_count[std::size_t(std::min<int>(p.weapon[std::size_t(p.current)].mode_index, 3))];
         p.cycle_start = p.shots_left;
     }
-    if (!state_ok) return;
+    if (!state_ok) {
+        if (p.cooldown > 0.0f) p.cooldown -= timing.mul();
+        return;
+    }
     const bool cooldown_was_active = p.cooldown > 0.0f;
     if (cooldown_was_active) p.cooldown -= timing.mul();
     if (p.cooldown > 0.0f || (!gate && !cooldown_was_active)) return;

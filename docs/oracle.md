@@ -240,11 +240,11 @@ encode the flash-bang hold/fade; the color byte is not an intensity value.
 These offsets are derived from ACTION.ELF pseudocode/disassembly and are not
 yet live-probed; bot hit-zone and flash fields are not mapped.
 
-Every row also stores the live `MPSettings+0x1A4` scenario mask as the
-top-level integer `mode` (for example Arena `0x00000001`, Team Arena
-`0x20000002`, CTF `0x20000004`, Demolition `0x20000040`). Include this
-eight-digit hex value in filenames so captures cannot be mistaken for another
-mode.
+Every row stores the live `MPSettings+0x1A4` scenario mask as top-level integer
+`mode` (Arena `0x00000001`, Team Arena `0x20000002`, CTF `0x20000004`,
+Demolition `0x20000040`) and `MPSettings+0x1B4` as top-level integer
+`weapon_set`. Include the eight-digit hex mode and weapon-set index in
+filenames so captures cannot be mistaken for another scenario/loadout.
 
 For controlled MP autoaim scenarios, add `--autoaim 0` or `--autoaim 1`; after
 the P2S and pointer resolution, the recorder sets P0 `PlayerSetting+2` immediately
@@ -283,10 +283,13 @@ retained as `assassin_ptr`, `target_ptr`, and `golden_target_ptr`. With
 `--weapon-anim-raw`, the 0x100-byte target is also emitted as
 `weapon_anim_raw`; its `+0xDC` owner pointer and owner+`0x70` sAnimObject
 resolve the shared layer/sequence schema at `pl[0..3].anim`.
+The frame-ring descriptor follows target+0xDC then owner+0x9C. Pre-fix
+captures can omit active weapon layers and must not be used for animation-state
+seeding.
 For each human, `body_anim` captures the full layer/sequence chain resolved
 from the player animation owner, and `anim_sets` contains the ordered raw
 0x34-byte linked nodes rooted at owner+`0x98` (including the `+0x2C` random
-timer). v6 recordings restore this state exactly. Legacy v5 recordings lack
+timer). Complete v6 layer data restores this state exactly. Legacy v5 recordings lack
 these fields and retain the engine's own animation lifecycle instead; their
 engine trace rows set `body_anim_sets_unseeded: true` to mark that body state
 as approximate.
@@ -913,10 +916,10 @@ python3 tools/oracle/mp_record.py recompiler.jsonl --load-slot 10 \
   --frames 1200 --seedable --rng-calls-preinstalled
 ```
 
-For a controlled combat capture, `--freeze-bot SLOT` holds a bot's sampled
-position/yaw on each recorded frame. `--face-bot SLOT` additionally places the
-human eight world units behind the bot along its forward axis, aligned to its yaw; the human
-remains free to move under `--script`. The recorder retains the exact button/input word,
+For a controlled capture, `--face-bot SLOT` places the human eight world units
+behind that bot along its forward axis once and aligns yaw; the bot's AI continues.
+Optional `--freeze-bot SLOT` holds a bot's position/yaw each frame (must match
+`--face-bot` when both are given). The human remains free under `--script`; the recorder retains the exact button/input word,
 human health/armour/current weapon/auto-lock, projectile state and bot health
 on each accepted frame. This is not a deterministic combat fixture: bot AI,
 firing, damage and pickups remain live.

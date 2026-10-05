@@ -495,8 +495,8 @@ void DroneSystem::after_camera_update(World& world, FrameTiming) {
         for (const auto& dp : drones_) {
             Drone& d = *dp;
             if (d.hidden || d.pending_delete) continue;
-            if (!rooms.cell_in_view(d.source_view_room, visible_rooms, eye, right, up, forward, tan_half_x, tan_half_y))
-                continue;
+            const bool in_cell_view =
+                rooms.cell_in_view(d.source_view_room, visible_rooms, eye, right, up, forward, tan_half_x, tan_half_y);
             const Vec3 center = d.source_view_sphere_valid
                                     ? d.pos + d.source_view_center_offset
                                     : d.pos;
@@ -509,6 +509,24 @@ void DroneSystem::after_camera_update(World& world, FrameTiming) {
                 depth * tan_half_x + radius * x_radius >= horizontal &&
                 depth * tan_half_y + radius * y_radius >= vertical;
             if (!in_frustum) continue;
+            bool visible_object = in_cell_view;
+            if (d.source_view_object_valid) {
+                constexpr std::uint16_t kViewerType = 2; // View_AddObjects / View_AddForcedObjects require viewer+0x236 == 2
+                const std::uint16_t viewer_mask = std::uint16_t(1u << slot); // View_CaptureScene: object_display_mask = 1 << viewer index
+                const std::uint32_t object_flags = d.source_view_object_flags;
+                const bool display_enabled = (d.source_view_display_mask & viewer_mask) != 0;
+                const bool viewer_type_matches = (object_flags & 0x400) == 0 || kViewerType == 2;
+                const bool normal_object =
+                    in_cell_view && display_enabled && ((d.source_view_model_flags & 0x110) != 0 || d.source_view_has_model) &&
+                    (object_flags & 0x8010) == 0 && viewer_type_matches;
+                bool forced_object =
+                    display_enabled && d.source_view_has_model && (object_flags & 0x8000) != 0 &&
+                    (object_flags & 0x10) == 0 && viewer_type_matches;
+                if (forced_object && d.source_view_object_type == 2 && radius > 0.5f)
+                    forced_object = rooms.straddled_cell_in_view(d.source_view_room, center, radius, visible_rooms);
+                visible_object = normal_object || forced_object;
+            }
+            if (!visible_object) continue;
             d.anim.source_object_anim_from_view = true;
             d.anim.source_object_anim = 2;
         }

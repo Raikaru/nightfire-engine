@@ -393,6 +393,11 @@ int run_match(const MatchLaunch& request) {
                             int(session.weapons().table().weapon(anim_weapon).category));
                     }
                 }
+                if (launch.mp_seed_each && bot_match) {
+                    for (int i = 0; i < World::kMaxPlayers; ++i)
+                        if (Player* player = world.player(i)) player->update_camera(timing);
+                    bot_match->drones().after_camera_update(world, timing);
+                }
                 session.arena().set_seeded_clock_for_tick(match_elapsed, match_total_elapsed);
             } else {
                 for (int i = 0; i < options.humans; ++i) pads[std::size_t(i)] = scripts[std::size_t(i)].at(f);
