@@ -395,8 +395,8 @@ public:
     float root_height() const { return root_translation()[1]; }
     // sAnimObject+0xCC, the "foot height" the player collision uses: root height of the layer stack (a distance-driven
     // loop counts without its phase-locked partner) plus the object's offset (AnimObjectNew: -1.160398 with flag 0x400,
-    // else -0.995208, minus the model's bounding-box min y over the skin scale, plus 0.02). Reproduces the recorded
-    // values of Mp_bond_combat (idle 1.03277, walk 1.050..1.077) to 4 digits; `model_min_y` is the min y of the mesh box.
+    // else -0.995208, minus celglist entity_params+0x24 over the skin scale, plus 0.02). `model_min_y` is that stored
+    // model bound, not the decoded skinned-mesh vertex bound.
     float foot_height(float model_min_y, bool flag_400 = true) const;
     void extract_root_motion(bool on) { extract_root_ = on; dirty_ = true; }
 

@@ -56,7 +56,7 @@ Default layout (PS2 pad, style 7; verified live against PlayerSetting):
 | crouch (toggle) | 8 | L2 |
 | pause | 30 | Start |
 
-`PlayerSettings` mirrors PlayerSetting bytes 0/4/7: invert look (off), crouch toggle (on), pitch auto-centre (on).
+`PlayerSettings` mirrors PlayerSetting bytes 0/2/4/7: invert look, multiplayer auto-aim, crouch toggle, and pitch auto-centre. The auto-aim flag is per player and is sampled by `Check_AutoAim`; grapple weapons still scan when it is off.
 
 ## Player (`Player_Update`, substates walk and crouch)
 
@@ -219,13 +219,15 @@ participant/per-bot tables cover only eight participants/four bots. The bot deci
    wobble of the height leaves the body where it is. The port applies height *drops* vertically and freezes
   *rises*: the climb comes from pushes against the deep fresh-foot capsule, whose penetration depth
   self-corrects to the recorded height (a lifted capsule would break marginal contact and fall).
+  `AnimObjectNew` initializes that offset from the model's stored `entity_params+0x24` minimum Y divided by skin Y
+  scale, a flag-selected baseline, and `+0.02` (not from decoded skinned-mesh vertices).
   Fresh transitions (crouch timer high) and non-crouch transitions still lift vertically. A
   non-transitioning crouch that ends the frame airborne reverts the shift. Values for the multiplayer
   skin 0x05000089: 1.0328 idle, a 1.050..1.077 double hump every ~13.5 frames at 60 Hz while walking,
   ~0.61 crouched, ~0.93 crouch-walking. `Player::stand_height` is the input: replay rows that carry the recorded
   value drive the capsule exactly (oracle parity); otherwise the `PlayerAnimator` the player owns supplies it.
-  `Player::update` ticks the animator every logic frame with the frame's walk velocity (stance follows weapon
-  switches via `Player::set_body_weapon`, which nfgame forwards from the weapon state each tick) and reads back
+  `nfgame_mp` advances that animator once per logic frame after the player and weapon updates, using the frame's
+  walk velocity (stance follows weapon switches via `Player::set_body_weapon`). It reads back
   `CharacterInstance::foot_height` (steady states match the recording: idle within 2 mm, crouched within 1 mm at
   the matching weapon category). Animator-driven free runs stay within ~1 cm of the recorded-height runs on
   every oracle scenario. Two gaps remain on the Characters side: the stance-flip transition arcs (the recorded

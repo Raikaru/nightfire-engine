@@ -315,30 +315,29 @@ int run_match(const MatchLaunch& request) {
         for (int i = 0; i < options.humans; ++i) {
             int weapon_id = 1;
             int category = 1;
-            bool initial_setup_pending = !importer;
             if (const PlayerWeapons* state = session.weapons().state(i)) {
                 weapon_id = state->current;
                 category = int(session.weapons().table().weapon(weapon_id).category);
-                // An explicit pre-match give-weapon replaces Player_WeaponNone (71); unlike the configured
-                // start weapon, its first PlayerAnimSetInit occurs after the restored seed snapshot.
-                if (importer)
-                    initial_setup_pending = state->previous == 71 && state->current != 71 &&
-                                            state->current != SpawnLoadout{}.start_weapon;
             }
-            world.player(i)->set_body_animator(std::make_unique<PlayerAnimator>(
-                *weapon_bank, *body_skin, headless_anim_sets, weapon_id, category, initial_setup_pending));
+            world.player(i)->set_body_animator(
+                std::make_unique<PlayerAnimator>(*weapon_bank, *body_skin, headless_anim_sets, weapon_id, category));
         }
         if (importer) {
             for (int i = 0; i < options.humans; ++i) {
                 const PlayerWeapons* state = session.weapons().state(i);
                 PlayerAnimator* body = world.player(i)->body_animator();
                 if (!state || !body) throw std::runtime_error("MP seed: human body animation is unavailable");
+                const int anim_weapon =
+                    state->current != state->previous && state->anim_state == WeaponAnim::RaiseStart
+                        ? state->previous
+                        : state->current;
                 importer->restore_player_animation(
-                    importer->frame(), std::size_t(i), *body, state->current,
-                    int(session.weapons().table().weapon(state->current).category));
+                    importer->frame(), std::size_t(i), *body, anim_weapon,
+                    int(session.weapons().table().weapon(anim_weapon).category));
             }
         }
     }
+    bool initial_seed_weapon_transition = true;
 
 
     auto report = [&] {
@@ -391,9 +390,14 @@ int run_match(const MatchLaunch& request) {
                         const auto* state = session.weapons().state(i);
                         PlayerAnimator* body = world.player(i)->body_animator();
                         if (!state || !body) throw std::runtime_error("MP seed: human body animation is unavailable");
+                        const int anim_weapon =
+                            initial_seed_weapon_transition && state->current != state->previous &&
+                                    state->anim_state == WeaponAnim::RaiseStart
+                                ? state->previous
+                                : state->current;
                         importer->restore_player_animation(
-                            world.frame(), std::size_t(i), *body, state->current,
-                            int(session.weapons().table().weapon(state->current).category));
+                            world.frame(), std::size_t(i), *body, anim_weapon,
+                            int(session.weapons().table().weapon(anim_weapon).category));
                     }
                 }
                 session.arena().set_seeded_clock_for_tick(match_elapsed, match_total_elapsed);
@@ -413,6 +417,7 @@ int run_match(const MatchLaunch& request) {
                         state->current, int(session.weapons().table().weapon(state->current).category));
                 world.player(i)->tick_body_animation(timing);
             }
+            initial_seed_weapon_transition = false;
             emitter_sim->update(world.player(0)->eye(), timing.FRAME_RATE_MUL, timing.REC_FRAME_RATE,
                                 [&world](int ch) { return world.objects().channel(unsigned(ch)); });
             if (shot_weather) {

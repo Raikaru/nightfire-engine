@@ -1,0 +1,7 @@
+# mp_record.py --script. Provision weapon 52 (Frag Grenade) and use
+# --freeze-bot 5 --face-bot 5. Throw one aligned grenade at the frozen bot.
+# Its 26-frame fire delay precedes the 210-frame fuse; record at least 280 frames.
+0 release
+12 down r1
+42 up r1
+260 release

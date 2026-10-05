@@ -14,7 +14,11 @@ ENTRY = 0x001C98BC
 ENTRY_ORIGINAL = (0x03E00008, 0x27BD0010)  # jr ra; addiu sp,sp,16
 CODE_BASE = 0x01FE6000
 CONFIG_BASE = 0x01FE8000
-MAX_DESCRIPTORS = 1022  # 0x2000-byte config window: 16-byte header + 8 bytes per range
+MAX_DESCRIPTORS = 1022  # direct 8-byte ranges in the 0x2000-byte config window
+DYNAMIC_DESCRIPTOR_SIZE = 28  # seven words: root, size, count, links, output
+CONFIG_SIZE = 0x2000
+EE_RAM_START = 0x00100000
+EE_RAM_END = 0x02000000
 # Reserved in sampled ACTION P2S images (0x8e000..ELF load base); 8-slot ring.
 RING_BASE = 0x0008E000
 RING_END = 0x00100000
@@ -38,6 +42,18 @@ def _load32(a, reg, value):
     a.emit(_i(0x0F, 0, reg, value >> 16))
     a.emit(_i(0x0D, reg, reg, value))
 
+
+def _copy_bytes(a, source_reg, dest_reg, count_reg, label):
+    """Emit an unsigned byte copy using t9 as scratch."""
+    a.label(label)
+    a.branch(0x04, count_reg, 0, label + "_done")
+    a.emit(_i(0x24, source_reg, 25, 0))
+    a.emit(_i(0x28, dest_reg, 25, 0))
+    a.emit(_i(0x09, source_reg, source_reg, 1))
+    a.emit(_i(0x09, dest_reg, dest_reg, 1))
+    a.emit(_i(0x09, count_reg, count_reg, -1))
+    a.branch(0x05, count_reg, 0, label)
+    a.label(label + "_done")
 
 class _Assembler:
     def __init__(self):
@@ -124,7 +140,7 @@ def frame_hook_words():
     a.emit(_i(0x09, 8, 24, 16)) # t8 = descriptor table
     a.emit(_i(0x23, 8, 9, 0)) # t1 = descriptor count
     a.label("descriptor")
-    a.branch(0x04, 9, 0, "publish")
+    a.branch(0x04, 9, 0, "dynamic_count")
     a.emit(_i(0x23, 24, 25, 0)) # t9 = source
     a.emit(_i(0x23, 24, 12, 4)) # t4 = byte length
     a.emit(_i(0x09, 24, 24, 8))
@@ -139,6 +155,93 @@ def frame_hook_words():
     a.label("next_descriptor")
     a.emit(_i(0x09, 9, 9, -1))
     a.branch(0x05, 9, 0, "descriptor")
+    # Dynamic records follow the direct range table: count, then 7-word
+    # pointer/list descriptors. Each output block is {count, complete, items}.
+    a.label("dynamic_count")
+    a.emit(_i(0x23, 24, 9, 0))
+    a.emit(_i(0x09, 24, 24, 4))
+    a.label("dynamic_descriptor")
+    a.branch(0x04, 9, 0, "publish")
+    a.emit(_i(0x23, 24, 8, 0))   # root pointer-cell address
+    a.emit(_i(0x23, 24, 10, 4))  # node size
+    a.emit(_i(0x23, 24, 11, 8))  # maximum item count
+    a.emit(_i(0x23, 24, 12, 12)) # list next offset or -1
+    a.emit(_i(0x23, 24, 13, 16)) # child pointer offset or -1
+    a.emit(_i(0x23, 24, 14, 20)) # child size
+    a.emit(_i(0x23, 24, 25, 24)) # reserved output size
+    a.emit(_r(25, 0, 7, 0, 0x21)) # preserve output size in a3
+    a.emit(_i(0x2B, 15, 0, 0))   # count = 0
+    a.emit(_i(0x09, 0, 25, 1))
+    a.emit(_i(0x2B, 15, 25, 4))  # complete = 1
+    a.emit(_i(0x09, 15, 5, 8))   # a1 = data area
+    a.emit(_i(0x09, 7, 6, -8))   # a2 = reserved data bytes
+    a.label("dynamic_zero")
+    a.branch(0x04, 6, 0, "dynamic_zero_done")
+    a.emit(_i(0x28, 5, 0, 0))
+    a.emit(_i(0x09, 5, 5, 1))
+    a.emit(_i(0x09, 6, 6, -1))
+    a.branch(0x05, 6, 0, "dynamic_zero")
+    a.label("dynamic_zero_done")
+    a.emit(_i(0x09, 15, 5, 8))
+    a.emit(_i(0x23, 8, 2, 0))    # v0 = *root
+    a.emit(_r(0, 0, 3, 0, 0x21)) # v1 = actual count
+    a.label("dynamic_node")
+    a.branch(0x04, 2, 0, "dynamic_done")
+    a.emit(_r(3, 11, 25, 0, 0x2B)) # v1 < maximum
+    a.branch(0x05, 25, 0, "dynamic_node_valid")
+    a.emit(_i(0x2B, 15, 0, 4))   # non-null remainder was truncated
+    a.branch(0x04, 0, 0, "dynamic_done")
+    a.label("dynamic_node_valid")
+    a.emit(_i(0x0C, 2, 25, 3))   # target must be word aligned
+    a.branch(0x05, 25, 0, "dynamic_bad")
+    _load32(a, 25, EE_RAM_START)
+    a.emit(_r(2, 25, 25, 0, 0x2B))
+    a.branch(0x05, 25, 0, "dynamic_bad")
+    a.emit(_r(2, 10, 25, 0, 0x21)) # node end
+    _load32(a, 4, EE_RAM_END)
+    a.emit(_r(4, 25, 25, 0, 0x2B))
+    a.branch(0x05, 25, 0, "dynamic_bad")
+    a.emit(_r(2, 0, 4, 0, 0x21)) # a0 = node source
+    a.emit(_r(10, 0, 6, 0, 0x21)) # a2 = node size
+    _copy_bytes(a, 4, 5, 6, "dynamic_copy_node")
+    a.emit(_i(0x09, 0, 25, -1))
+    a.emit(_r(13, 25, 25, 0, 0x23))
+    a.branch(0x04, 25, 0, "dynamic_no_child")
+    a.emit(_r(2, 13, 4, 0, 0x21))
+    a.emit(_i(0x23, 4, 4, 0))    # a0 = *child pointer
+    a.branch(0x04, 4, 0, "dynamic_no_child")
+    a.emit(_i(0x0C, 4, 25, 3))
+    a.branch(0x05, 25, 0, "dynamic_bad_child")
+    _load32(a, 25, EE_RAM_START)
+    a.emit(_r(4, 25, 25, 0, 0x2B))
+    a.branch(0x05, 25, 0, "dynamic_bad_child")
+    a.emit(_r(4, 14, 25, 0, 0x21))
+    _load32(a, 8, EE_RAM_END)
+    a.emit(_r(8, 25, 25, 0, 0x2B))
+    a.branch(0x05, 25, 0, "dynamic_bad_child")
+    a.emit(_r(14, 0, 6, 0, 0x21))
+    _copy_bytes(a, 4, 5, 6, "dynamic_copy_child")
+    a.branch(0x04, 0, 0, "dynamic_after_child")
+    a.label("dynamic_bad_child")
+    a.emit(_i(0x2B, 15, 0, 4))
+    a.label("dynamic_no_child")
+    a.emit(_r(5, 14, 5, 0, 0x21))
+    a.label("dynamic_after_child")
+    a.emit(_i(0x09, 3, 3, 1))
+    a.emit(_i(0x2B, 15, 3, 0))
+    a.emit(_i(0x09, 0, 25, -1))
+    a.emit(_r(12, 25, 25, 0, 0x23))
+    a.branch(0x04, 25, 0, "dynamic_done")
+    a.emit(_r(2, 12, 4, 0, 0x21))
+    a.emit(_i(0x23, 4, 2, 0))
+    a.branch(0x04, 0, 0, "dynamic_node")
+    a.label("dynamic_bad")
+    a.emit(_i(0x2B, 15, 0, 4))
+    a.label("dynamic_done")
+    a.emit(_r(15, 7, 15, 0, 0x21)) # next reserved output block
+    a.emit(_i(0x09, 24, 24, 28))
+    a.emit(_i(0x09, 9, 9, -1))
+    a.branch(0x05, 9, 0, "dynamic_descriptor")
     a.label("publish")
     _load32(a, 14, RING_BASE)
     a.emit(_i(0x23, 14, 15, 0))
@@ -236,12 +339,39 @@ def ensure(pine):
 
 
 
-def configure(pine, ranges):
-    """Install range descriptors and reset the ring; ranges are (EE addr,size)."""
+def configure(pine, ranges, dynamic_descriptors=()):
+    """Install static ranges and same-frame pointer/list descriptors."""
     ensure(pine)
     if not ranges or len(ranges) > MAX_DESCRIPTORS:
-        raise ValueError(f"frame hook needs 1..{MAX_DESCRIPTORS} ranges")
-    payload_size = sum(size for _, size in ranges)
+        raise ValueError(f"frame hook needs 1..{MAX_DESCRIPTORS} direct ranges")
+    dynamic = [dict(spec) for spec in dynamic_descriptors]
+    if any(spec["max_count"] <= 0 or spec["size"] <= 0
+           for spec in dynamic):
+        raise ValueError("dynamic snapshots need positive sizes and counts")
+    for spec in dynamic:
+        size = spec["size"]
+        count = spec["max_count"]
+        child_size = spec.get("child_size", 0)
+        next_offset = spec.get("next_offset", 0xFFFFFFFF)
+        child_offset = spec.get("child_offset", 0xFFFFFFFF)
+        if (not 0x00100000 <= spec["root"] < 0x02000000
+                or spec["root"] & 3
+                or size >= 0x8000 or child_size >= 0x8000
+                or count >= 0x8000
+                or (next_offset != 0xFFFFFFFF and not 0 <= next_offset < 0x8000)
+                or (child_offset != 0xFFFFFFFF and not 0 <= child_offset < 0x8000)):
+            raise ValueError(f"invalid dynamic snapshot descriptor: {spec}")
+        spec["child_size"] = child_size
+        spec["next_offset"] = next_offset
+        spec["child_offset"] = child_offset
+        spec["output_size"] = 8 + count * (size + child_size)
+    config_bytes = (16 + 8 * len(ranges) + 4
+                    + DYNAMIC_DESCRIPTOR_SIZE * len(dynamic))
+    if config_bytes > CONFIG_SIZE:
+        raise ValueError(
+            f"frame hook config is {config_bytes} bytes; window holds {CONFIG_SIZE}")
+    dynamic_size = sum(spec["output_size"] for spec in dynamic)
+    payload_size = sum(size for _, size in ranges) + dynamic_size
     slot_size = SNAPSHOT_HEADER_SIZE + payload_size
     ring_bytes = RING_END - RING_BASE - RING_HEADER_SIZE
     if slot_size > ring_bytes:
@@ -260,9 +390,23 @@ def configure(pine, ranges):
                    for off, value in ((0, addr), (4, size))]
     for start in range(0, len(descriptors), 256):
         _write_ops(pine, descriptors[start:start + 256])
+    dyn_base = CONFIG_BASE + 16 + 8 * len(ranges)
+    dynamic_ops = [(WRITE32, dyn_base, "<I", len(dynamic))]
+    for index, spec in enumerate(dynamic):
+        fields = (spec["root"], spec["size"], spec["max_count"],
+                  spec["next_offset"], spec["child_offset"],
+                  spec["child_size"], spec["output_size"])
+        dynamic_ops.extend(
+            (WRITE32, dyn_base + 4 + index * DYNAMIC_DESCRIPTOR_SIZE + 4*word,
+             "<I", value & 0xFFFFFFFF)
+            for word, value in enumerate(fields)
+        )
+    for start in range(0, len(dynamic_ops), 256):
+        _write_ops(pine, dynamic_ops[start:start + 256])
     _write_ops(pine, [(WRITE32, CONFIG_BASE, "<I", len(ranges))])
     return {"capacity": capacity, "slot_size": slot_size,
-            "payload_size": payload_size, "cursor": 0, "overflow": 0}
+            "payload_size": payload_size, "dynamic_size": dynamic_size,
+            "dynamic_descriptors": dynamic, "cursor": 0, "overflow": 0}
 
 
 def read_next(pine, state, timeout=2.0):
@@ -295,13 +439,13 @@ def read_next(pine, state, timeout=2.0):
             state["overflow"] = overflow
             return {"done": done, "frame": frame_start, "timer_frame": timer_frame,
                     "head": head, "tail": tail, "overflow_delta": delta}, chunks
-        # Poll at 100 Hz rather than issuing a PINE round-trip every millisecond
-        # while waiting; the snapshot ring absorbs normal scheduling jitter.
         time.sleep(0.01)
     return None
 
 
-def configure_ranges(pine, ranges):
-    state = configure(pine, ranges)
+def configure_ranges(pine, ranges, dynamic_descriptors=()):
+    state = configure(pine, ranges, dynamic_descriptors)
     state["sizes"] = [size for _, size in ranges]
+    if state["dynamic_size"]:
+        state["sizes"].append(state["dynamic_size"])
     return state

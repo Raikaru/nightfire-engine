@@ -261,6 +261,7 @@ Drone& DroneSystem::spawn(SpawnInfo info) {
     d->pos = {info.feet[0], info.feet[1] + d->stand_height, info.feet[2]};
     d->source_view_room = world_.rooms().find(d->pos, world_.collision());
     d->source_view_center = d->pos;
+    d->source_view_cel_position = d->pos;
     d->smi.cur = d->smi.prev = d->smi.next = d->smi.saved = kStateGlobal;
     d->smi.entry_time = now();
 
@@ -456,11 +457,16 @@ void DroneSystem::after_tick(World& world, FrameTiming) {
     for (const auto& dp : drones_) {
         Drone& d = *dp;
         const Vec3 center = d.source_view_sphere_valid ? d.pos + d.source_view_center_offset : d.pos;
-        if (center[0] == d.source_view_center[0] && center[1] == d.source_view_center[1] &&
-            center[2] == d.source_view_center[2])
-            continue;
-        d.source_view_room = rooms.track(d.source_view_room, d.source_view_center, center, world.collision());
+        const bool sphere_unchanged = center[0] == d.source_view_center[0] &&
+                                      center[1] == d.source_view_center[1] &&
+                                      center[2] == d.source_view_center[2];
+        if (!sphere_unchanged) {
+            const Vec3& from = d.source_view_cell_uses_sphere ? d.source_view_center : d.source_view_cel_position;
+            const Vec3& to = d.source_view_cell_uses_sphere ? center : d.pos;
+            d.source_view_room = rooms.track(d.source_view_room, from, to, world.collision());
+        }
         d.source_view_center = center;
+        d.source_view_cel_position = d.pos;
     }
 }
 

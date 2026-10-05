@@ -721,6 +721,7 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
             const auto settings = raw_for(pad, "settings_raw", 0x158);
             PlayerSettings& ps = world.settings(int(s));
             ps.invert_look = byte_at(settings, 0) != 0;
+            ps.auto_aim = byte_at(settings, 2) != 0;
             ps.crouch_toggle = byte_at(settings, 4) != 0;
             ps.controller_style = std::int16_t(byte_at(settings, 0xE) | (byte_at(settings, 0xF) << 8));
             ps.auto_center = byte_at(settings, 7) != 0;
@@ -998,12 +999,15 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                     bot->drone->source_view_room = world.rooms().find(bot->drone->pos, world.collision());
                 }
                 bot->drone->source_view_sphere_valid = false;
+                bot->drone->source_view_cel_position = vec3_at(obj, 0x30);
                 if (uint_number(source.at("seed_version")) >= 5) {
                     const Vec3 source_center = vec3_at(obj, 0x80);
                     bot->drone->source_view_center_offset = source_center - bot->drone->pos;
                     bot->drone->source_view_radius = f32_at(obj, 0x8c);
                     bot->drone->source_view_sphere_valid = true;
                 }
+                bot->drone->source_view_cell_uses_sphere =
+                    bot->drone->source_view_sphere_valid && (u16_at(obj, 0xfa) & 0x80) != 0;
                 bot->drone->source_view_center = bot->drone->pos;
                 if (uint_number(source.at("seed_version")) >= 5)
                     bot->drone->source_view_center = vec3_at(obj, 0x80);
