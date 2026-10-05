@@ -16,7 +16,9 @@ using s8 = std::int8_t;
 using s16 = std::int16_t;
 using s32 = std::int32_t;
 using s64 = std::int64_t;
-using u128 = unsigned __int128;
+#if defined(__SIZEOF_INT128__)
+using u128 = unsigned __int128;  // interpreter-only (nf_ee is not built under MSVC)
+#endif
 
 // 128-bit register view (EE GPRs, VU0 VF registers, HI/LO). Element 0 is the least significant.
 union Reg128 {
