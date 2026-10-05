@@ -22,7 +22,7 @@ class BotSystem;
 /// {"frame":N,"elapsed":s,"total_elapsed":s,"time_limit":s,"time_left":s,
 ///  "mode":id,"map":id,"score_limit":n,"weapon_set":n,"state":phaseInt,
 ///  "state_code":0..6,"teams":[t0,t1],"assassin":slot,"target":slot,
-///  "golden_effect_ticks":n,"golden_target":slot,"rng":[x,y],
+///  "body_anim_sets_unseeded":bool,"golden_effect_ticks":n,"golden_target":slot,"rng":[x,y],
 ///  "pad_all":[{"port":n,"w":word,"s":[rx,ry,lx,ly],"act":[40],"flg":[40]} x4],
 ///  "pl":[{"pos":[x,y,z],"yaw":r,"type":obj_type,"hp":f,"arm":f,"weap":id,"alive":b,
 ///        "pitch":f,"substate":n,"vel":[x,y,z],"fall_vel":[x,y,z],"weapon_slots":[...],
@@ -43,7 +43,7 @@ public:
     void close();
     bool is_open() const { return out_ != nullptr; }
     void dump(const World& world, const ArenaSystem& arena, const WeaponSystem& weapons, const PadInputs& pads,
-              bots::BotSystem* bots);
+              bots::BotSystem* bots, bool body_anim_sets_unseeded);
 
 private:
     std::FILE* out_ = nullptr;

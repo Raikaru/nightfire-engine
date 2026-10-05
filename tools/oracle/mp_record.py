@@ -405,6 +405,7 @@ def anim_layer_rows(bytag, k, descriptor, prefix="anim"):
             "phase": frame if drive == 2 else None,
             "previous_frame": struct.unpack_from("<f", raw, 0x94)[0],
             "speed": struct.unpack_from("<f", raw, 0x98)[0],
+            "distance": struct.unpack_from("<f", raw, 0xB0)[0],
             "blend_time": blend_time,
             "blend_duration": blend_duration,
             "fade_progress": blend_progress,
@@ -1174,7 +1175,7 @@ def main():
             resyncs += 1
         rec["projectiles_available"] = True
         if args.seedable:
-            rec["seed_version"] = 5
+            rec["seed_version"] = 6
             rec["state_complete"] = False
         if args.seedable and "bot_goal_targets" not in transition_missing:
             changed_goal_targets = []
@@ -1736,6 +1737,17 @@ def main():
                     f"pl[{slot}].weapon_anim_state" in rec["state_missing"]
                     for slot in range(n_humans))):
                 rec["state_missing"].append("weapon_anim_state")
+            incomplete_player_animation_slots = [
+                slot for slot, player in enumerate(rec["pl"][:n_humans])
+                if player is not None and (
+                    (player.get("body_anim", {}).get("layers_complete") is not True
+                     and f"pl[{slot}].body_anim" not in rec["state_missing"])
+                    or (player.get("anim_sets", {}).get("chain_complete") is not True
+                        and f"pl[{slot}].anim_sets" not in rec["state_missing"])
+                )
+            ]
+            if incomplete_player_animation_slots:
+                rec["state_missing"].append("player_animation_state")
             incomplete_animation_slots = [
                 slot for slot, player in enumerate(rec["pl"][4:8], 4)
                 if player is not None

@@ -2599,9 +2599,11 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                   u32 trace_frame, int trace_slot, bool trace_rng,
                   const std::vector<int>& give_weapons,
                   int watch_drone_anim_slot, u32 watch_drone_frame,
-                  bool game_flow) {
+                  bool game_flow, bool sample_current_frame) {
     if (state.empty() || rows < 1)
         throw std::runtime_error("mp-oracle needs --state <p2s> and --rows N");
+    if (sample_current_frame && game_flow)
+        throw std::runtime_error("--sample-current-frame requires --no-game-flow");
     if ((trace_frame == 0) != (trace_slot == -1)
         || (trace_frame != 0 && (trace_slot < 4 || trace_slot > 7))
         || (trace_frame != 0 && (watch_human_hp_slot >= 0 || trace_rng)))
@@ -2979,7 +2981,8 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
     write_u32(1); // stream version
     write_u32(u32(rows));
     write_u32(kRamSize);
-    snapshot();   // P2S state is the first emitted source frame.
+    if (!sample_current_frame)
+        snapshot();   // Emit the saved P2S frame unless sampling its pending Game_Run.
 
     const u32 entry = m.addr(game_flow ? "GameFlow_Main__Fv" : "Game_Run__Fv");
     struct RngFunction {
@@ -3031,12 +3034,13 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
             }
         });
     }
-    for (int row = 1; row < rows; ++row) {
+    for (int row = sample_current_frame ? 0 : 1; row < rows; ++row) {
+        const bool current_sample = sample_current_frame && row == 0;
         const u32 before = m.mem.read<u32>(kFrameStart);
         const u32 timer_before = m.mem.read<u32>(kFrame);
-        const u32 next_frame = before + 1;
-        const u32 next_timer_frame = timer_before + 1;
-        if (!game_flow) {
+        const u32 next_frame = before + (current_sample ? 0u : 1u);
+        const u32 next_timer_frame = timer_before + (current_sample ? 0u : 1u);
+        if (!game_flow && !current_sample) {
             const u32 frame_rate_int = m.mem.read<u32>(m.addr("FRAME_RATE_INT"));
             if (!frame_rate_int)
                 throw std::runtime_error("FRAME_RATE_INT is zero");
@@ -3047,7 +3051,7 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                              m.mem.read<u32>(kFrameAccumulator)
                                  + video_frame_rate / frame_rate_int);
         }
-        const auto events = pads.find(before + 1);
+        const auto events = pads.find(current_sample ? before : before + 1);
         if (events != pads.end()) {
             for (const OraclePad& event : events->second) {
                 const u32 address = kTslot0 + event.port * kTslotStride + kPadInput;
@@ -3091,7 +3095,8 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                     vt, source.w[0], source.w[1], source.w[2], source.w[3],
                     u32(m.cpu.r[29].d[0]), u32(m.cpu.r[31].d[0]));
             });
-            m.set_instruction_observer(
+            if (next_frame == trace_frame) {
+                m.set_instruction_observer(
                 [&](const nf::ee::Cpu& cpu, u32 pc, u32 inst) {
                     if (!trace_active) {
                         if (pc != control || cpu.r[4].w[0] != object) return;
@@ -3140,19 +3145,20 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                     }
                     std::fputc('\n', stderr);
                 });
+            }
         }
         try {
             m.call_keep(entry, {}, 200'000'000);
         } catch (const std::exception& e) {
             m.set_instruction_observer({});
             m.mem.set_watch({});
-            std::fprintf(stderr, "%s trap at %08x: %s\n",
-                         game_flow ? "GameFlow_Main" : "Game_Run",
+            std::fprintf(stderr, "%s frame=%u trap at %08x: %s\n",
+                         game_flow ? "GameFlow_Main" : "Game_Run", next_frame,
                          m.cpu.cur_pc, e.what());
             std::fputs(m.disasm_range(m.cpu.cur_pc - 16, 8).c_str(), stderr);
         }
         if (!trace_rng) m.set_instruction_observer({});
-        if (next_frame == trace_frame) {
+        if (trace_frame != 0 && next_frame == trace_frame) {
             m.mem.set_watch({});
             if (!trace_done)
                 throw std::runtime_error("trace slot never entered Drone_Control");
@@ -3252,7 +3258,7 @@ int main(int argc, char** argv) {
             int rows = 0, watch_human_hp_slot = -1, trace_slot = -1;
             int watch_drone_anim_slot = -1;
             u32 trace_frame = 0, watch_drone_frame = 0;
-            bool trace_rng = false, game_flow = true;
+            bool trace_rng = false, game_flow = true, sample_current_frame = false;
             std::vector<int> give_weapons;
             for (size_t j = 2; j < av.size(); j++) {
                 if (av[j] == "--state" && j + 1 < av.size()) state = av[++j];
@@ -3273,16 +3279,18 @@ int main(int argc, char** argv) {
                 else if (av[j] == "--trace-rng") trace_rng = true;
                 else if (av[j] == "--game-flow") game_flow = true;
                 else if (av[j] == "--no-game-flow") game_flow = false;
+                else if (av[j] == "--sample-current-frame") sample_current_frame = true;
                 else throw std::runtime_error(
                     "mp-oracle wants --state <p2s> --rows N [--pads file] "
                     "[--give-weapon ID ...] [--watch-human-hp 0..3] "
                     "[--watch-drone-anim 4..7 --watch-drone-frame N] "
                     "[--trace-frame N --trace-slot 4..7] [--trace-rng] "
-                    "[--no-game-flow]");
+                    "[--no-game-flow] [--sample-current-frame]");
             }
             return cmd_mp_oracle(elf, state, rows, pads, watch_human_hp_slot,
                                  trace_frame, trace_slot, trace_rng, give_weapons,
-                                 watch_drone_anim_slot, watch_drone_frame, game_flow);
+                                 watch_drone_anim_slot, watch_drone_frame, game_flow,
+                                 sample_current_frame);
         }
         if (cmd == "call") {
             if (av.size() < 3) {

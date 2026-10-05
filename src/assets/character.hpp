@@ -263,6 +263,7 @@ struct AnimSet {
     std::string name;                  // symbol name without the "AnimSet_" prefix ("Handgun", "Rifle_SP", ...)
     std::vector<std::uint32_t> ladder;
     std::vector<std::uint32_t> strafe;
+    std::uint32_t source_address = 0;  // ACTION.ELF address of AnimSet_<name>, used by MP seed restoration.
 };
 std::vector<AnimSet> read_anim_sets(const Elf32& action_elf);
 
@@ -353,11 +354,13 @@ public:
         float frame = 1, previous_frame = 1, speed = 1, blend_time = 1, blend_duration = 1, weight = 0;
         float pair_weight = 0, distance = 0, distance_step = 0;
         int direction = 1, drive_type = 0;
-        bool loop = true, ended = false, have_root = false, fresh = false, strafe = false;
+        bool loop = true, ended = false, have_root = false, fresh = false, strafe = false, anim_set = false;
         Vec3 previous_root{}, root_delta{};
     };
     // Restores source animation cursors and sampled-root predecessors between ticks.
     bool restore_layers(const std::vector<LayerSnapshot>& layers, float distance_accumulator);
+    void restore_anim_set_context(const AnimSet* set, float scale, float phase_base, int set_index,
+                                  int cooldown, int strafe_side);
     std::vector<LayerInfo> layer_infos() const;
     template <typename F>
     void for_each_layer_info(F&& visitor) const {

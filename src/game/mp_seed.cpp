@@ -1,5 +1,6 @@
 #include "game/mp_seed.hpp"
 
+#include <cstring>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -25,9 +26,9 @@
 #include "game/bot_system.hpp"
 #include "game/nfgame_mp.hpp"
 #include "game/player.hpp"
+#include "assets/character.hpp"
+#include "game/player_anim.hpp"
 #include "game/projectiles.hpp"
-#include "game/weapons.hpp"
-#include "game/world.hpp"
 
 namespace nf {
 namespace {
@@ -342,6 +343,88 @@ void restore_weapon_anim_layers(PlayerWeapons& weapon, const Json& anim) {
     weapon.anim_reverse = weapon.anim_state == WeaponAnim::AimOut;
     weapon.reverse_frame = weapon.anim_reverse ? weapon.anim_frame_prev : 0.0f;
 }
+void restore_player_animator(PlayerAnimator& animator, const Json& player, int current_weapon, int category) {
+    const Json& anim = player.at("body_anim");
+    if (!anim.at("layers_complete").boolean() ||
+        anim.at("layer_order").string() != "oldest_to_newest")
+        throw std::runtime_error("MP seed: human body animation-layer snapshot is incomplete");
+    const auto& rows = anim.at("layers").array();
+    if (rows.size() > 64) throw std::runtime_error("MP seed: too many human body animation layers");
+
+    std::vector<std::vector<std::byte>> raw_layers;
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> layer_nodes;
+    raw_layers.reserve(rows.size());
+    layer_nodes.reserve(rows.size());
+    for (const Json& row : rows) {
+        raw_layers.push_back(raw_for(row, "raw", 0xc0));
+        layer_nodes.emplace_back(uint_number(row.at("ptr")), u32_at(raw_layers.back(), 0x84));
+    }
+
+    const Json& set_list = player.at("anim_sets");
+    if (!set_list.at("chain_complete").boolean())
+        throw std::runtime_error("MP seed: human AnimSet chain is incomplete");
+    const auto& set_nodes = set_list.at("nodes").array();
+    if (set_nodes.size() > 4) throw std::runtime_error("MP seed: too many human AnimSet nodes");
+    std::vector<std::array<std::uint8_t, 0x34>> anim_sets;
+    anim_sets.reserve(set_nodes.size());
+    for (const Json& node : set_nodes) {
+        const auto raw = raw_for(node, "raw", 0x34);
+        std::array<std::uint8_t, 0x34> bytes{};
+        std::memcpy(bytes.data(), raw.data(), bytes.size());
+        anim_sets.push_back(bytes);
+    }
+
+    std::vector<CharacterInstance::LayerSnapshot> layers;
+    layers.reserve(rows.size());
+    const float distance_step = float_number(anim.at("distance_step"));
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        const Json& row = rows[i];
+        const auto& raw = raw_layers[i];
+        CharacterInstance::LayerSnapshot layer;
+        layer.script = uint_number(row.at("script_id"));
+        layer.flags = uint_number(row.at("flags"));
+        layer.id = u32_at(raw, 0x84);
+        layer.frame = float_number(row.at("frame"));
+        layer.previous_frame = float_number(row.at("previous_frame"));
+        layer.speed = float_number(row.at("speed"));
+        layer.blend_time = float_number(row.at("blend_time"));
+        layer.blend_duration = float_number(row.at("blend_duration"));
+        const std::string_view fade = row.at("fade_direction").string();
+        layer.direction = fade == "in" ? 1 : fade == "out" ? -1 : 0;
+        layer.drive_type = int_number(row.at("drive_type"));
+        if (layer.drive_type == 2) {
+            const std::uint32_t partner = uint_number(row.at("phase_partner_ptr"));
+            for (const auto& [address, id] : layer_nodes)
+                if (address == partner) layer.primary = id;
+            if (partner && layer.primary == 0)
+                throw std::runtime_error("MP seed: phase partner is outside the human body animation list");
+        }
+        layer.pair_weight = float_number(row.at("pair_weight"));
+        if (const Json* distance = row.find("distance")) layer.distance = float_number(*distance);
+        layer.distance_step = distance_step;
+        layer.fresh = row.at("fresh").boolean();
+        layer.strafe = row.at("strafe").boolean();
+        const bool active = i + 1 == rows.size();
+        const bool stopped = row.at("deleting").boolean();
+        layer.loop = active && !stopped;
+        layer.ended = !active || stopped;
+        if (const Json* sequence = row.find("sequence"); sequence && !sequence->is_null()) {
+            layer.have_root = sequence->at("have_root").boolean();
+            layer.previous_root = {float_number(index(sequence->at("previous_root"), 0)),
+                                   float_number(index(sequence->at("previous_root"), 1)),
+                                   float_number(index(sequence->at("previous_root"), 2))};
+            layer.root_delta = {float_number(index(sequence->at("last_root_delta"), 0)),
+                                float_number(index(sequence->at("last_root_delta"), 1)),
+                                float_number(index(sequence->at("last_root_delta"), 2))};
+        }
+        layers.push_back(layer);
+    }
+    const auto object = raw_for(player, "obj_raw", 0x100);
+    const bool crouched = s16_at(object, 0xf6) == int(SubState::Crouch);
+    if (!animator.restore_source_state(current_weapon, category, crouched, anim_sets, layers,
+                                       float_number(anim.at("distance_accumulator"))))
+        throw std::runtime_error("MP seed: unsupported human body animation state");
+}
 }  // namespace
 constexpr std::uint32_t kMpPickupsAddress = 0x2a4b50;
 constexpr std::uint32_t kMpPickupStride = 0xa0;
@@ -358,8 +441,8 @@ struct MpSeedImporter::Impl {
         if (it == rows.end()) throw std::runtime_error("MP seed: no recorded frame " + std::to_string(frame));
         if (!it->second.at("seed_ready").boolean()) throw std::runtime_error("MP seed: frame " + std::to_string(frame) + " is not seed_ready");
         const std::uint32_t version = uint_number(it->second.at("seed_version"));
-        if (version < 2 || version > 5)
-            throw std::runtime_error("MP seed: requires recorder schema v2 through v5");
+        if (version < 2 || version > 6)
+            throw std::runtime_error("MP seed: requires recorder schema v2 through v6");
         if (const Json* ok = it->second.find("projectiles_available"); !ok || !ok->boolean()) throw std::runtime_error("MP seed: projectile snapshot is unavailable at frame " + std::to_string(frame));
         const auto& missing = it->second.at("state_missing").array();
         for (const Json& field : missing) {
@@ -544,6 +627,11 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                       (session.arena().settings().mode == mp_mode::kTopAgent &&
                        state.deaths >= session.arena().settings().score_limit)));
         state.dead = life_state == 2 || life_state == 3;
+        if (s < 4 && life_state == 2) {
+            // Player_HandleDeath compares GameState+0x34 with obj+0xEC, not MPG+0x24.
+            state.death_frame = u32_at(object, 0xec);
+            state.has_death_frame = true;
+        }
         if (s < 4) {
             Player* player = world.player(int(s));
             if (!player) throw std::runtime_error("MP seed: human roster does not exist in engine session");
@@ -981,5 +1069,28 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
         }
     }
 }
+void MpSeedImporter::restore_player_animation(std::uint64_t frame, std::size_t slot, PlayerAnimator& animator,
+                                              int current_weapon, int category) const {
+    const Json& players = impl_->row(frame).at("pl");
+    if (slot >= players.array().size() || players.array()[slot].is_null()) return;
+    const Json& player = players.array()[slot];
+    if (!player.find("body_anim") || !player.find("anim_sets")) {
+        // Legacy captures omit the body state. Keep the animator's own PlayerAnimSetInit/update lifecycle; nfgame_mp
+        // advances it after this call and changes its stance/weapon from the current engine state.
+        return;
+    }
+    restore_player_animator(animator, player, current_weapon, category);
+}
+
+bool MpSeedImporter::body_anim_sets_unseeded(std::uint64_t frame, std::size_t humans) const {
+    const auto& players = impl_->row(frame).at("pl").array();
+    for (std::size_t slot = 0; slot < humans; ++slot) {
+        if (slot >= players.size() || players[slot].is_null() ||
+            !players[slot].find("body_anim") || !players[slot].find("anim_sets"))
+            return true;
+    }
+    return false;
+}
+
 
 }  // namespace nf

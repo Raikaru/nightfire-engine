@@ -68,20 +68,21 @@ void MpTraceSink::close() {
 }
 
 void MpTraceSink::dump(const World& world, const ArenaSystem& arena, const WeaponSystem& weapons,
-                       const PadInputs& pads, bots::BotSystem* bots) {
+                       const PadInputs& pads, bots::BotSystem* bots, bool body_anim_sets_unseeded) {
     if (!out_) return;
     const auto team_score = arena.team_score();
     const ArenaSettings& settings = arena.settings();
     std::fprintf(out_, "{\"frame\":%llu,\"timer_frame\":%llu,\"elapsed\":%.3f,\"total_elapsed\":%.3f,\"time_limit\":%.3f,"
                        "\"time_left\":%.3f,\"mode\":%u,\"map\":%u,\"score_limit\":%d,\"weapon_set\":%d,"
                        "\"state\":%d,\"state_code\":%d,\"teams\":[%.1f,%.1f],"
-                       "\"assassin\":%d,\"target\":%d,\"golden_effect_ticks\":%.3f,\"golden_target\":%d,"
-                       "\"rng\":[%u,%u]",
+                       "\"assassin\":%d,\"target\":%d,\"body_anim_sets_unseeded\":%s,"
+                       "\"golden_effect_ticks\":%.3f,\"golden_target\":%d,\"rng\":[%u,%u]",
                  static_cast<unsigned long long>(world.frame()),
                  static_cast<unsigned long long>(world.timer_frame()), arena.elapsed(), arena.total_elapsed(),
                  settings.time_limit, arena.time_left(), settings.mode, settings.level_id, settings.score_limit,
                  settings.weapon_set, int(arena.phase()), arena.state_code(), team_score[0], team_score[1],
-                 arena.assassin().value_or(-1), arena.target().value_or(-1), arena.golden_effect_ticks(),
+                 arena.assassin().value_or(-1), arena.target().value_or(-1),
+                 body_anim_sets_unseeded ? "true" : "false", arena.golden_effect_ticks(),
                  arena.golden_target(), game_rng().seed_x(), game_rng().seed_y());
     std::fprintf(out_, ",\"pad_all\":[");
     for (int s = 0; s < 4; ++s) {

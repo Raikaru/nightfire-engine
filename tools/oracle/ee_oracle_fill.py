@@ -89,10 +89,10 @@ def _compare_rows(reference, generated, tolerance):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Generate dense EE MP rows between P2S checkpoints, "
-                    "then validate every overlapping PCSX2 row.")
+        description="Replay Game_Run between P2S checkpoints at mp_record's "
+                    "sample point, then validate every overlapping PCSX2 row.")
     parser.add_argument("checkpoints", help="mp_record checkpoint directory")
-    parser.add_argument("reference", help="PCSX2 mp_record v5 JSONL to validate against")
+    parser.add_argument("reference", help="PCSX2 mp_record v6 JSONL to validate against")
     parser.add_argument("out", help="write filled JSONL only if all overlaps match")
     parser.add_argument("--elf", default=str(pathlib.Path.home() / "Projects/nightfire-data/ps2/ACTION.ELF"))
     parser.add_argument("--nfmips", default="build/nfmips")
@@ -103,8 +103,6 @@ def main(argv=None):
                         help="print every mismatch, rather than the first per frame")
     parser.add_argument("--watch-human-hp", type=int, choices=range(4))
     parser.add_argument("--weapon-anim-raw", action="store_true")
-    parser.add_argument("--game-flow", dest="game_flow", action="store_true", default=True)
-    parser.add_argument("--no-game-flow", dest="game_flow", action="store_false")
     parser.add_argument("--trace-rng", action="store_true")
     parser.add_argument("--give-weapon", action="append", type=int, default=[])
     parser.add_argument("--timeout", type=float, default=1200.0,
@@ -150,8 +148,8 @@ def main(argv=None):
                     command += ["--watch-human-hp", str(args.watch_human_hp)]
                 if args.weapon_anim_raw:
                     command.append("--weapon-anim-raw")
-                if not args.game_flow:
-                    command.append("--no-game-flow")
+                command.append("--no-game-flow")
+                command.append("--sample-current-frame")
                 if args.trace_rng:
                     command.append("--trace-rng")
                 for weapon in args.give_weapon:
