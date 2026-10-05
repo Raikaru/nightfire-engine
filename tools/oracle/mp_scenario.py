@@ -16,9 +16,11 @@ every page entry, 8 s between moves (game at ~30 fps wall). Locked scenarios
 Ops, Yakuza) come up Playing:Yes once their config page is confirmed.
 
 Usage: mp_scenario.py --scenario 1 --map 0 --bots 3 --slot 12 [--shots dir]
-         [--settle 8] [--page-settle 10] [--press-ms 400] [--nav-ms 800] [--live-timeout 120]
-Use `--press-ms 2000` for confirm buttons on a slow EE interpreter. Menu
-navigation/back taps have their own shorter duration; increase `--nav-ms` if needed.
+         [--settle 8] [--page-settle 10] [--startup-settle 30]
+         [--press-ms 400] [--nav-ms 800] [--live-timeout 120]
+Use `--startup-settle` for a cold/slow title load and `--press-ms 2000` for
+confirm buttons on a slow EE interpreter. Menu navigation/back taps have their
+own shorter duration; increase `--nav-ms` if needed.
 """
 
 import argparse
@@ -79,6 +81,8 @@ def main():
     ap.add_argument("--page-settle", type=float, default=10.0,
                     help="seconds to wait after entering a menu page before confirming it")
     ap.add_argument("--load-slot", type=int, default=50)
+    ap.add_argument("--startup-settle", type=float, default=30.0,
+                    help="seconds to wait after loading the title-menu savestate")
     ap.add_argument("--live-timeout", type=float, default=120.0,
                     help="seconds to wait for the match player after loading")
     ap.add_argument("--spawn-stabilize", type=int, default=60,
@@ -114,7 +118,7 @@ def main():
     start = time.monotonic()
     while abs(pine.read32(A.GS_FRAME_START) - before) <= 20 and time.monotonic() - start < 4.0:
         time.sleep(0.05)
-    time.sleep(12.0)   # cold menus eat the first inputs; 6 s proved flaky 1/3
+    time.sleep(args.startup_settle)
     snap("01-main")
 
     vpad("press", "down", 400)
