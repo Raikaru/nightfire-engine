@@ -72,10 +72,12 @@ PINE savestate slot 50 is the live title/menu state used by `mp_scenario.py`; sl
 current `PCSX2` directory restores only the static title artwork (no active MP menu). Slot 2
 is the Skyrail arena spawn.
 
-`tools/oracle/mp_scenario.py` automates this path from slot 50 by default. For maps that are
-not committed by the wheel, `--direct-map-at-confirm` writes the selected map ID at
-`MPSettings+0x1A8` on Scenario Options/Confirm. On a slow EE interpreter, use
-`--press-ms 2000 --nav-ms 800`, and allow `--live-timeout` (default 120 s) for the level load.
+`tools/oracle/mp_scenario.py` automates this path from slot 50 by default. On a cold title
+load, the `--startup-settle` delay (30 s by default) allows the title menu to finish loading
+before inputs are sent. For maps that are not committed by the wheel,
+`--direct-map-at-confirm` writes the selected map ID at `MPSettings+0x1A8` on Scenario
+Options/Confirm. On a slow EE interpreter, use `--press-ms 2000 --nav-ms 800`, and allow
+`--live-timeout` (default 120 s) for the level load.
 
 ### Unlocking all missions (PINE, at the main menu)
 
@@ -878,10 +880,10 @@ Reproduce a setup and match-start savestate (example: Skyrail Arena, three
 bots) and record the running match:
 
 ```sh
-# Set this to a saved main-menu state (the current oracle-owned slot is 42).
-MENU_SLOT=42
+# Use the PINE title/menu state in slot 50.
+MENU_SLOT=50
 python3 tools/oracle/mp_scenario.py --scenario 1 --map 0 --bots 3 --slot 10 \
-  --load-slot "$MENU_SLOT" --shots ~/.cache/mp-oracle-tmp/shots/skyrail-arena
+  --load-slot "$MENU_SLOT" --startup-settle 30 --shots ~/.cache/mp-oracle-tmp/shots/skyrail-arena
 python3 tools/oracle/mp_record.py ~/.cache/mp-oracle-tmp/mp-skyrail-arena3bot.jsonl \
   --load-slot 10 --timeout 600
 python3 tools/oracle/mp_compare.py summary \
@@ -1165,6 +1167,17 @@ passes set it to 2 for selected objects. The host consumes the seeded counter
 at the animation gate, decrements after control, and refreshes visible bots
 after camera update using their source `obj+0x80` sphere center and `obj+0x8c`
 radius, not the collision capsule. `Drone+0x580` is not part of this gate.
+`View_AddObjects` marks normal visible objects; `View_AddForcedObjects` is a
+separate pass for objects whose `obj+0xf0` has `0x8000` set and `0x10` clear.
+Both passes honor `obj+0xf8`'s viewer mask, model presence, the object sphere
+and viewer-type restriction; normal objects also require visibility through
+their room's cell, while forced type-2 objects with radius above `0.5` are
+selected only when a straddled portal cell is visible. Seed restoration keeps
+the source model, display-mask, object-flag, object-type, and model-flag bytes
+so this host view pass applies the same predicates. In `--mp-seed-each`, camera
+and view selection are also refreshed immediately after restoring the source
+checkpoint, before the next `Game_Run`-equivalent tick, matching the source
+draw marker already present at that point in the recording.
 
 The recorder's bot-layer `effective_weight` is the raw `sAnimScript+0x9c`
 cache, distinct from blend time/duration at `+0xa8/+0xac`. `AnimFrameResolve`
