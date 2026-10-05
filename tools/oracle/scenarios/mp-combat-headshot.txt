@@ -1,16 +1,16 @@
 # mp_record.py --script. Provision a sniper (weapon 30) with ammo and use
-# --freeze-bot 5 --face-bot 5. Fire two upward (head-zone) attempts, then
-# return pitch to level for two torso shots. Capture at least 440 frames; the
-# sniper's 120-frame fire interval requires spacing the four single shots.
+# --freeze-bot 5 --face-bot 5. Use full upward stick for two head-zone shots,
+# then release it for 124 frames of auto-center before two level torso shots.
+# Capture at least 440 frames; the 120-frame interval separates the four shots.
 0 release
-4 axis RY -0.25
-18 axis RY -0.25
+4 axis RY -1.0
+18 axis RY -1.0
 24 down r1
 30 up r1
-144 axis RY -0.25
+144 axis RY -1.0
 154 down r1
 160 up r1
-274 axis RY 0
+160 axis RY 0
 284 down r1
 290 up r1
 404 axis RY 0

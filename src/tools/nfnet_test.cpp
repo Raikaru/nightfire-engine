@@ -55,18 +55,29 @@ int main() {
     data_hash[7] = 0x3c;
     std::array<std::uint8_t, kDataHashBytes> decoded_hash{};
     std::string name, password;
-    std::uint8_t local_players = 0;
-    ok &= check(decode_hello(encode_hello(data_hash, "Nightfire", "secret", 2), decoded_hash, name, password,
-                             local_players),
+    std::uint8_t local_players = 0, auto_aim_mask = 0;
+    ok &= check(decode_hello(encode_hello(data_hash, "Nightfire", "secret", 2, 0x02), decoded_hash, name, password,
+                             local_players, auto_aim_mask),
                 "two-player hello decode");
-    ok &= check(decoded_hash == data_hash && name == "Nightfire" && password == "secret" && local_players == 2,
+    ok &= check(decoded_hash == data_hash && name == "Nightfire" && password == "secret" && local_players == 2 &&
+                    auto_aim_mask == 0x02,
                 "two-player hello round-trip");
-    auto malformed_hello = encode_hello(data_hash, "x", "secret", 2);
+    auto malformed_hello = encode_hello(data_hash, "x", "secret", 2, 0x01);
     malformed_hello.push_back(0);
-    ok &= check(!decode_hello(malformed_hello, decoded_hash, name, password, local_players),
+    ok &= check(!decode_hello(malformed_hello, decoded_hash, name, password, local_players, auto_aim_mask),
                 "malformed hello rejection");
-    ok &= check(encode_hello(data_hash, "x", std::string(kMaxPasswordBytes + 1, 'x')).empty(),
+    ok &= check(encode_hello(data_hash, "x", std::string(kMaxPasswordBytes + 1, 'x'), 1, 0).empty(),
                 "oversized password rejected");
+    ok &= check(encode_hello(data_hash, "x", "", 1, 0x02).empty(),
+                "hello encoder rejects auto-aim bits beyond local players");
+    auto invalid_auto_aim_hello = encode_hello(data_hash, "x", "", 2, 0x01);
+    invalid_auto_aim_hello[kDataHashBytes + 3] = 0x04;
+    ok &= check(!decode_hello(invalid_auto_aim_hello, decoded_hash, name, password, local_players, auto_aim_mask),
+                "hello decoder rejects auto-aim bits beyond local players");
+    ok &= check(decode_hello(encode_hello(data_hash, "x", "", 4, 0x0f), decoded_hash, name, password,
+                             local_players, auto_aim_mask) &&
+                    local_players == 4 && auto_aim_mask == 0x0f,
+                "four-player hello accepts all per-player auto-aim bits");
 
     ServerInfo info{0x12345678, "Nightfire Local", "07000024.bin", 2, 3, 16, true};
     info.match_revision = 0x8877665544332211ull;
@@ -425,6 +436,10 @@ int main() {
     ok &= check(round_trip && round_trip->payload == packet.payload && round_trip->header.sequence == 5, "packet round-trip");
     datagram[0] ^= 0xff;
     ok &= check(!decode(datagram), "bad magic rejection");
+    datagram = encode(packet);
+    datagram[4] = 7;
+    datagram[5] = 0;
+    ok &= check(!decode(datagram), "protocol-7 packet rejection");
 
     const auto now = std::chrono::steady_clock::now();
     Reliability sender, receiver;

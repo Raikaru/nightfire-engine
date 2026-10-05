@@ -249,44 +249,42 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) {
 }
 
 std::vector<std::uint8_t> encode_hello(const std::array<std::uint8_t, kDataHashBytes>& hash, std::string_view name,
-                                       std::string_view password, std::uint8_t local_players) {
+                                       std::string_view password, std::uint8_t local_players,
+                                       std::uint8_t auto_aim_mask) {
     if (password.size() > kMaxPasswordBytes || local_players == 0 || local_players > kMaxLocalPlayers) return {};
+    const std::uint8_t allowed_auto_aim_mask = std::uint8_t((1u << local_players) - 1u);
+    if ((auto_aim_mask & std::uint8_t(~allowed_auto_aim_mask)) != 0) return {};
     const auto n = std::min(name.size(), kMaxNameBytes);
     std::vector<std::uint8_t> out(hash.begin(), hash.end());
     out.push_back(std::uint8_t(n));
     out.push_back(std::uint8_t(password.size()));
     out.push_back(local_players);
+    out.push_back(auto_aim_mask);
     out.insert(out.end(), name.begin(), name.begin() + std::ptrdiff_t(n));
     out.insert(out.end(), password.begin(), password.end());
     return out;
 }
 
 bool decode_hello(std::span<const std::uint8_t> payload, std::array<std::uint8_t, kDataHashBytes>& hash,
-                  std::string& name, std::string& password, std::uint8_t& local_players) {
-    if (payload.size() < kDataHashBytes + 3 || payload[kDataHashBytes] > kMaxNameBytes ||
+                  std::string& name, std::string& password, std::uint8_t& local_players,
+                  std::uint8_t& auto_aim_mask) {
+    if (payload.size() < kDataHashBytes + 4 || payload[kDataHashBytes] > kMaxNameBytes ||
         payload[kDataHashBytes + 1] > kMaxPasswordBytes ||
         payload[kDataHashBytes + 2] == 0 || payload[kDataHashBytes + 2] > kMaxLocalPlayers ||
-        payload.size() != kDataHashBytes + 3 + payload[kDataHashBytes] + payload[kDataHashBytes + 1])
+        payload.size() != kDataHashBytes + 4 + payload[kDataHashBytes] + payload[kDataHashBytes + 1])
         return false;
+    const std::uint8_t decoded_local_players = payload[kDataHashBytes + 2];
+    const std::uint8_t decoded_auto_aim_mask = payload[kDataHashBytes + 3];
+    const std::uint8_t allowed_auto_aim_mask = std::uint8_t((1u << decoded_local_players) - 1u);
+    if ((decoded_auto_aim_mask & std::uint8_t(~allowed_auto_aim_mask)) != 0) return false;
     std::copy_n(payload.begin(), kDataHashBytes, hash.begin());
     const std::size_t name_size = payload[kDataHashBytes];
     const std::size_t password_size = payload[kDataHashBytes + 1];
-    local_players = payload[kDataHashBytes + 2];
-    name.assign(reinterpret_cast<const char*>(payload.data() + kDataHashBytes + 3), name_size);
-    password.assign(reinterpret_cast<const char*>(payload.data() + kDataHashBytes + 3 + name_size), password_size);
+    local_players = decoded_local_players;
+    auto_aim_mask = decoded_auto_aim_mask;
+    name.assign(reinterpret_cast<const char*>(payload.data() + kDataHashBytes + 4), name_size);
+    password.assign(reinterpret_cast<const char*>(payload.data() + kDataHashBytes + 4 + name_size), password_size);
     return true;
-}
-
-bool decode_hello(std::span<const std::uint8_t> payload, std::array<std::uint8_t, kDataHashBytes>& hash,
-                  std::string& name, std::string& password) {
-    std::uint8_t local_players = 1;
-    return decode_hello(payload, hash, name, password, local_players);
-}
-
-bool decode_hello(std::span<const std::uint8_t> payload, std::array<std::uint8_t, kDataHashBytes>& hash,
-                  std::string& name) {
-    std::string password;
-    return decode_hello(payload, hash, name, password);
 }
 
 std::vector<std::uint8_t> encode_server_query(std::uint32_t query_id) {

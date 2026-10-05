@@ -37,6 +37,7 @@ struct AppConfig {
     // Session options (P_CNOPTIONS radios, PlayerSetting bytes; see GameOptions).
     bool vibration = false;
     bool auto_aim = false;
+    bool mp_auto_aim = false;  // P_CNMPOPTIONS "Auto Aim" (PlayerSetting[2]); fresh profiles have it off
     bool crosshairs = true;
     bool crouch_toggle = true;
     bool manual_aim = false;

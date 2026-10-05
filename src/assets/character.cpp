@@ -1087,7 +1087,7 @@ void CharacterInstance::tick_layer(Layer& l, float mul, bool body) {
             break;
         }
     }
-    // AnimScriptEnd sets the stopped flag only when its end frame is strictly less than the advanced frame.
+    // AnimScriptEnd only recognizes a crossed boundary; an exact end-frame value remains active this tick.
     const std::int16_t end_frame = l.script ? std::int16_t(l.script->length) : std::int16_t(l.length);
     const bool reached_end = !l.loop && float(end_frame) < f;
     if (f < 1.0f || f > l.length || reached_end) {

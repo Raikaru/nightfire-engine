@@ -42,6 +42,7 @@ struct MpDirect {
     long frames = -1;  // headless ticks (< 0 = interactive)
     std::string shot;
     std::array<std::string, 4> inputs;
+    std::array<bool, 4> auto_aim{true, true, true, true};  // per local player; player 1 comes from the profile
     int give = -1;  // debug equip (nightfire --give ID): give + select slot 0 at start
     // The P_MPJOIN device claims (FrontendResult::slot_devices); all empty = open_local_pads(count) enumeration.
     std::array<SlotDevice, 4> devices{};

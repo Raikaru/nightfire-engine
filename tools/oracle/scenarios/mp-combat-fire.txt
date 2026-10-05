@@ -4,13 +4,13 @@
 # Brief turn during an off-axis hip-fire, counter-turn to the target, then fire
 # aligned and repeat while holding aim (L1) to compare hip/aim behavior.
 0 release
-2 axis LX 0.15
+2 axis LX 0.4
 10 down r1
 22 up r1
-24 axis LX -0.15
-32 release
-40 down r1
-54 up r1
+24 axis LX -0.4
+46 release
+54 down r1
+58 up r1
 62 down l1
 66 down r1
 86 up r1

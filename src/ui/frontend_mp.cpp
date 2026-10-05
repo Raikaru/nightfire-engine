@@ -810,6 +810,7 @@ bool Frontend::Impl::p_mp_confirm(ui::Control&, const ui::Msg& m) {
     if (m.type == kAccept) {
         FrontendResult r;
         MpLaunch launch = mp->start();
+        launch.auto_aim[0] = options.mp_auto_aim;
         r.action = listen_host ? FrontendResult::Action::StartListenServer : FrontendResult::Action::StartMultiplayer;
         r.level_bin = launch.level_bin;
         r.level_id = launch.settings.level_id;

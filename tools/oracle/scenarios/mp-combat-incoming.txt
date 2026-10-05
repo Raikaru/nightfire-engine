@@ -7,6 +7,6 @@
 26 up l2
 80 down l2
 82 up l2
-120 axis LX 0.25
-150 axis LX -0.25
+120 axis LX 0.4
+150 axis LX -0.4
 180 release

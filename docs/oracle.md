@@ -240,6 +240,17 @@ encode the flash-bang hold/fade; the color byte is not an intensity value.
 These offsets are derived from ACTION.ELF pseudocode/disassembly and are not
 yet live-probed; bot hit-zone and flash fields are not mapped.
 
+Every row also stores the live `MPSettings+0x1A4` scenario mask as the
+top-level integer `mode` (for example Arena `0x00000001`, Team Arena
+`0x20000002`, CTF `0x20000004`, Demolition `0x20000040`). Include this
+eight-digit hex value in filenames so captures cannot be mistaken for another
+mode.
+
+For controlled MP autoaim scenarios, add `--autoaim 0` or `--autoaim 1`; after
+the P2S and pointer resolution, the recorder sets P0 `PlayerSetting+2` immediately
+before sampling. Verify `pad_all[0].settings_raw[4:6]` is `00` or `01` on the
+first row and that it remains stable through the capture.
+
 Use `python3 tools/oracle/mp_record.py OUT.jsonl --load-slot SLOT --seedable
 --frames N` for a seedable per-logic-frame capture. Seedable reads come from
 the end-of-`Game_Run` frame ring; objective blobs, weapon-animation objects,
@@ -262,8 +273,8 @@ words, four controller inputs (`pad_all`), MP settings/game state, the eight
 blob (`objx`), and `objectives[]` records resolved from `MP_OBJ_EXT+0x84`
 back-pointers (`MPOBJECT* - 0xE0` gives the root object). Position, state,
 category/item, amount, timestamp, lifetime countdown, radar-hidden state, and
-four `visit_until` values from MPpickups+0x80 are included. `pl[].pos` is
-rounded to 4 decimal places (yaw to 6); `pl[].obj_raw` preserves the original
+four `visit_until` values from MPpickups+0x80 are included.
+`pl[].pos` is rounded to 4 decimal places (yaw to 6); `pl[].obj_raw` preserves the original
 object bytes, with position at `+0x30` and yaw at `+0x54`, for stricter
 transform comparisons. Valid human weapon-animation pointers add the pointed-to
 `+0xF4` enum as `weapon_anim_state`. The root `assassin`, `target` and
@@ -352,18 +363,21 @@ The audited player/collision/bot consumers use the xyz components; no gameplay
 reader of this W lane was found. The fill comparator expands `cb_raw` into
 named byte fields and omits only `pl[*].cb_raw.point_w` (bytes `0x4c..0x4f`);
 the rest of each collision record remains validated.
-The full Arena fill (157 generated rows, 156 PCSX2 overlaps) validates with
-this comparison. The older CTF recording (549 generated rows, 548 overlaps)
-still rejects at frame 33636, slot 5 `drone_raw+0x530`: this is a dynamic
-`sAnimScript*` address, not script state. New recordings decode the pointed-to
-`sAnimScript_tag` fields (`entry`, script ID/flags/timestamp, frame/speed,
-blend values, duration, and state bytes) as `drone_anim_script`. Fill ignores
-the four pointer bytes only when both rows have that decoded pointee; older
-recordings without it still compare the raw address. At frame 33665 the source
-P2S pointee at `0x010ec980` and generated pointee at `0x0112a510` decode to
-identical semantic fields (including script ID `0x06000a11`, frame 29, and
-duration 93). The existing CTF JSONL predates the decoder, so a complete
-semantic CTF fill still needs a new source recording.
+The fixture previously named `arena-v6-dynamic-ready.jsonl` is Demolition:
+its MPSettings scenario mask is `0x20000040`, not Arena (`0x00000001`).
+The corresponding attempted replay fill was rejected at frame 15338, first
+differing at `pl[6].drone_raw.byte[0x43c]`; do not use it as an Arena
+reference. New recorder rows include the scenario mask as top-level `mode`,
+which should also appear in capture filenames as an eight-digit hex value.
+The earlier CTF JSONL predates the dynamic snapshot decoder. A later dynamic
+CTF capture contains 1409 contiguous rows (33604..35012), but is partial and
+still needs a full semantic fill. The pointed-to `sAnimScript_tag` fields
+(`entry`, script ID/flags/timestamp, frame/speed, blend values, duration, and
+state bytes) are captured as `drone_anim_script`; the fill comparator ignores
+the four pointer bytes only when both rows have that decoded pointee. At frame
+33665 the source P2S pointee at `0x010ec980` and generated pointee at
+`0x0112a510` decode to identical semantic fields (including script ID
+`0x06000a11`, frame 29, and duration 93).
 Heap diagnostics are available with `nfmips mp-oracle --heap-dump FILE` (also
 forwarded by `ee_oracle.py --heap-dump FILE`) and `--trace-allocations`.
 The source P2S and nfmips heap maps match at frame 33604, but differ at 33665.
@@ -901,8 +915,8 @@ python3 tools/oracle/mp_record.py recompiler.jsonl --load-slot 10 \
 
 For a controlled combat capture, `--freeze-bot SLOT` holds a bot's sampled
 position/yaw on each recorded frame. `--face-bot SLOT` additionally places the
-human eight world units behind that bot once, facing it; the human remains free
-to move under `--script`. The recorder retains the exact button/input word,
+human eight world units behind the bot along its forward axis, aligned to its yaw; the human
+remains free to move under `--script`. The recorder retains the exact button/input word,
 human health/armour/current weapon/auto-lock, projectile state and bot health
 on each accepted frame. This is not a deterministic combat fixture: bot AI,
 firing, damage and pickups remain live.
@@ -1194,6 +1208,12 @@ path therefore sets `.1 * FRAME_RATE_MUL`; `DroneSystem` receives its startup
 timing before the first bot/NPC spawn, including `--logic-hz30`, while seeded
 raw state remains unscaled. This preserves the source writer's `.2` at 30 Hz
 and `.1` at 60 Hz.
+The file named `arena-v6-dynamic-ready.jsonl` (frames 15337–15493; all rows
+seed-ready) is labeled Arena by its path, but replaying seed 15350 reports
+mode `0x20000040` (Demolition), so it is not Arena evidence. In that
+Demolition state, slot 4 layer 0 is frame 36 in the source but frame 35 in
+the engine at frame 15351; `--mp-seed-each` reproduces this one-frame
+discrepancy.
 
 At offscreen frame 34054, slot 5's source layer has
 `blend_time/blend_duration = 1/1` and cached `effective_weight = 0`; the host

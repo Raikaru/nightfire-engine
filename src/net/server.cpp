@@ -47,7 +47,7 @@ struct Peer {
     std::string host, name;
     std::uint16_t port = 0;
     nf::net::Reliability reliability;
-    std::uint8_t slot = 0, local_players = 1;
+    std::uint8_t slot = 0, local_players = 1, auto_aim_mask = 0;
     std::array<std::uint32_t, nf::net::kMaxLocalPlayers> last_input_tick{};
     std::array<std::uint32_t, nf::net::kMaxLocalPlayers> last_received_input_tick{};
     std::array<std::uint32_t, nf::net::kMaxLocalPlayers> view_tick{};
@@ -815,9 +815,9 @@ int run_server_impl(int argc, char** argv, const std::atomic<bool>* stop = nullp
                 if (incoming.packet.header.message == nf::net::Message::Hello) {
                     std::array<std::uint8_t, nf::net::kDataHashBytes> client_hash{};
                     std::string client_name, client_password;
-                    std::uint8_t local_players = 1;
+                    std::uint8_t local_players = 1, auto_aim_mask = 0;
                     if (!nf::net::decode_hello(incoming.packet.payload, client_hash, client_name, client_password,
-                                               local_players))
+                                               local_players, auto_aim_mask))
                         continue;
                     nf::net::Packet response;
                     if (client_password != password) {
@@ -913,8 +913,12 @@ int run_server_impl(int argc, char** argv, const std::atomic<bool>* stop = nullp
                         std::printf("nfserver: %s joined slots %u..%u\n", client_name.c_str(), unsigned(base),
                                     unsigned(base + local_players - 1));
                     }
+                    peer_it->auto_aim_mask = auto_aim_mask;
                     peer_it->last_seen = Clock::now();
                     peer_it->reliability.observe(incoming.packet.header);
+                    for (std::size_t local = 0; local < peer_it->local_players; ++local)
+                        world.settings(int(peer_it->slot) + int(local)).auto_aim =
+                            (peer_it->auto_aim_mask & std::uint8_t(1u << local)) != 0;
                     if (!newly_joined) continue;
                     response.header.message = nf::net::Message::Welcome;
                     response.payload = {peer_it->slot, peer_it->local_players};
