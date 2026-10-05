@@ -5,6 +5,7 @@
 
 
 #include <algorithm>
+#include <cstdio>
 
 namespace nf {
 
@@ -471,6 +472,13 @@ void WeaponSystem::advance_anim(int slot, PlayerWeapons& p, const World& world) 
     if (!p.anim) return;
     const int steps = std::max(1, int(std::lround(timing_.FRAME_RATE_MUL)));
     const AnimScript* script = bank_ && p.anim_script ? bank_->script(p.anim_script) : nullptr;
+    if (p.anim_script == 0x060003D0 && world.frame() == 11558 && script) {
+        for (const ScriptCmd& c : script->cmds) {
+            std::fprintf(stderr, "script %08x op=%u extra=%u", script->hash, c.op, c.extra);
+            for (std::uint16_t w : c.words) std::fprintf(stderr, " %u", unsigned(w));
+            std::fprintf(stderr, "\n");
+        }
+    }
     for (int i = 0; i < steps; ++i) {
         if (p.anim_reverse) {
             p.reverse_frame = std::max(1.0f, p.reverse_frame - 1.0f);

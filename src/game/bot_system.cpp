@@ -616,6 +616,7 @@ BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
     d.fly_velocity = {raw_f32(drone_raw, 0x480), raw_f32(drone_raw, 0x484),
                       raw_f32(drone_raw, 0x488)};
     d.fall_velocity = d.fly_velocity;
+    d.collision_flags = raw_u16(obj_raw, 0x60);
     d.obj_type = raw_u8(obj_raw, 0xff);
     d.smi.cur = raw_i32(drone_raw, 0x10c);
     d.smi.prev = raw_i32(drone_raw, 0x110);
@@ -712,6 +713,8 @@ BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
     d.sight_flags = raw_u32(drone_raw, 0x228);
     d.weapon_ready = raw_u8(drone_raw, 0x20) != 0;
     d.fire_window = raw_u8(drone_raw, 0x21) != 0;
+    d.burst_left = raw_i32(drone_raw, 0xbc0);
+    d.next_bullet_time = raw_u32(drone_raw, 0xbc4);
     d.fire_requested = raw_u8(drone_raw, 0x3b) != 0;
     d.burst_done = raw_u8(drone_raw, 0x3c) != 0;
     d.one_shot = raw_u8(drone_raw, 0x3d) != 0;

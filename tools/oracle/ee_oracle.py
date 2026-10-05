@@ -191,6 +191,7 @@ def main():
     ap.add_argument("--give-weapon", action="append", type=int, default=[],
                     help="use Player_EquipWeapon to grant and select a human MP weapon")
     ap.add_argument("--timeout", type=float, default=1200.0)
+    ap.add_argument("--heap-dump", help="write the final EE Mem heap block map")
     args = ap.parse_args()
     if args.sample_at_game_run_hook and not args.game_flow:
         ap.error("--sample-at-game-run-hook requires the default GameFlow_Main")
@@ -219,6 +220,8 @@ def main():
         for weapon in args.give_weapon:
             command += ["--give-weapon", str(weapon)]
         pad_span = None
+        if args.heap_dump:
+            command += ["--heap-dump", str(pathlib.Path(args.heap_dump).expanduser())]
         if args.inputs:
             pad_span = _write_pad_script(args.inputs, pad_script)
             command += ["--pads", str(pad_script)]
