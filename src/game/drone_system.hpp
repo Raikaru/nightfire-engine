@@ -194,6 +194,7 @@ public:
     void tick(World& world, FrameTiming timing) override;
     void before_object_update(World& world, FrameTiming timing) override;
     void after_tick(World& world, FrameTiming timing) override;
+    void after_camera_update(World& world, FrameTiming timing) override;
 
     // Internal: transition loop (called by Drone::set_state).
     void run_transition(Drone& d);

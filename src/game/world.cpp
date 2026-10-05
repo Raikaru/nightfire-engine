@@ -120,6 +120,7 @@ void World::tick(const PadInputs& pads, FrameTiming timing) {
             if (p) p->update_camera(timing);
         for (auto& s : systems_) s->tick(*this, timing);
         for (auto& s : systems_) s->after_tick(*this, timing);
+        for (auto& s : systems_) s->after_camera_update(*this, timing);
         return;
     }
 
@@ -140,6 +141,7 @@ void World::tick(const PadInputs& pads, FrameTiming timing) {
     for (auto& s : systems_) s->after_tick(*this, timing);
     for (auto& p : players_)
         if (p) p->update_camera(timing);
+    for (auto& s : systems_) s->after_camera_update(*this, timing);
 }
 
 void World::replay_player(int index, const ActionInput& input, FrameTiming timing) {

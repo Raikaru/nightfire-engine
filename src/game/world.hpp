@@ -48,6 +48,7 @@ public:
     virtual void after_player_update(World&, FrameTiming) {}
     virtual MultiplayerPhase multiplayer_phase() const { return MultiplayerPhase::ObjectControl; }
     virtual void before_object_update(World&, FrameTiming) {}
+    virtual void after_camera_update(World&, FrameTiming) {}
     virtual void tick(World& world, FrameTiming timing) = 0;
     virtual void after_tick(World&, FrameTiming) {}
 };

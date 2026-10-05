@@ -1036,8 +1036,8 @@ source `0x80000` flag, class, root height, `obj+0xfc`, forced-animation
 countdown: `Game_Run` calls `MP_Update` (which runs `Drone_Control`) before
 `control_movement_object_handler` decrements it, then `Game_Draw` visibility
 passes set it to 2 for selected objects. The host consumes the seeded counter
-at the animation gate, decrements after control, and refreshes visible bots in
-its post-tick view pass; `Drone+0x580` is not part of this gate.
+at the animation gate, decrements after control, and refreshes visible bots
+after camera update; `Drone+0x580` is not part of this gate.
 `View_AddCels` (0x1E6BA0) calls `Vision_InView` (0x1E89E0) with each
 candidate cel's own `cel+0x8c` radius and `cel+0x80` center before adding its
 objects. The map parser's `parseentity_transform_bounding_box` (0x1D0FB0)
@@ -1047,9 +1047,10 @@ There is no portal-recursion fallback in this cel-visibility decision.
 In multiplayer, `World::tick` keeps the Game_Run boundary explicit: player
 movement/collision and player-weapon updates precede `MP_Update`, then
 `Drone_InitComms` prepares global opponent/sight state before object-control
-callbacks; camera updates follow those callbacks. The object handler traverses
-a head-inserted list (`control_add_object_to_list`, 0x134698), so the host
-preserves the major frame phases and visits drones newest-first.
+callbacks; camera updates and the view-based animation refresh follow. The
+object handler traverses a head-inserted list (`control_add_object_to_list`,
+0x134698), so the host preserves the major frame phases and visits drones
+newest-first.
 
 `NDrone2_SetAngleToDest` and `NDrone2_SetAngleToObj` call
 `ATAN2_APPROX__Fff`; the host uses `atan2_approx` for these movement-heading
