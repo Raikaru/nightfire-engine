@@ -1267,6 +1267,27 @@ bool CharacterInstance::set_layer_root_y_mask(std::uint32_t script, bool mask) {
     return found;
 }
 
+bool CharacterInstance::set_layer_root_xz(std::uint32_t script, bool mask) {
+    bool found = false;
+    for (auto& l : layers_) {
+        const std::uint32_t id = l.script ? l.script->hash : l.seq->hash;
+        if (id != script) continue;
+        l.mask_root_xz = mask;
+        found = true;
+    }
+    dirty_ = true;
+    return found;
+}
+
+bool CharacterInstance::layer_ended(std::uint32_t script) const {
+    for (const auto& l : layers_) {
+        const std::uint32_t id = l.script ? l.script->hash : l.seq->hash;
+        if (id != script) continue;
+        if (!l.ended) return false;
+    }
+    return true;
+}
+
 float CharacterInstance::foot_height(float model_min_y, bool flag_400) const {
     // AnimObjectNew: sAnimObject+0xD0 = (-1.160398 [flag 0x400] or -0.995208) - model bbox min y / scale + 0.02;
     // measured against the game: sAnimObject+0xCC = the primary layer's root y + that offset (no x0.8627 with the flag).
@@ -1315,6 +1336,7 @@ void CharacterInstance::tick(float mul) {
         if (l.strafe) continue;   // flag 0x4000: its blend time is set by AnimSetUpdate, resolve leaves it alone
         l.blend_time += l.direction > 0 ? mul : -mul;   // resolve steps fades by FRAME_RATE_MUL
         l.blend_time = std::clamp(l.blend_time, 0.0f, l.blend_duration);
+        if (tick_owned_blend_weights_) l.resolved_weight = l.blend_time / l.blend_duration;
     }
     std::vector<std::uint32_t> dead;
     for (const auto& l : layers_)
@@ -1436,9 +1458,13 @@ Pose CharacterInstance::layer_pose(const Layer& l) const {
     return pose;
 }
 
-const Palette& CharacterInstance::palette() const {
+void CharacterInstance::resolve_blend_weights() const {
     for (const auto& layer : layers_)
         layer.resolved_weight = layer.blend_time / layer.blend_duration;
+}
+
+const Palette& CharacterInstance::palette() const {
+    if (palette_resolves_blend_weights_) resolve_blend_weights();
     if (!dirty_) return palette_;
     // Body: oldest layer first, every newer pose blended in with weight 1 - (weight of the layer before it).
     // AnimFrameResolve: the normal layers fold oldest first; a strafe layer (flag 0x4000) is blended over the

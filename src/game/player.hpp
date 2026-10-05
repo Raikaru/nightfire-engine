@@ -2,8 +2,10 @@
 
 #include <array>
 #include <cstdint>
-#include <optional>
 #include <functional>
+#include <memory>
+#include <optional>
+#include <vector>
 
 #include "core/math.hpp"
 #include "game/actions.hpp"
@@ -18,6 +20,7 @@
 #include "game/player_scan.hpp"
 #include "game/player_water.hpp"
 #include "game/player_zerog.hpp"
+#include "game/player_anim.hpp"
 
 namespace nf {
 
@@ -234,6 +237,18 @@ public:
     // The wire / zip line objects and animation the substates need (World::spawn_player attaches the world's).
     void set_rope_world(const RopeWorld* world) { rope_world_ = world; }
     void set_rope_animator(std::shared_ptr<RopeAnimator> animator) { rope_animator_ = std::move(animator); }
+    // The body animation (player_anim.cpp) ticks every logic frame for script commands and RNG; its animated foot
+    // height (collbody+0xCC) drives movement unless replay rows provide the authoritative height. The weapon code
+    // forwards switches so the stance sets follow (PlayerAnimSetInit*).
+    void set_body_animator(std::unique_ptr<PlayerAnimator> animator) { body_animator_ = std::move(animator); }
+    PlayerAnimator* body_animator() const { return body_animator_.get(); }
+    // Headless MP update: the body object advances after player/weapons work on the logic frame.
+    void tick_body_animation(FrameTiming timing);
+    void set_body_weapon(int weapon_id, int category) {
+        if (body_animator_) body_animator_->set_weapon(weapon_id, category, nullptr);
+    }
+    void set_stand_height_from_replay(bool from_replay) { stand_height_from_replay_ = from_replay; }
+    const std::vector<AnimEvent>& anim_events() const { return anim_events_; }   // last tick's, for Audio footsteps
     // Player_WeaponNone was applied on grabbing a wire; the weapon code puts the weapon back on release.
     bool weapon_stowed() const { return rope_.weapon_stowed; }
     // The objects the collision pass reports beyond the world cels (ladders, wires, grapple points, ThirdIcon zones),
@@ -402,6 +417,9 @@ private:
     RopeState rope_;
     const RopeWorld* rope_world_ = nullptr;
     std::shared_ptr<RopeAnimator> rope_animator_;
+    std::unique_ptr<PlayerAnimator> body_animator_;   // live foot height; replay rows override instead
+    bool stand_height_from_replay_ = false;
+    std::vector<AnimEvent> anim_events_;
     std::size_t capsule_ignore_ = SIZE_MAX;   // BL+0x7B8: object the capsule ignores (the wire hung on)
     unsigned capsule_pick_ = 0;               // BL+0x7D8: 0x1C0 on a zip line
     ObjectWorld* object_world_ = nullptr;

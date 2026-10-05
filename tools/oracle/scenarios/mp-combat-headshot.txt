@@ -1,0 +1,16 @@
+# mp_record.py --script. Provision a sniper (weapon 30) with ammo and use
+# --freeze-bot 5 --face-bot 5. Aim upward for the first two shots, then return
+# pitch to level for torso shots. All stick/button actions are frame-offset events.
+0 release
+4 axis RY -0.25
+18 axis RY -0.25
+24 down r1
+30 up r1
+44 down r1
+50 up r1
+64 axis RY 0
+78 axis RY 0
+84 down r1
+90 up r1
+104 down r1
+110 up r1

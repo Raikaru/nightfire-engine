@@ -298,7 +298,6 @@ int run_match(const MatchLaunch& request) {
                                            scripts[std::size_t(i)].ground_normal_y);
     }
     std::vector<AnimSet> headless_anim_sets;
-    std::vector<std::unique_ptr<PlayerAnimator>> headless_bodies;
     if (scripted) {
         headless_anim_sets = read_anim_sets(action_elf);
         const SkinDef* body_skin = nullptr;
@@ -313,23 +312,29 @@ int run_match(const MatchLaunch& request) {
         }
         if (!body_skin && !weapon_bank->skins().empty()) body_skin = &weapon_bank->skins().begin()->second;
         if (!body_skin) throw std::runtime_error("MP player animation has no character skin");
-        headless_bodies.reserve(std::size_t(options.humans));
         for (int i = 0; i < options.humans; ++i) {
             int weapon_id = 1;
             int category = 1;
+            bool initial_setup_pending = !importer;
             if (const PlayerWeapons* state = session.weapons().state(i)) {
                 weapon_id = state->current;
                 category = int(session.weapons().table().weapon(weapon_id).category);
+                // An explicit pre-match give-weapon replaces Player_WeaponNone (71); unlike the configured
+                // start weapon, its first PlayerAnimSetInit occurs after the restored seed snapshot.
+                if (importer)
+                    initial_setup_pending = state->previous == 71 && state->current != 71 &&
+                                            state->current != SpawnLoadout{}.start_weapon;
             }
-            headless_bodies.push_back(
-                std::make_unique<PlayerAnimator>(*weapon_bank, *body_skin, headless_anim_sets, weapon_id, category));
+            world.player(i)->set_body_animator(std::make_unique<PlayerAnimator>(
+                *weapon_bank, *body_skin, headless_anim_sets, weapon_id, category, initial_setup_pending));
         }
         if (importer) {
             for (int i = 0; i < options.humans; ++i) {
                 const PlayerWeapons* state = session.weapons().state(i);
-                if (!state) throw std::runtime_error("MP seed: human weapon state is unavailable");
+                PlayerAnimator* body = world.player(i)->body_animator();
+                if (!state || !body) throw std::runtime_error("MP seed: human body animation is unavailable");
                 importer->restore_player_animation(
-                    importer->frame(), std::size_t(i), *headless_bodies[std::size_t(i)], state->current,
+                    importer->frame(), std::size_t(i), *body, state->current,
                     int(session.weapons().table().weapon(state->current).category));
             }
         }
@@ -370,17 +375,24 @@ int run_match(const MatchLaunch& request) {
             PadInputs pads{};
             FrameTiming timing{float(launch.logic_hz)};
             float match_elapsed = 0.0f, match_total_elapsed = 0.0f;
+            std::optional<std::uint64_t> timer_frame;
             if (importer) {
                 const std::uint64_t next_frame = world.frame() + 1;
-                if (!importer->input_for(next_frame, pads, timing, match_elapsed, match_total_elapsed))
+                std::uint64_t recorded_timer_frame = next_frame;
+                if (!importer->input_for(next_frame, pads, timing, recorded_timer_frame,
+                                         match_elapsed, match_total_elapsed))
                     throw std::runtime_error("MP seed: no contiguous recorded pad input for frame " + std::to_string(next_frame));
+                timer_frame = recorded_timer_frame;
                 if (launch.mp_seed_each) {
                     importer->restore_at(world.frame(), world, session, bot_match.get(), true);
+                    for (int i = 0; i < options.humans; ++i)
+                        world.player(i)->set_stand_height_from_replay(true);
                     for (int i = 0; i < options.humans; ++i) {
                         const auto* state = session.weapons().state(i);
-                        if (!state) throw std::runtime_error("MP seed: human weapon state is unavailable");
+                        PlayerAnimator* body = world.player(i)->body_animator();
+                        if (!state || !body) throw std::runtime_error("MP seed: human body animation is unavailable");
                         importer->restore_player_animation(
-                            world.frame(), std::size_t(i), *headless_bodies[std::size_t(i)], state->current,
+                            world.frame(), std::size_t(i), *body, state->current,
                             int(session.weapons().table().weapon(state->current).category));
                     }
                 }
@@ -394,19 +406,15 @@ int run_match(const MatchLaunch& request) {
                     }
                 }
             }
-            session.tick(pads, timing);
+            session.tick(pads, timing, timer_frame);
+            for (int i = 0; i < options.humans; ++i) {
+                if (const PlayerWeapons* state = session.weapons().state(i))
+                    world.player(i)->set_body_weapon(
+                        state->current, int(session.weapons().table().weapon(state->current).category));
+                world.player(i)->tick_body_animation(timing);
+            }
             emitter_sim->update(world.player(0)->eye(), timing.FRAME_RATE_MUL, timing.REC_FRAME_RATE,
                                 [&world](int ch) { return world.objects().channel(unsigned(ch)); });
-            for (int i = 0; i < options.humans; ++i) {
-                PlayerAnimator& body = *headless_bodies[std::size_t(i)];
-                const Player& player = *world.player(i);
-                if (const PlayerWeapons* state = session.weapons().state(i))
-                    body.set_weapon(state->current,
-                                    int(session.weapons().table().weapon(state->current).category), &game_rng());
-                body.update(player.substate == SubState::Crouch, player.velocity, timing.FRAME_RATE_MUL,
-                            &game_rng());
-                (void)body.take_events();
-            }
             if (shot_weather) {
                 shot_weather->update(world.player(0)->eye(), timing.FRAME_RATE_MUL, timing.REC_FRAME_RATE,
                                      [&world](int ch) { return world.objects().channel(unsigned(ch)); });

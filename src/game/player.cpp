@@ -407,6 +407,14 @@ void Player::update(const ActionInput& input, const PlayerSettings& settings, co
     activate_creep_wall(input, world);
 }
 
+void Player::tick_body_animation(FrameTiming timing) {
+    if (!body_animator_) return;
+    const float animated_height =
+        body_animator_->update(substate == SubState::Crouch, velocity, timing.mul(), &game_rng());
+    anim_events_ = body_animator_->take_events();
+    if (!stand_height_from_replay_) stand_height = animated_height;
+}
+
 void Player::collision_setup(FrameTiming timing) {
     // Player_Collision, substates 0 and 4 (no water: the cel's water level is never reached).
     if (substate == SubState::Dead || substate == SubState::DeadInWater) {

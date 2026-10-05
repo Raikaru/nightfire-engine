@@ -64,6 +64,8 @@ MPG_TOTAL = 0x19C              # float total seconds (pickup-visit clock)
 # ---- players / bots ---------------------------------------------------------
 GLB_PLAYERS = 0x2D88E0         # obj_tag*[4] humans
 # obj_tag (verified live 2026-10-02)
+OBJ_CELL = 0x20                # cel_tag* used by spatial culling
+CELL_RAW_SIZE = 0xA0
 OBJ_POS = 0x30                 # vec3
 OBJ_POS2 = 0x40                # vec3 copy
 OBJ_YAW = 0x54                 # f32 rad, forward = (sin, 0, cos)

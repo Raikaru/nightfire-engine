@@ -382,6 +382,11 @@ public:
     // content triggers this path (verified dormant), so it defaults off; NPC/drone/cutscene code that needs a
     // Y-locked layer can opt in. Returns false when no body layer plays `script`.
     bool set_layer_root_y_mask(std::uint32_t script, bool mask);
+    // Zeroes the X/Z of the root delta of every body layer playing `script` (the 0x8d000000 OR walk/strafe
+    // layers get). Returns false when no body layer plays `script`.
+    bool set_layer_root_xz(std::uint32_t script, bool mask);
+    // True when every body layer playing `script` has reached its end, or none plays it.
+    bool layer_ended(std::uint32_t script) const;
     // The root bone's translation of the current pose before extraction (layers folded like the pose, a phase
     // partner excluded): AnimFrameResolve
     // stores its y in sAnimObject+0x5C ("root height", plus the object's +0x60 offset) and the game moves the
@@ -406,6 +411,13 @@ public:
     // advance and blend fade steps scale with it (AnimScriptTick / AnimFrameResolve); Distance/Phase layers are
     // rate-independent. Defaults preserve the old single-rate behavior.
     void tick(float mul = 1.0f);
+    // Bot AnimFrameResolve is part of the gated animation tick; Player_Update resolves after its animation update.
+    void use_tick_owned_blend_weights() {
+        tick_owned_blend_weights_ = true;
+        palette_resolves_blend_weights_ = false;
+    }
+    void use_explicit_blend_weights() { palette_resolves_blend_weights_ = false; }
+    void resolve_blend_weights() const;
     void advance(float seconds, float mul = 1.0f);   // whole ticks of accumulated real time
 
     // Scrubbing: puts the newest body layer at `frame` (wrapped/clamped like a tick would).
@@ -505,6 +517,8 @@ private:
     std::map<std::int32_t, DatumSlot> datum_slots_;   // runtime entity overrides by datum id
     std::uint32_t next_id_ = 1;
     float tick_accumulator_ = 0;
+    bool tick_owned_blend_weights_ = false;
+    bool palette_resolves_blend_weights_ = true;
     mutable bool dirty_ = true;
     mutable Palette palette_;
     mutable std::vector<float> facial_;

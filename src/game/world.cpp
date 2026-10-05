@@ -34,8 +34,11 @@ std::vector<SpawnPoint> find_spawn_points(const Level& level) {
         SpawnPoint p{kind, {s.position[0], s.position[1], s.position[2]}, s.euler[1], model, s.param(3)};
         (kind == SpawnPoint::Kind::SinglePlayer ? single : multi).push_back(std::move(p));
     }
-    single.insert(single.end(), multi.begin(), multi.end());
-    return single;
+    // Multiplayer markers first: MP maps ship a few stray single-player markers (07000024 has three
+    // 0x24 'Player1' statics among 33 0x25 'MPStart' ones), and nfgame reads the game mode off the
+    // front spawn. Single-player-only maps are unaffected (their multi list is empty).
+    multi.insert(multi.end(), single.begin(), single.end());
+    return multi;
 }
 
 PlayerParams player_params_from_tuning(std::string_view text, std::string_view section) {
@@ -104,12 +107,13 @@ Player& World::spawn_player(int index, const SpawnPoint& at) {
     return *slot;
 }
 
-void World::tick(const PadInputs& pads, FrameTiming timing) {
+void World::tick(const PadInputs& pads, FrameTiming timing, std::optional<std::uint64_t> timer_frame) {
     ++frame_;
-    ++timer_frame_;
+    if (timer_frame) timer_frame_ = *timer_frame;
+    else ++timer_frame_;
     // GameFlow_Main advances the source timer before dispatching frame updates.
     game_rng().set_trace_frame(frame_);
-    // Env_Update draws Rand_Rand(20000) once for a live world before Player_Update.
+    // The original RNG trace orders Env_Update before bot-state and Player_LaserPointer draws.
     (void)game_rng().rand_int(20000);
     for (int i = 0; i < kMaxPlayers; ++i)
         inputs_[std::size_t(i)].update(pads[std::size_t(i)], tables_, settings_[std::size_t(i)], i);
@@ -123,7 +127,6 @@ void World::tick(const PadInputs& pads, FrameTiming timing) {
         for (auto& s : systems_) s->after_camera_update(*this, timing);
         return;
     }
-
     // Mission_Update advances players before Game_Run enters MP_Update.
     for (int i = 0; i < kMaxPlayers; ++i)
         if (auto& p = players_[std::size_t(i)])

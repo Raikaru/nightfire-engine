@@ -526,7 +526,7 @@ int run(int argc, char** argv) {
 
     if (headless) {
         const int ticks = o.frames;
-        if (o.autodrive) run.mission.set_autodrive(true);
+        if (o.autodrive) run.mission.take_control();
         for (int t = 0; t < ticks; ++t) {
             run.mission.tick(std::size_t(t) < script.size() ? script[std::size_t(t)] : PadState{});
             run.particles.tick(run.mission.session(), run.mission);
@@ -589,7 +589,8 @@ int run(int argc, char** argv) {
             if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_R && run.mission.state() != MissionState::Running)
                 rebuild();
             if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_T) {
-                run.mission.set_autodrive(!run.mission.autodrive());
+                if (run.mission.autodrive()) run.mission.lose_control();
+                else run.mission.take_control();
                 std::printf("autodrive %s\n", run.mission.autodrive() ? "on" : "off");
             }
         }

@@ -774,12 +774,12 @@ def main():
             if o:
                 tags.append(("obj", s))
                 ranges.append((o, 0x100))
-                if args.seedable and s < n_humans:
-                    cell = pine.read32(o + 0x20)
-                    if valid_ee_pointer(cell, 0xA0):
+                if args.seedable:
+                    cell = pine.read32(o + A.OBJ_CELL)
+                    if valid_ee_pointer(cell, A.CELL_RAW_SIZE):
                         source_cell_ranges[s] = cell
                         tags.append(("source_cell", s))
-                        ranges.append((cell, 0xA0))
+                        ranges.append((cell, A.CELL_RAW_SIZE))
         for obj, data in cache["projectiles"].items():
             tags += [("projectile_obj", obj), ("projectile_data", obj)]
             ranges += [(obj, 0x100), (data, A.BULLET_RAW_SIZE)]
@@ -1129,7 +1129,7 @@ def main():
         if objs != cache["objs"] or pkcount != cache["pkcount"]:
             # Object set changed (respawn/re-register): core-only frame, re-resolve.
             resyncs += 1
-            rec = {"frame": frame0, "timer_frame": timer_frame0, "resync": 1,
+            rec = {"frame": frame0, "gs_done": done0, "timer_frame": timer_frame0, "resync": 1,
                    "vblank_count": vblank_count, "rate": rate,
                    "frame_rate_int": frame_rate_int,
                    "frame_rate_mul": frame_rate_mul,
@@ -1154,7 +1154,7 @@ def main():
                 pine, cache, pine.read32(A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT))
             resolve(pine)
             continue
-        rec = {"frame": frame0, "timer_frame": timer_frame0,
+        rec = {"frame": frame0, "gs_done": done0, "timer_frame": timer_frame0,
                "vblank_count": vblank_count, "rate": rate,
                "frame_rate_int": frame_rate_int,
                "frame_rate_mul": frame_rate_mul,
@@ -1315,11 +1315,15 @@ def main():
                 entry["obj_raw"] = och.hex()
                 entry["substate"] = struct.unpack_from("<H", och, A.OBJ_SUBSTATE)[0]
                 entry["eye"] = list(struct.unpack_from("<3f", och, 0x70))
+                cell_ptr = struct.unpack_from("<I", och, A.OBJ_CELL)[0]
+                entry["cell_ptr"] = cell_ptr
                 cell_addr = source_cell_ranges.get(s)
                 cell_raw = bytag.get(("source_cell", s))
-                if (cell_addr and cell_raw is not None
-                        and struct.unpack_from("<I", och, 0x20)[0] == cell_addr):
-                    entry["cell_raw"] = cell_raw.hex()
+                if cell_ptr:
+                    if cell_addr == cell_ptr and cell_raw is not None:
+                        entry["cell_raw"] = cell_raw.hex()
+                    else:
+                        transition_missing.append(f"pl[{s}].cell_raw")
             if ("bl", s) in bytag:
                 bd = bytag[("bl", s)]
                 entry["hp"] = round(struct.unpack_from("<f", bd, 4)[0], 3)
@@ -1392,6 +1396,16 @@ def main():
                     drone_raw = bytag[("dr_raw", k)]
                     entry["drone_raw"] = drone_raw.hex()
                     entry["bv_raw"] = bytag[("bv_raw", k)].hex()
+                    cell_ptr = struct.unpack_from(
+                        "<I", bytag[("obj", s)], A.OBJ_CELL)[0]
+                    entry["cell_ptr"] = cell_ptr
+                    cell_addr = source_cell_ranges.get(s)
+                    cell_raw = bytag.get(("source_cell", s))
+                    if cell_ptr:
+                        if cell_addr == cell_ptr and cell_raw is not None:
+                            entry["cell_raw"] = cell_raw.hex()
+                        else:
+                            transition_missing.append(f"pl[{s}].cell_raw")
                     entry["alive"] = (
                         struct.unpack_from("<f", drone_raw, A.DRONE_HEALTH)[0] > 0.0)
                     script_raw = bytag.get(("dr_anim_script_raw", k))
@@ -1826,8 +1840,12 @@ def main():
                 p is None or "cb_raw" in p for p in rec["pl"][4:8])
             if not bot_collision_ready:
                 rec["state_missing"].append("bot_collision_body")
+            checkpoint_phase_ready = ((frame0 - done0) & 0xFFFFFFFF) == 2
+            if not checkpoint_phase_ready:
+                rec["state_missing"].append("checkpoint_phase")
             rec["seed_ready"] = (
-                "objx" in rec and len(rec["rng_words"]) == 4 and len(rec["pad_all"]) == 4
+                checkpoint_phase_ready
+                and "objx" in rec and len(rec["rng_words"]) == 4 and len(rec["pad_all"]) == 4
                 and all(p is None or "obj_raw" in p for p in rec["pl"])
                 and all(p is None or "autolock_target_ptr" in p for p in rec["pl"][:n_humans])
                 and pickup_seed_ready

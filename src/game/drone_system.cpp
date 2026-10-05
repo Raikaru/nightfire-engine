@@ -260,12 +260,14 @@ Drone& DroneSystem::spawn(SpawnInfo info) {
     d->mv.dest_angle = info.yaw;   // no steering target yet: keep facing
     d->pos = {info.feet[0], info.feet[1] + d->stand_height, info.feet[2]};
     d->source_view_room = world_.rooms().find(d->pos, world_.collision());
-    d->source_view_pos = d->pos;
+    d->source_view_center = d->pos;
     d->smi.cur = d->smi.prev = d->smi.next = d->smi.saved = kStateGlobal;
     d->smi.entry_time = now();
 
-    if (const SkinDef* skin = bank_.skin(info.skin_hash))
+    if (const SkinDef* skin = bank_.skin(info.skin_hash)) {
         d->character = std::make_unique<CharacterInstance>(bank_, *skin);
+        if (d->dtype == kDtypeBot) d->character->use_tick_owned_blend_weights();
+    }
     if (nav_) {
         d->nav = std::make_unique<NavAgent>(*nav_);
         d->nav->set_path_for(d->nav_pos(), nav_->find_cel(d->nav_pos()));
@@ -453,8 +455,12 @@ void DroneSystem::after_tick(World& world, FrameTiming) {
     const RoomMap& rooms = world.rooms();
     for (const auto& dp : drones_) {
         Drone& d = *dp;
-        d.source_view_room = rooms.track(d.source_view_room, d.source_view_pos, d.pos, world.collision());
-        d.source_view_pos = d.pos;
+        const Vec3 center = d.source_view_sphere_valid ? d.pos + d.source_view_center_offset : d.pos;
+        if (center[0] == d.source_view_center[0] && center[1] == d.source_view_center[1] &&
+            center[2] == d.source_view_center[2])
+            continue;
+        d.source_view_room = rooms.track(d.source_view_room, d.source_view_center, center, world.collision());
+        d.source_view_center = center;
     }
 }
 

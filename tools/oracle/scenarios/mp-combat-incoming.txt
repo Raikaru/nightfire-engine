@@ -1,0 +1,12 @@
+# mp_record.py --script with three unfrozen Skyrail Arena bots. Stay in the
+# bots' sight lines while changing posture and yaw so incoming hits cover several
+# human damage directions/zones; recorder captures HP, armour, pain_dir/alpha,
+# weapon state, and projectile ownership each frame.
+0 release
+24 down l2
+26 up l2
+80 down l2
+82 up l2
+120 axis LX 0.25
+150 axis LX -0.25
+180 release
