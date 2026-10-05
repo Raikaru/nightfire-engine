@@ -463,6 +463,7 @@ void DroneSystem::after_camera_update(World& world, FrameTiming) {
     for (const auto& dp : drones_) dp->anim.source_object_anim_from_view = false;
     constexpr float kDefaultFov = 1.0471976f;
     constexpr float kPs2Aspect = 4.0f / 3.0f;
+    std::vector<std::uint8_t> visible_rooms(rooms.size());
     for (int slot = 0; slot < World::kMaxPlayers; ++slot) {
         const Player* player = world.player(slot);
         if (!player) continue;
@@ -474,12 +475,14 @@ void DroneSystem::after_camera_update(World& world, FrameTiming) {
         const float fovy = player->substate == SubState::Scan ? player->scan.fov : kDefaultFov / player->zoom;
         const float tan_half_y = std::tan(fovy * 0.5f);
         const float tan_half_x = tan_half_y * kPs2Aspect;
+        rooms.mark_visible_cells(player->water.room, eye, right, up, forward, tan_half_x, tan_half_y, visible_rooms);
         const float x_radius = std::sqrt(1.0f + tan_half_x * tan_half_x);
         const float y_radius = std::sqrt(1.0f + tan_half_y * tan_half_y);
         for (const auto& dp : drones_) {
             Drone& d = *dp;
             if (d.hidden || d.pending_delete) continue;
-            if (!rooms.cell_in_view(d.source_view_room, eye, right, up, forward, tan_half_x, tan_half_y)) continue;
+            if (!rooms.cell_in_view(d.source_view_room, visible_rooms, eye, right, up, forward, tan_half_x, tan_half_y))
+                continue;
             const Vec3 center = d.source_view_sphere_valid
                                     ? d.pos + d.source_view_center_offset
                                     : d.pos;

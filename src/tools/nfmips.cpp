@@ -2604,6 +2604,8 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
         throw std::runtime_error("mp-oracle needs --state <p2s> and --rows N");
     if (sample_current_frame && game_flow)
         throw std::runtime_error("--sample-current-frame requires --no-game-flow");
+    if (sample_current_frame && trace_frame != 0)
+        throw std::runtime_error("--sample-current-frame excludes --trace-frame");
     if ((trace_frame == 0) != (trace_slot == -1)
         || (trace_frame != 0 && (trace_slot < 4 || trace_slot > 7))
         || (trace_frame != 0 && (watch_human_hp_slot >= 0 || trace_rng)))
@@ -3008,34 +3010,43 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
             {m.addr("Rand_FRand_MVar2__Fff"), "Rand_FRand_MVar2", true},
         };
         std::fprintf(stderr, "RNG_TRACE enabled functions=%zu\n", rng_functions.size());
-        m.set_instruction_observer([&](const nf::ee::Cpu& cpu, u32 pc, u32) {
-            const u32 stack = u32(cpu.r[29].d[0]);
-            for (auto it = pending.begin(); it != pending.end();) {
-                if (pc == it->caller_return && stack == it->stack) {
-                    const auto symbol = m.symbol_at(it->caller);
-                    const u32 result = it->function->float_result ? cpu.f[0] : cpu.r[2].w[0];
-                    std::fprintf(stderr, "RNG_CALL frame=%u fn=%s caller=%08x result=%08x",
-                                 it->frame, it->function->name, it->caller, result);
-                    if (symbol)
-                        std::fprintf(stderr, " <%s+0x%x>", symbol->name.c_str(),
-                                     it->caller - symbol->value);
-                    std::fputc('\n', stderr);
-                    it = pending.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-            for (const RngFunction& function : rng_functions) {
-                if (pc != function.address) continue;
-                const u32 caller_return = u32(cpu.r[31].d[0]);
-                pending.push_back({caller_return, caller_return - 8, stack,
-                                   m.mem.read<u32>(kFrameStart), &function});
-                break;
-            }
-        });
     }
+    bool record_hook_sampled = false;
+    auto observe_instruction = [&](const nf::ee::Cpu& cpu, u32 pc, u32) {
+        if (sample_current_frame && pc == 0x001C98BCu && !record_hook_sampled) {
+            snapshot();
+            record_hook_sampled = true;
+        }
+        if (!trace_rng) return;
+        const u32 stack = u32(cpu.r[29].d[0]);
+        for (auto it = pending.begin(); it != pending.end();) {
+            if (pc == it->caller_return && stack == it->stack) {
+                const auto symbol = m.symbol_at(it->caller);
+                const u32 result = it->function->float_result ? cpu.f[0] : cpu.r[2].w[0];
+                std::fprintf(stderr, "RNG_CALL frame=%u fn=%s caller=%08x result=%08x",
+                             it->frame, it->function->name, it->caller, result);
+                if (symbol)
+                    std::fprintf(stderr, " <%s+0x%x>", symbol->name.c_str(),
+                                 it->caller - symbol->value);
+                std::fputc('\n', stderr);
+                it = pending.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (const RngFunction& function : rng_functions) {
+            if (pc != function.address) continue;
+            const u32 caller_return = u32(cpu.r[31].d[0]);
+            pending.push_back({caller_return, caller_return - 8, stack,
+                               m.mem.read<u32>(kFrameStart), &function});
+            break;
+        }
+    };
+    if (trace_rng || sample_current_frame)
+        m.set_instruction_observer(observe_instruction);
     for (int row = sample_current_frame ? 0 : 1; row < rows; ++row) {
         const bool current_sample = sample_current_frame && row == 0;
+        record_hook_sampled = false;
         const u32 before = m.mem.read<u32>(kFrameStart);
         const u32 timer_before = m.mem.read<u32>(kFrame);
         const u32 next_frame = before + (current_sample ? 0u : 1u);
@@ -3157,7 +3168,9 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                          m.cpu.cur_pc, e.what());
             std::fputs(m.disasm_range(m.cpu.cur_pc - 16, 8).c_str(), stderr);
         }
-        if (!trace_rng) m.set_instruction_observer({});
+        if (!trace_rng && !sample_current_frame) m.set_instruction_observer({});
+        if (sample_current_frame && !record_hook_sampled)
+            throw std::runtime_error("Game_Run did not reach mp_record's sample hook");
         if (trace_frame != 0 && next_frame == trace_frame) {
             m.mem.set_watch({});
             if (!trace_done)
@@ -3167,7 +3180,8 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
         const u32 timer_after = m.mem.read<u32>(kFrame);
         if (after != next_frame || timer_after != next_timer_frame)
             throw std::runtime_error("Game_Run frame counters did not advance exactly once");
-        snapshot();
+        if (!sample_current_frame)
+            snapshot();
     }
     if (std::fflush(stdout) != 0) throw std::runtime_error("flushing oracle stream failed");
     return 0;

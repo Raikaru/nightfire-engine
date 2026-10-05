@@ -214,9 +214,96 @@ int RoomMap::track(int room, const Vec3& from, const Vec3& to, const CollisionWo
     return contains(room, to) ? room : find(to, world);
 }
 
-bool RoomMap::cell_in_view(int target, const Vec3& eye, const Vec3& right, const Vec3& up,
-                             const Vec3& forward, float tan_half_x, float tan_half_y) const {
-    if (target < 0 || std::size_t(target) >= rooms_.size()) return false;
+void RoomMap::mark_visible_cells(int viewer, const Vec3& eye, const Vec3& right, const Vec3& up,
+                                const Vec3& forward, float tan_half_x, float tan_half_y,
+                                std::vector<std::uint8_t>& visible) const {
+    visible.assign(rooms_.size(), 0);
+    if (viewer < 0 || std::size_t(viewer) >= rooms_.size()) return;
+
+    struct Plane {
+        Vec3 normal;
+    };
+    constexpr std::size_t kPlaneCapacity = 64;
+    constexpr std::size_t kPolygonCapacity = 64;
+    constexpr int kMaxVisibleCels = 64;
+    constexpr int kMaxRecursionDepth = 46;
+    constexpr int kMaxRecursions = 101;
+
+    std::array<Plane, kPlaneCapacity> initial{};
+    initial[0].normal = forward * tan_half_x + right;
+    initial[1].normal = forward * tan_half_x - right;
+    initial[2].normal = forward * tan_half_y + up;
+    initial[3].normal = forward * tan_half_y - up;
+
+    visible[std::size_t(viewer)] = 1;
+    int visible_count = 1;
+    int recursion_count = 0;
+    const auto recurse = [&](auto&& self, int room, const std::array<Plane, kPlaneCapacity>& planes,
+                             std::size_t plane_count, int depth) -> void {
+        if (depth >= kMaxRecursionDepth || recursion_count >= kMaxRecursions) return;
+        for (const Portal& portal : rooms_[std::size_t(room)].portals) {
+            if (++recursion_count >= kMaxRecursions) return;
+
+            std::array<Vec3, kPolygonCapacity> polygon{};
+            std::array<Vec3, kPolygonCapacity> clipped{};
+            std::size_t polygon_size = portal.quad.size();
+            for (std::size_t i = 0; i < polygon_size; ++i) polygon[i] = portal.quad[i];
+            for (std::size_t plane = 0; plane < plane_count && polygon_size != 0; ++plane) {
+                std::size_t clipped_size = 0;
+                Vec3 previous = polygon[polygon_size - 1];
+                float previous_distance = dot(planes[plane].normal, previous - eye);
+                bool previous_inside = previous_distance >= 0.0f;
+                for (std::size_t i = 0; i < polygon_size; ++i) {
+                    const Vec3 current = polygon[i];
+                    const float current_distance = dot(planes[plane].normal, current - eye);
+                    const bool current_inside = current_distance >= 0.0f;
+                    if (current_inside != previous_inside && clipped_size < kPolygonCapacity) {
+                        const float t = previous_distance / (previous_distance - current_distance);
+                        clipped[clipped_size++] = previous + (current - previous) * t;
+                    }
+                    if (current_inside && clipped_size < kPolygonCapacity) clipped[clipped_size++] = current;
+                    previous = current;
+                    previous_distance = current_distance;
+                    previous_inside = current_inside;
+                }
+                polygon.swap(clipped);
+                polygon_size = clipped_size;
+            }
+            if (polygon_size < 3 || portal.dest < 0 || std::size_t(portal.dest) >= rooms_.size()) continue;
+            if (!visible[std::size_t(portal.dest)]) {
+                if (visible_count >= kMaxVisibleCels) continue;
+                visible[std::size_t(portal.dest)] = 1;
+                ++visible_count;
+            } else {
+                continue;
+            }
+
+            std::array<Plane, kPlaneCapacity> child_planes = planes;
+            std::size_t child_plane_count = plane_count;
+            Vec3 centre{};
+            for (std::size_t i = 0; i < polygon_size; ++i) centre += polygon[i];
+            centre = centre * (1.0f / float(polygon_size));
+            for (std::size_t i = 0; i < polygon_size && child_plane_count < kPlaneCapacity; ++i) {
+                const Vec3 from_eye = polygon[i] - eye;
+                const Vec3 to_eye = polygon[(i + 1) % polygon_size] - eye;
+                Vec3 normal = cross(from_eye, to_eye);
+                const float magnitude = length(normal);
+                if (magnitude == 0.0f) continue;
+                normal = normal * (1.0f / magnitude);
+                if (dot(normal, centre - eye) < 0.0f) normal = normal * -1.0f;
+                child_planes[child_plane_count++].normal = normal;
+            }
+            self(self, portal.dest, child_planes, child_plane_count, depth + 1);
+        }
+    };
+    recurse(recurse, viewer, initial, 4, 0);
+}
+
+bool RoomMap::cell_in_view(int target, const std::vector<std::uint8_t>& visible, const Vec3& eye, const Vec3& right,
+                           const Vec3& up, const Vec3& forward, float tan_half_x, float tan_half_y) const {
+    if (target < 0 || std::size_t(target) >= rooms_.size() || std::size_t(target) >= visible.size() ||
+        !visible[std::size_t(target)])
+        return false;
 
     // Vision_InView tests cel+0x80/+0x8C against the four viewer side planes.
     const Room& cel = rooms_[std::size_t(target)];
