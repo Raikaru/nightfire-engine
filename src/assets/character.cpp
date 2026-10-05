@@ -1180,7 +1180,6 @@ bool CharacterInstance::restore_layers(const std::vector<LayerSnapshot>& snapsho
             !std::isfinite(snapshot.frame) || !std::isfinite(snapshot.previous_frame) ||
             !std::isfinite(snapshot.speed) || !std::isfinite(snapshot.blend_time) ||
             !std::isfinite(snapshot.blend_duration) || !std::isfinite(snapshot.weight) ||
-            !std::isfinite(snapshot.pair_weight) || !std::isfinite(snapshot.distance) ||
             !std::isfinite(snapshot.distance_step) || snapshot.blend_duration < 0.0f)
             return false;
         Layer layer;
@@ -1199,7 +1198,6 @@ bool CharacterInstance::restore_layers(const std::vector<LayerSnapshot>& snapsho
         layer.blend_duration = snapshot.blend_duration;
         layer.resolved_weight = snapshot.weight;
         layer.direction = snapshot.direction;
-        layer.distance = snapshot.distance;
         layer.distance_step = snapshot.distance_step;
         layer.pair_weight = snapshot.pair_weight;
         layer.prev_int = int(snapshot.previous_frame);
@@ -1338,6 +1336,8 @@ void CharacterInstance::advance(float seconds, float mul) {
         tick_accumulator_ -= 1.0f;
         tick(mul);
     }
+    // AnimSetUpdate builds the final list after AnimObjectUpdate has resolved fades and culls dead layers.
+    if (game_rng_ && set_ && layers_.size() != 1) (void)game_rng_->random();
 }
 
 void CharacterInstance::set_frame(float frame) {

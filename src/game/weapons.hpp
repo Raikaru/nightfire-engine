@@ -99,6 +99,7 @@ struct PlayerWeapons {
                                           // Player_GetAimingPoint; angles are that round trip to first order.
     int muzzle_frames = 0;             // +2360: frames left of the muzzle flash quad
     int muzzle_lights_pending = 0;      // Light_Create's Rand_Rand draw for muzzle flashes, drained after bots
+    bool laser_pointer_enabled = false;   // BLData+0x964; Player_SetWeaponAnim sets, script command 1 toggles.
     int target_id = -1;                // BLData+2176: Check_Target object under the gun beam (-1 = none)
     bool target_valid = false;         // +306: usable as an Activate/gadget target
     std::uint8_t target_kind = 0;      // +307: target class (2 drone/bot, 3 player)

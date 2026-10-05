@@ -400,7 +400,6 @@ void restore_player_animator(PlayerAnimator& animator, const Json& player, int c
                 throw std::runtime_error("MP seed: phase partner is outside the human body animation list");
         }
         layer.pair_weight = float_number(row.at("pair_weight"));
-        if (const Json* distance = row.find("distance")) layer.distance = float_number(*distance);
         layer.distance_step = distance_step;
         layer.fresh = row.at("fresh").boolean();
         layer.strafe = row.at("strafe").boolean();
@@ -639,6 +638,14 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
             const auto cb = raw_for(item, "cb_raw", 0xD0);
             player->pos = vec3_at(object, 0x30);
             player->yaw = f32_at(object, 0x54);
+            player->water.room_from = vec3_at(object, 0x40);
+            if (item.find("cell_raw")) {
+                const auto cell = raw_for(item, "cell_raw", 0xA0);
+                player->water.room = world.rooms().find_source_cell(
+                    u32_at(cell, 0x3c), vec3_at(cell, 0x80), f32_at(cell, 0x8c));
+                if (player->water.room == RoomMap::kNone)
+                    throw std::runtime_error("MP seed: source player cel does not map to a unique level room");
+            }
             player->life = LifeState(s16_at(object, 0xF4));
             player->substate = SubState(s16_at(object, 0xF6));
             player->settled_pos = vec3_at(object, 0xC0);
@@ -757,6 +764,7 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
             weapon_state->alt_reload = byte_at(bl, 0x958) != 0;
             weapon_state->bullet_spawned = byte_at(bl, 0x95C) != 0;
             weapon_state->sleeve = byte_at(bl, 0x965);
+            weapon_state->laser_pointer_enabled = byte_at(bl, 0x964) != 0;
             weapon_state->dead = !player->alive();
         }
     }
@@ -1083,7 +1091,11 @@ void MpSeedImporter::restore_player_animation(std::uint64_t frame, std::size_t s
 }
 
 bool MpSeedImporter::body_anim_sets_unseeded(std::uint64_t frame, std::size_t humans) const {
-    const auto& players = impl_->row(frame).at("pl").array();
+    const auto it = impl_->rows.find(frame);
+    if (it == impl_->rows.end()) return true;
+    const Json* players_value = it->second.find("pl");
+    if (!players_value) return true;
+    const auto& players = players_value->array();
     for (std::size_t slot = 0; slot < humans; ++slot) {
         if (slot >= players.size() || players[slot].is_null() ||
             !players[slot].find("body_anim") || !players[slot].find("anim_sets"))

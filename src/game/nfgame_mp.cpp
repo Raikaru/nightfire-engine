@@ -287,6 +287,15 @@ int run_match(const MatchLaunch& request) {
             headless_bodies.push_back(
                 std::make_unique<PlayerAnimator>(*weapon_bank, *body_skin, headless_anim_sets, weapon_id, category));
         }
+        if (importer) {
+            for (int i = 0; i < options.humans; ++i) {
+                const PlayerWeapons* state = session.weapons().state(i);
+                if (!state) throw std::runtime_error("MP seed: human weapon state is unavailable");
+                importer->restore_player_animation(
+                    importer->frame(), std::size_t(i), *headless_bodies[std::size_t(i)], state->current,
+                    int(session.weapons().table().weapon(state->current).category));
+            }
+        }
     }
 
 

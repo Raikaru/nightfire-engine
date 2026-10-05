@@ -405,7 +405,6 @@ def anim_layer_rows(bytag, k, descriptor, prefix="anim"):
             "phase": frame if drive == 2 else None,
             "previous_frame": struct.unpack_from("<f", raw, 0x94)[0],
             "speed": struct.unpack_from("<f", raw, 0x98)[0],
-            "distance": struct.unpack_from("<f", raw, 0xB0)[0],
             "blend_time": blend_time,
             "blend_duration": blend_duration,
             "fade_progress": blend_progress,
@@ -700,6 +699,7 @@ def main():
         if freeze_pose is not None:
             freeze_object_pose(pine, cache["objs"][args.freeze_bot], freeze_pose)
         projectile_old_head = cache["dynamic_head"]
+        source_cell_ranges = {}
         ranges, tags = [], []
         ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4), (A.GS_FRAME, 4)]
         tags += [("done", 0), ("frame", 0), ("timer_frame", 0)]
@@ -764,6 +764,12 @@ def main():
             if o:
                 tags.append(("obj", s))
                 ranges.append((o, 0x100))
+                if args.seedable and s < n_humans:
+                    cell = pine.read32(o + 0x20)
+                    if valid_ee_pointer(cell, 0xA0):
+                        source_cell_ranges[s] = cell
+                        tags.append(("source_cell", s))
+                        ranges.append((cell, 0xA0))
         for obj, data in cache["projectiles"].items():
             tags += [("projectile_obj", obj), ("projectile_data", obj)]
             ranges += [(obj, 0x100), (data, A.BULLET_RAW_SIZE)]
@@ -1277,6 +1283,11 @@ def main():
                 entry["obj_raw"] = och.hex()
                 entry["substate"] = struct.unpack_from("<H", och, A.OBJ_SUBSTATE)[0]
                 entry["eye"] = list(struct.unpack_from("<3f", och, 0x70))
+                cell_addr = source_cell_ranges.get(s)
+                cell_raw = bytag.get(("source_cell", s))
+                if (cell_addr and cell_raw is not None
+                        and struct.unpack_from("<I", och, 0x20)[0] == cell_addr):
+                    entry["cell_raw"] = cell_raw.hex()
             if ("bl", s) in bytag:
                 bd = bytag[("bl", s)]
                 entry["hp"] = round(struct.unpack_from("<f", bd, 4)[0], 3)

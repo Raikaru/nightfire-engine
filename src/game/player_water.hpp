@@ -38,6 +38,8 @@ public:
 
     std::size_t size() const { return rooms_.size(); }
 
+    // Resolves obj+0x20 from a source snapshot by the cel's class and bounding sphere (1 mm center tolerance).
+    int find_source_cell(std::uint32_t source_flags, const Vec3& sphere_center, float sphere_radius) const;
     // build_FindCel: the room holding `p`, kNone outside all of them.
     int find(const Vec3& p, const CollisionWorld& world) const;
     // control_handle_cel_change for an object that moved `from` -> `to` while in `room` (kNone = not linked):
@@ -64,6 +66,7 @@ private:
     struct Portal {
         std::array<Vec3, 4> quad;
         Vec3 lo, hi;   // quad bounds padded by 0.1 (build_alloc_portal)
+        bool can_recurse;  // portal_data one-way flags, as build_alloc_portal's +0x27 visibility byte
         int dest;
     };
     struct Room {

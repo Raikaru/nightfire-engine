@@ -79,13 +79,6 @@ bool PlayerAnimator::restore_source_state(
         });
         if (found == sets_.end()) return false;
         active_set = &*found;
-        for (int candidate : {1, 2, 3, 4, 5, 6, 999, 0}) {
-            const auto names = stance_names(candidate);
-            if (found->name == names.first || found->name == names.second) {
-                category_ = candidate;
-                break;
-            }
-        }
         std::memcpy(&phase_base, raw.data() + 0x24, sizeof(phase_base));
         std::memcpy(&distance_scale, raw.data() + 0x28, sizeof(distance_scale));
         set_index = static_cast<std::int8_t>(raw[0x2e]);
