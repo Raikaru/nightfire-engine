@@ -1,12 +1,13 @@
 # mp_record.py --script. Use weapon 1 (unarmed melee), --freeze-bot 5, and
-# --face-bot 5. Walk straight at the frozen bot, tap primary at contact twice,
-# then stop and make one stationary follow-up attempt.
+# --face-bot 5. Walk straight at the frozen bot, hold primary for 8 frames at
+# contact twice, then make one stationary follow-up; weapon 1 has 30-frame
+# fire interval and 6-frame fire delay.
 0 release
 2 axis LY -1
 56 down r1
-60 up r1
-72 down r1
-76 up r1
-82 axis LY 0
-100 down r1
-104 up r1
+64 up r1
+72 axis LY 0
+90 down r1
+98 up r1
+126 down r1
+134 up r1

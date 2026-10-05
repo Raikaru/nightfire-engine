@@ -7,6 +7,7 @@
 #include <optional>
 #include <vector>
 
+#include "core/rng.hpp"
 #include "core/math.hpp"
 #include "game/actions.hpp"
 #include "game/player_aim.hpp"
@@ -245,7 +246,7 @@ public:
     // Headless MP update: the body object advances after player/weapons work on the logic frame.
     void tick_body_animation(FrameTiming timing);
     void set_body_weapon(int weapon_id, int category) {
-        if (body_animator_) body_animator_->set_weapon(weapon_id, category, nullptr);
+        if (body_animator_) body_animator_->set_weapon(weapon_id, category, &game_rng());
     }
     void set_stand_height_from_replay(bool from_replay) { stand_height_from_replay_ = from_replay; }
     const std::vector<AnimEvent>& anim_events() const { return anim_events_; }   // last tick's, for Audio footsteps

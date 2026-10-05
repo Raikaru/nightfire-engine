@@ -1087,7 +1087,9 @@ void CharacterInstance::tick_layer(Layer& l, float mul, bool body) {
         f = previous_frame;   // the 0x20000000 one-shot: hold (distance already accumulated above)
         l.fresh = false;
     }
-    if (f < 1.0f || f > l.length) {
+    const std::int16_t end_frame = l.script ? std::int16_t(l.script->length) : std::int16_t(l.length);
+    const bool reached_end = !l.loop && int(f) >= int(end_frame);
+    if (f < 1.0f || f > l.length || reached_end) {
         if (l.loop) {
             f = f < 1.0f ? f + l.length : f - l.length;
         } else {
@@ -1289,8 +1291,8 @@ bool CharacterInstance::layer_ended(std::uint32_t script) const {
 }
 
 float CharacterInstance::foot_height(float model_min_y, bool flag_400) const {
-    // AnimObjectNew: sAnimObject+0xD0 = (-1.160398 [flag 0x400] or -0.995208) - model bbox min y / scale + 0.02;
-    // measured against the game: sAnimObject+0xCC = the primary layer's root y + that offset (no x0.8627 with the flag).
+    // AnimObjectNew: sAnimObject+0xD0 = (-1.160398 [flag 0x400] or -0.995208) - celglist entity_params+0x24 /
+    // skin scale + 0.02; sAnimObject+0x60 stores that offset and +0x5C is root translation plus the offset.
     const float offset = (flag_400 ? -1.160398f : -0.995208f) - model_min_y / skin_.scale[1] + 0.02f;
     return root_height() + offset;
 }
@@ -1333,7 +1335,10 @@ void CharacterInstance::tick(float mul) {
         if (fl) tick_layer(*fl, mul, false);
     // AnimFrameResolve: fade weights, drop layers that faded out (and the partners of dropped layers).
     for (auto& l : layers_) {
-        if (l.strafe) continue;   // flag 0x4000: its blend time is set by AnimSetUpdate, resolve leaves it alone
+        if (l.strafe) {
+            if (tick_owned_blend_weights_) l.resolved_weight = l.blend_time / l.blend_duration;
+            continue;   // AnimSetUpdate owns strafe blend time; AnimFrameResolve still writes its +0x9c cache.
+        }
         l.blend_time += l.direction > 0 ? mul : -mul;   // resolve steps fades by FRAME_RATE_MUL
         l.blend_time = std::clamp(l.blend_time, 0.0f, l.blend_duration);
         if (tick_owned_blend_weights_) l.resolved_weight = l.blend_time / l.blend_duration;

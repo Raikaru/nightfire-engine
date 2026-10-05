@@ -50,15 +50,16 @@ float skin_model_min_y(CharacterBank& bank, const SkinDef& skin) {
     if (skin.skinned.empty()) throw FormatError("player skin has no skinned mesh");
     const auto ref = bank.find_model(bank.resolve_skinned(skin.skinned.front(), 0));
     if (!ref) throw FormatError("player skin mesh is not loaded");
-    return bank.skinned_mesh(*ref).bbox_min[1];
+    // AnimObjectNew reads celglist entity_params+0x24, i.e. the model's stored minimum Y, not decoded mesh bounds.
+    return bank.model(*ref).params[5];
 }
 
 }  // namespace
 
 PlayerAnimator::PlayerAnimator(CharacterBank& bank, const SkinDef& skin, const std::vector<AnimSet>& sets, int weapon_id,
-                               int category, bool initial_setup_pending)
+                               int category)
     : skin_(skin), sets_(sets), character_(bank, skin), model_min_y_(skin_model_min_y(bank, skin)),
-      weapon_id_(weapon_id), category_(category), initial_setup_pending_(initial_setup_pending) {
+      weapon_id_(weapon_id), category_(category) {
     character_.use_explicit_blend_weights();
     select_set();
 }
@@ -129,7 +130,6 @@ bool PlayerAnimator::restore_source_state(
 }
 
 void PlayerAnimator::initialize_set(GameRng* rng) {
-    initial_setup_pending_ = false;
     source_anim_sets_.clear();
     std::array<std::uint8_t, 0x34> node{};
     const auto names = stance_names(category_);
@@ -154,10 +154,7 @@ void PlayerAnimator::select_set() {
 }
 
 float PlayerAnimator::update(bool crouched, const Vec3& velocity, float mul, GameRng* rng) {
-    if (initial_setup_pending_) {
-        crouched_ = crouched;
-        initialize_set(rng);
-    } else if (crouched != crouched_) {
+    if (crouched != crouched_) {
         crouched_ = crouched;
         initialize_set(rng);
         start_transition();

@@ -21,8 +21,8 @@ class PlayerAnimator {
 public:
     // `category` = weapon_data[weapon].+0x84 (1 handgun, 2 SMG, 3 rifle, 4 handgun 2H, 5 launcher, 6 twin handguns,
     // 999 single-player rifle stance, anything else unarmed). The bank (which decodes the skin mesh once, for its bounding box) must outlive the animator.
-    PlayerAnimator(CharacterBank& bank, const SkinDef& skin, const std::vector<AnimSet>& sets, int weapon_id, int category,
-                   bool initial_setup_pending = true);
+    PlayerAnimator(CharacterBank& bank, const SkinDef& skin, const std::vector<AnimSet>& sets, int weapon_id,
+                   int category);
 
     void set_weapon(int weapon_id, int category, GameRng* rng);
     bool restore_source_state(int current_weapon, int current_category, bool crouched,
@@ -34,6 +34,12 @@ public:
     float update(bool crouched, const Vec3& velocity, float mul, GameRng* rng = nullptr);
 
     const CharacterInstance& character() const { return character_; }
+    float model_min_y() const { return model_min_y_; }
+    float skin_scale_y() const { return skin_.scale[1]; }
+    float foot_height() const { return character_.foot_height(model_min_y_); }
+    float root_height() const { return character_.root_height(); }
+    template <typename F>
+    void for_each_layer_info(F&& visitor) const { character_.for_each_layer_info(visitor); }
     std::vector<AnimEvent> take_events();
 
 private:
@@ -51,7 +57,6 @@ private:
     std::vector<std::array<std::uint8_t, 0x34>> source_anim_sets_;
     // Stand2crouch/crouch2stand transition script playing (0 = none); locomotion stays gated until it ends.
     std::uint32_t transition_script_ = 0;
-    bool initial_setup_pending_ = true;
 };
 
 // Skin the player wears in single player (Player_Init: by level id) - the multiplayer skin comes from the arena setup.

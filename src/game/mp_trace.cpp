@@ -192,7 +192,7 @@ void MpTraceSink::dump(const World& world, const ArenaSystem& arena, const Weapo
             std::fprintf(out_, "],\"weapon_timers\":{\"fire_cooldown\":%.4f,\"last_gun\":%d,"
                                "\"last_gadget\":%d,\"trigger_remaining\":%u,\"muzzle_timer\":%d,"
                                "\"weapon_anim\":%u},\"weapon_anim_state\":%u,\"anim_script\":%u,"
-                               "\"anim_frame\":%.9g,\"anim_frame_prev\":%.9g,\"anim_last_frame\":%.9g}",
+                               "\"anim_frame\":%.9g,\"anim_frame_prev\":%.9g,\"anim_last_frame\":%.9g",
                          state ? state->cooldown : 0.0f, state ? state->last_gun : 0,
                          state ? state->last_gadget : 0,
                          unsigned(std::uint16_t(state ? state->shots_left : 0)),
@@ -201,6 +201,25 @@ void MpTraceSink::dump(const World& world, const ArenaSystem& arena, const Weapo
                          state ? state->anim_script : 0u, state && state->anim ? state->anim->frame() : 1.0f,
                          state ? state->anim_frame_prev : 0.0f,
                          state && state->anim ? state->anim->last_frame() : 1.0f);
+            const PlayerAnimator* body = p->body_animator();
+            if (body) {
+                std::fprintf(out_, ",\"body_anim\":{\"root_height\":%.9g,\"foot_height\":%.9g,"
+                                   "\"applied_foot_height\":%.9g,\"model_min_y\":%.9g,"
+                                   "\"skin_scale_y\":%.9g,\"object_offset\":%.9g,\"layers\":[",
+                             body->root_height(), body->foot_height(), p->stand_height, body->model_min_y(),
+                             body->skin_scale_y(), body->foot_height() - body->root_height());
+                bool first_layer = true;
+                body->for_each_layer_info([&](const CharacterInstance::LayerInfo& layer) {
+                    std::fprintf(out_, "%s{\"script_id\":%u,\"frame\":%.9g,\"previous_frame\":%.9g,"
+                                       "\"speed\":%.9g,\"weight\":%.9g,\"blend_time\":%.9g,"
+                                       "\"blend_duration\":%.9g}",
+                                 first_layer ? "" : ",", layer.script, layer.frame, layer.previous_frame,
+                                 layer.speed, layer.weight, layer.blend_time, layer.blend_duration);
+                    first_layer = false;
+                });
+                std::fputs("]}", out_);
+            }
+            std::fputc('}', out_);
         }
     }
     std::fprintf(out_, "],\"respawns\":[");

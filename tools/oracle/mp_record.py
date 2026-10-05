@@ -219,6 +219,16 @@ AI_ROUTE_NODE_POINTER_OFFSET = 0x950
 def valid_ee_pointer(addr, size):
     return (EE_RAM_START <= addr and addr + size <= EE_RAM_END and not addr & 3)
 
+def dynamic_snapshot(tag, key, root, size, *, max_count=1,
+                    next_offset=0xFFFFFFFF, child_offset=0xFFFFFFFF,
+                    child_size=0, indexed=False, child_tag=None):
+    return {
+        "tag": tag, "key": key, "root": root, "size": size,
+        "max_count": max_count, "next_offset": next_offset,
+        "child_offset": child_offset, "child_size": child_size,
+        "indexed": indexed, "child_tag": child_tag,
+    }
+
 def objective_addresses(blobs):
     addresses = set()
     for raw in blobs:
@@ -353,18 +363,13 @@ def refresh_animations(pine, cache):
         refresh_animation_slot(pine, cache, k)
 
 def add_animation_ranges(ranges, tags, k, state, prefix):
+    """Add scalar animation state; pointees are added to the EE hook table."""
     anim = state["anim"]
     tags += [(f"{prefix}_list_head", k), (f"{prefix}_root_height", k),
              (f"{prefix}_distance_step", k), (f"{prefix}_distance_accum", k),
              (f"{prefix}_foot_height", k)]
     ranges += [(anim + 0x2C, 4), (anim + 0x5C, 4),
                (anim + 0x64, 4), (anim + 0x6C, 4), (anim + 0xCC, 4)]
-    for index, layer in enumerate(state["layers"]):
-        tags.append((f"{prefix}_layer_raw", (k, index)))
-        ranges.append((layer["address"], ANIM_LAYER_RAW_SIZE))
-        if layer["seq_primary"]:
-            tags.append((f"{prefix}_seq_raw", (k, index)))
-            ranges.append((layer["seq_primary"], ANIM_SEQ_RAW_SIZE))
 
 
 def anim_layer_rows(bytag, k, descriptor, prefix="anim"):
@@ -701,7 +706,7 @@ def main():
             freeze_object_pose(pine, cache["objs"][args.freeze_bot], freeze_pose)
         projectile_old_head = cache["dynamic_head"]
         source_cell_ranges = {}
-        ranges, tags = [], []
+        ranges, tags, dynamic_specs = [], [], []
         ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4), (A.GS_FRAME, 4),
                    (A.VBLANK_COUNT, 4)]
         tags += [("done", 0), ("frame", 0), ("timer_frame", 0), ("vblank", 0)]

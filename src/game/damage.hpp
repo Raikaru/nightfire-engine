@@ -87,7 +87,7 @@ struct AutoaimTuning {
     float easy = 1.9f;      // Autoaim_EasyMul: weight at difficulty 1 (forced in MP)
     float normal = 1.0f;    // Autoaim_NormalMul: difficulty 2 (and anything but 1/3/4)
     float hard = 0.0f;      // Autoaim_HardMul: difficulty 3-4 disables auto-aim
-    bool enabled = true;    // PlayerSetting+1 (SP) / +2 (MP); the port has no options menu yet, default on
+    bool enabled = true;    // Global master gate; per-player MP PlayerSetting+2 is applied separately.
 
     // Applies [GLOBAL] then `section` of a TuningVars.txt (same section pass as DamageTuning::load).
     static AutoaimTuning load(std::string_view tuning_vars_txt, std::string_view section);

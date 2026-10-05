@@ -283,9 +283,11 @@ public:
     Vec3 pos{};                         // obj+0x30 (above the feet by stand_height)
     int source_view_room = -1;            // obj+0x20 cell used by View_AddCels
     Vec3 source_view_center{};            // previous obj+0x80 world-sphere center for control_handle_cel_change
+    Vec3 source_view_cel_position{};      // previous obj+0x30 point used by Cel_ObjectLeftCel when obj+0xfa bit 0x80 is clear
     Vec3 source_view_center_offset{};     // source view sphere center at obj+0x80 relative to obj+0x30
     float source_view_radius = 0;         // source view sphere radius at obj+0x8c
     bool source_view_sphere_valid = false;
+    bool source_view_cell_uses_sphere = false; // obj+0xfa bit 0x80 selects obj+0x80/+0x70 instead of obj+0x30/+0x40
     float yaw = 0;                      // obj+0x54, forward = (sin yaw, 0, cos yaw)
     Vec3 velocity{};                    // world-space walk velocity (units/s) set by locomotion
     Vec3 fall_velocity{};               // gravity part (units/s)

@@ -1140,14 +1140,17 @@ keeps its previous `+0x9c` even when `blend_time/blend_duration` differs. Every
 bot `CharacterInstance` now refreshes the cache during its tick, under this
 gate, rather than during palette/render resolution. Player animation instead
 refreshes explicitly after `PlayerAnimator::advance`, on the active update path.
-The v6 CTF replay from frame 33662 to 33665 compares without divergent
-fields (0/3); slot 5's weights at frames 33663–33665 are `.1`,
-`.06666667`, and `.033333335`, matching the source. Its source rows include
-0xA0-byte `cell_raw` payloads for bot slots 4–6. At offscreen frame 34054,
-slot 5's source layer has `blend_time/blend_duration = 1/1` and cached
-`effective_weight = 0`; the host retains weight 0. That frame still has
-player 0 state/position/foot and RNG residuals, so this probe does not establish
-full frame parity.
+The v6 CTF replay from frame 33662 to 33665 with `--mp-seed-each` compares
+without divergent fields (0/3); slot 5's weights at frames 33663–33665 are
+`.1`, `.06666667`, and `.033333335`, matching the source. Its rows include
+0xA0-byte `cell_raw` payloads for bot slots 4–6. The continuous 3-tick replay
+from the same seed still differs in player 0's foot each tick and slot 5 yaw
+on frames 33664–33665.
+
+At offscreen frame 34054, slot 5's source layer has
+`blend_time/blend_duration = 1/1` and cached `effective_weight = 0`; the host
+retains weight 0. That frame still has player 0 state/position/foot and RNG
+residuals, so the cache probe does not establish full frame parity.
 
 The Arena view-counter discrepancy was a stale viewer-cel seed as well as a
 candidate-culling issue. `View_CaptureScene` roots `Vision_Portal_Recurse` from
@@ -1163,13 +1166,20 @@ its 206-transition comparison has two RNG-only divergences, at 17479 and
 17520.
 
 Bot room seeds now use `cell_raw` (`obj+0x20`) to recover the source-linked
-room when those bytes are present. For seeded objects with source sphere data,
-`DroneSystem::after_tick` compares the new `obj+0x80` center (position plus the
-seeded center offset) with the previous center and only tracks the room when
-they differ, matching `control_handle_cel_change`'s movement early-out. This
-runs after object control and before camera visibility. Legacy v5 bot rows
-without `cell_raw` still use positional room lookup and cannot resolve the
-exact source cel at the seed boundary.
+room when those bytes are present. `control_handle_cel_change` first compares
+the current and previous sphere centers (`obj+0x80`/`obj+0x70`) and returns
+when unchanged. If movement is detected, the `obj+0xfa` bit `0x80` selects the
+segment passed to `Cel_ObjectLeftCel`: sphere centers when set, otherwise
+previous/current object positions (`obj+0x40`/`obj+0x30`). The host preserves
+that early-out, seeds the selection bit from `obj_raw`, and tracks the
+corresponding old/new points after object control and before camera visibility.
+Legacy v5 bot rows without `cell_raw` still use positional room lookup and
+cannot resolve the exact source cel at the seed boundary.
+
+The current continuous v5 replay from 15350 to 15351 still differs in slot 4's
+animation frame/root delta and position, plus a player 0 foot residual. The
+f15350 `obj+0xfa` value is `0x0008`, selecting object positions; v5 omits
+`cell_raw`, so this replay cannot validate the exact linked-cell seed.
 
 ### Extended seeded campaign results
 

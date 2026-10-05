@@ -39,6 +39,7 @@ enum Action : int {
 // savestate holds).
 struct PlayerSettings {
     bool invert_look = false;    // PlayerSetting[0]: Input_Update negates the two aim axes
+    bool auto_aim = true;        // PlayerSetting+2 in MP; Player_AutoAim / Check_AutoAim enable
     bool crouch_toggle = true;   // PlayerSetting[4]: Player_SSCrouch / Player_HandleJump
     bool auto_center = true;     // PlayerSetting[7]: Player_SSWalk recentres pitch when walking
     bool health_fade = false;    // PlayerSetting[0xB]: Player_Update lets the health bar's damage flash fade (default 0: stays lit)
