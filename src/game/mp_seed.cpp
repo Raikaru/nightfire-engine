@@ -316,7 +316,7 @@ void restore_weapon_anim_layers(PlayerWeapons& weapon, const Json& anim) {
         }
         layer.pair_weight = float_number(row.at("pair_weight"));
         layer.distance_step = distance_step;
-        layer.fresh = row.at("fresh").boolean();
+        layer.command_mask = u32_at(raw, 0x7c);
         layer.strafe = row.at("strafe").boolean();
         const bool active = i + 1 == rows.size();
         const bool stopped = row.at("deleting").boolean();
@@ -944,7 +944,11 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                     u32_at(drone, 0x950) != uint_number(route_row->at("route_node_address")) ||
                     u32_at(drone, 0x954) != uint_number(route_row->at("ai_path_address")))
                     throw std::runtime_error("MP seed: bot route snapshot does not match Drone state for slot " + std::to_string(s));
-                route_nodes = hex_bytes(route_row->at("route_node_raw"));
+                const Json* route_nodes_raw = route_row->find("route_node_raw");
+                if (node_size != 0 && !route_nodes_raw)
+                    throw std::runtime_error("MP seed: bot route node data is missing for slot " +
+                                             std::to_string(s));
+                if (route_nodes_raw) route_nodes = hex_bytes(*route_nodes_raw);
                 if (route_nodes.size() != node_size)
                     throw std::runtime_error("MP seed: bot route node buffer has wrong byte length for slot " + std::to_string(s));
                 if (u32_at(drone, 0x954) != 0) {
