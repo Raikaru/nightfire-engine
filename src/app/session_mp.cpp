@@ -269,7 +269,10 @@ struct MpSession::Impl {
                 bodies.push_back(nullptr);
                 continue;
             }
-            bodies.push_back(std::make_unique<PlayerAnimator>(*bank, *skin, *anim_sets, 1));
+            int weapon_id = 1, category = 1;
+            if (const PlayerWeapons* st = session->weapons().state(int(i)))
+                weapon_id = st->current, category = int(session->weapons().table().weapon(weapon_id).category);
+            bodies.push_back(std::make_unique<PlayerAnimator>(*bank, *skin, *anim_sets, weapon_id, category));
         }
 
         archive = std::make_unique<SoundArchive>(std::filesystem::path(ctx.gamedir));

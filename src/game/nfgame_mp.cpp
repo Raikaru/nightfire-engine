@@ -8,6 +8,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <iterator>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -39,16 +40,23 @@ namespace {
 
 constexpr float kPi = 3.14159265358979f;
 
-// Scripted pad stream of one player: `start x y z yaw [pitch [ground_normal_y]]` then `frame sony_hex rx ry lx ly` lines
-// (the --inputs format of the single-player mode; frame numbers index the logic frames from 0).
+// Scripted pad stream of one player: `start x y z yaw [pitch [ground_normal_y]]` then
+// `frame sony_hex rx ry lx ly [rate [frame_rate_int frame_rate_mul rec_frame_rate ...]]`
+// rows. Timing columns are shared by all player scripts and index logic frames from zero.
 struct Script {
     std::optional<Vec3> start;
     float yaw = 0, pitch = 0, ground_normal_y = 1;
     std::vector<std::pair<long, PadState>> frames;   // ascending frame numbers
+    std::vector<std::pair<long, FrameTiming>> timings;
 
     PadState at(long frame) const {
         auto it = std::lower_bound(frames.begin(), frames.end(), frame, [](const auto& f, long v) { return f.first < v; });
         return it != frames.end() && it->first == frame ? it->second : compensate_sticks(PadState{});
+    }
+    std::optional<FrameTiming> timing_at(long frame) const {
+        const auto it = std::upper_bound(timings.begin(), timings.end(), frame,
+                                         [](long f, const auto& row) { return f < row.first; });
+        return it == timings.begin() ? std::nullopt : std::optional<FrameTiming>(std::prev(it)->second);
     }
     long length() const { return frames.empty() ? 0 : frames.back().first + 1; }
 };
@@ -75,7 +83,36 @@ Script read_script(const std::string& path) {
         if (!(ls >> std::hex >> word >> std::dec >> rx >> ry >> lx >> ly)) throw std::runtime_error("bad input line: " + line);
         pad.buttons = buttons_from_sony_pad_word(std::uint16_t(word));
         pad.rx = std::uint8_t(rx), pad.ry = std::uint8_t(ry), pad.lx = std::uint8_t(lx), pad.ly = std::uint8_t(ly);
-        s.frames.emplace_back(std::strtol(head.c_str(), nullptr, 10), pad);
+        const long frame = std::strtol(head.c_str(), nullptr, 10);
+        s.frames.emplace_back(frame, pad);
+        float rate;
+        if (ls >> rate) {
+            if (!(rate > 0.0f) || !std::isfinite(rate))
+                throw std::runtime_error("invalid frame rate in inputs: " + line);
+            float rate_int_value, rate_mul, rec_rate;
+            if (ls >> rate_int_value >> rate_mul >> rec_rate) {
+                const bool integer_rate = std::isfinite(rate_int_value)
+                                          && rate_int_value >= 1.0f
+                                          && rate_int_value <= 240.0f
+                                          && std::fabs(rate_int_value - std::round(rate_int_value)) < 0.001f;
+                const int rate_int = integer_rate ? int(rate_int_value) : 0;
+                const bool has_exact_rate = integer_rate
+                                            && rate_int == int(rate + 0.5f)
+                                            && std::fabs(rate - float(rate_int)) < 0.01f;
+                if (has_exact_rate) {
+                    if (!(rate_mul > 0.0f) || !(rec_rate > 0.0f)
+                        || !std::isfinite(rate_mul) || !std::isfinite(rec_rate))
+                        throw std::runtime_error("invalid frame timing in inputs: " + line);
+                    s.timings.emplace_back(
+                        frame, FrameTiming{rate, rate_mul, rec_rate, rate_int});
+                } else {
+                    // Older input rows have rate, foot height, and sync position only.
+                    s.timings.emplace_back(frame, FrameTiming{rate});
+                }
+            } else {
+                s.timings.emplace_back(frame, FrameTiming{rate});
+            }
+        }
     }
     return s;
 }
@@ -350,7 +387,14 @@ int run_match(const MatchLaunch& request) {
                 session.arena().set_seeded_clock_for_tick(match_elapsed, match_total_elapsed);
             } else {
                 for (int i = 0; i < options.humans; ++i) pads[std::size_t(i)] = scripts[std::size_t(i)].at(f);
+                for (const Script& script : scripts) {
+                    if (const auto source_timing = script.timing_at(f)) {
+                        timing = *source_timing;
+                        break;
+                    }
+                }
             }
+            world.tick(pads, timing);
             emitter_sim->update(world.player(0)->eye(), timing.FRAME_RATE_MUL, timing.REC_FRAME_RATE,
                                 [&world](int ch) { return world.objects().channel(unsigned(ch)); });
             for (int i = 0; i < options.humans; ++i) {

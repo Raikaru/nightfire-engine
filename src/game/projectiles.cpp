@@ -1,5 +1,7 @@
 #include "game/projectiles.hpp"
 
+#include "assets/level.hpp"
+#include "assets/reader.hpp"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -43,6 +45,75 @@ int part_at(const Vec3& point, const Vec3& a, const Vec3& b, float radius) {
 }
 
 }  // namespace
+
+void WeaponSystem::create_impact_emitter(std::uint32_t id) {
+    if (!world_ || id == 0) return;
+    for (const ChunkFile& entry : world_->level().chunks()) {
+        for (const Block& block : entry.chunk.blocks) {
+            if (block.id != 0x30 || block.data.size() < 8) continue;
+            std::size_t p = 4;
+            const std::uint32_t count = load<std::uint32_t>(block.data, p);
+            p += 4;
+            for (std::uint32_t i = 0; i < count && p + 64 <= block.data.size(); ++i) {
+                if ((load<std::uint32_t>(block.data, p) & 0xFF) != 4) break;
+                const std::uint32_t def_id = load<std::uint32_t>(block.data, p + 4);
+                const int particle_count = load<std::uint16_t>(block.data, p + 16);
+                const int budget = std::max(1, int(load<std::uint16_t>(block.data, p + 18)));
+                const float life = load<float>(block.data, p + 24);
+                const float life_random = load<float>(block.data, p + 28);
+                const std::uint32_t key_count = load<std::uint32_t>(block.data, p + 60);
+                if (def_id == id && particle_count > 0) {
+                    ImpactEmitter emitter;
+                    emitter.id = id;
+                    emitter.particle_count = particle_count;
+                    emitter.budget = budget;
+                    emitter.life = life;
+                    emitter.life_random = life_random;
+                    emitter.ages.assign(std::size_t(particle_count), 1e30f);
+                    emitter.lives.assign(std::size_t(particle_count), 0.0f);
+                    impact_emitters_.push_back(std::move(emitter));
+                    return;
+                }
+                p += 64;
+                if (key_count > (block.data.size() - p) / 20) break;
+                p += std::size_t(key_count) * 20;
+            }
+        }
+    }
+}
+
+void WeaponSystem::update_impact_emitters(FrameTiming timing) {
+    const float delta = timing.rec();
+    for (ImpactEmitter& emitter : impact_emitters_) {
+        for (std::size_t i = 0; i < emitter.ages.size(); ++i) {
+            float& age = emitter.ages[i];
+            if (age >= emitter.lives[i]) continue;
+            age += delta;
+            if (age >= emitter.lives[i]) age = 1e30f;
+        }
+        if (!emitter.one_shot_full) {
+            emitter.spawn_budget += float(emitter.budget) * timing.mul();
+            int budget = int(emitter.spawn_budget);
+            for (std::size_t i = 0; i < emitter.ages.size() && budget > 0; ++i) {
+                if (emitter.ages[i] < emitter.lives[i]) continue;
+                --budget;
+                emitter.spawn_budget -= 1.0f;
+                (void)game_rng().frand_half(1.0f);
+                (void)game_rng().frand_half(1.0f);
+                (void)game_rng().frand_half(1.0f);
+                emitter.ages[i] = 0.0f;
+                emitter.lives[i] =
+                    std::max(0.05f, emitter.life + emitter.life_random * game_rng().frand_half(1.0f));
+            }
+        }
+        int alive = 0;
+        for (std::size_t i = 0; i < emitter.ages.size(); ++i)
+            if (emitter.ages[i] < emitter.lives[i]) ++alive;
+        if (alive == emitter.particle_count) emitter.one_shot_full = true;
+        emitter.empty_ticks = alive == 0 ? emitter.empty_ticks + 1 : 0;
+    }
+    std::erase_if(impact_emitters_, [](const ImpactEmitter& emitter) { return emitter.empty_ticks >= 3; });
+}
 
 std::optional<CapsuleHit> ray_capsule(const Vec3& from, const Vec3& delta, const Vec3& a, const Vec3& b, float radius) {
     const Vec3 ab = b - a, ap = from - a;
@@ -363,6 +434,7 @@ void WeaponSystem::bullet_hit(Projectile& b, const SegmentHit& hit, const Weapon
     // (Taser validity is decided pre-spawn in init_bullet now; a world hit here only happens when the victim
     // moved away mid-flight, so the round stays spent.)
     events_.impacts.push_back({hit.point, hit.normal, hit.surface, def.id, on_body, b.owner});
+    create_impact_emitter(table_.surface(hit.surface).emitter_id);   // Bullet_CollisionHandler -> Effect_Create(0x61)
     if (on_body) {
         float dmg = def.damage;
         if (def.blast_radius > 0.0f) {   // splash weapons: direct damage is 1 or 0, the explosion does the rest

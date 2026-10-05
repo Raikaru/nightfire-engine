@@ -123,6 +123,7 @@ struct SurfaceEffect {
     std::uint16_t ricochet_sound = 0; // +24 SFX id
     std::uint8_t ricochet_prob = 0;   // +26 Effect_RicochetProb: Rand(prob) test
     float restitution = 0;            // +28 speed kept by a bouncing projectile
+    std::uint32_t emitter_id = 0;     // +132 Effect_Create emitter, when hit flags include 0x20
 };
 
 class WeaponTable {

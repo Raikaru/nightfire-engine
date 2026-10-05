@@ -1093,16 +1093,17 @@ void WeaponSystem::process_health_events(int slot, PlayerWeapons& p, Player& pl)
             const int base = held.base;
             const int rounds = p.weapon[std::size_t(ammo_index(p.current))].clip;
             const auto axes = pl.view_axes();
-            Vec3 gun_root{};
-            if (p.anim && !p.anim->skin().parent.empty()) {
-                const Mat4 root = p.anim->bone_world(0);
-                gun_root = {root[12], root[13], root[14]};
-            }
-            // Player_PositionGun uses this head/camera offset. The available skin root-bone translation
-            // approximates the AnimObject root position; its exact mapping to the source +0x30/+0x50 pose
-            // remains unverified.
-            const Vec3 drop_pos = pl.head_position() + axes[1] * -0.2f + axes[2] * 0.5f +
-                                  axes[0] * gun_root[0] + axes[1] * gun_root[1] + axes[2] * gun_root[2];
+            Mat4 anim_pose = identity();
+            if (p.anim && !p.anim->skin().parent.empty())
+                anim_pose = p.anim->bone_world(0);
+            const Vec3 anim_offset{anim_pose[12], anim_pose[13], anim_pose[14]};
+            const Vec3 anim_x = axes[0] * anim_pose[0] + axes[1] * anim_pose[1] + axes[2] * anim_pose[2];
+            const Vec3 anim_y = axes[0] * anim_pose[4] + axes[1] * anim_pose[5] + axes[2] * anim_pose[6];
+            const Vec3 anim_z = axes[0] * anim_pose[8] + axes[1] * anim_pose[9] + axes[2] * anim_pose[10];
+            // Player_PositionGun stores head + rotated AnimObject +0x30 in matrix +0xC0,
+            // then adds (0,-0.2,+0.5) transformed by the camera/object basis.
+            const Vec3 drop_pos = pl.head_position() + anim_x * anim_offset[0] + anim_y * anim_offset[1] +
+                                  anim_z * anim_offset[2] + axes[1] * -0.2f + axes[2] * 0.5f;
             const bool dropped = rules_->drop_weapon(drop_pos, base, rounds);
             if (dropped && base == 26)
                 rules_->drop_weapon(drop_pos, 27, p.weapon[std::size_t(ammo_index(27))].clip, true);
@@ -1226,6 +1227,7 @@ void WeaponSystem::tick(World& world, FrameTiming timing) {
             if (players_[std::size_t(slot)]) tick_player(slot, world, timing);
         }
     }
+    update_impact_emitters(timing);
     step_projectiles(world, timing);
     for (int slot = 0; slot < World::kMaxPlayers; ++slot) {
         PlayerWeapons* state = players_[std::size_t(slot)].get();

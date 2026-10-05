@@ -81,13 +81,14 @@ def _write_frame_timing_script(source, dest):
     if not source_rows or not any(
             "rate" in row or "frame_rate_int" in row for row in source_rows):
         return False
+    rows_written = 0
     with open(dest, "w", encoding="ascii") as out:
         for row in source_rows:
-            if "rate" not in row or "frame_rate_int" not in row:
-                raise ValueError(
-                    f"{source}: frame {row['frame']} lacks recorded frame timing")
-            rate = float(row["rate"])
-            if not math.isfinite(rate) or rate <= 0:
+            if "rate" not in row and "frame_rate_int" not in row:
+                continue
+            rate = float(row.get("rate", row.get("frame_rate_int", 0)))
+            rate_int = int(row.get("frame_rate_int", round(rate)))
+            if not math.isfinite(rate) or rate <= 0 or rate_int <= 0:
                 raise ValueError(f"{source}: frame {row['frame']} has invalid rate")
             rate_mul = float(row.get("frame_rate_mul", 60.0 / rate))
             rec_rate = float(row.get("rec_frame_rate", 1.0 / rate))
@@ -95,9 +96,10 @@ def _write_frame_timing_script(source, dest):
             if (not math.isfinite(rate_mul) or not math.isfinite(rec_rate)
                     or rate_mul <= 0 or rec_rate <= 0 or vblank_count < 0):
                 raise ValueError(f"{source}: frame {row['frame']} has invalid timing")
-            out.write(f"{int(row['frame'])} {int(row['frame_rate_int'])} "
+            out.write(f"{int(row['frame'])} {rate_int} "
                       f"{rate:.9g} {rate_mul:.9g} {rec_rate:.9g} {vblank_count}\n")
-    return True
+            rows_written += 1
+    return rows_written > 0
 
 
 class _StreamPine:
@@ -172,7 +174,8 @@ def main():
     ap.add_argument("--nfmips", default="build/nfmips")
     ap.add_argument("--rows", type=int, required=True,
                     help="number of snapshots, including the initial P2S row")
-    ap.add_argument("--inputs", help="contiguous mp_record JSONL supplying pad and per-frame timing rows")
+    ap.add_argument("--inputs", help="contiguous JSONL supplying pad inputs")
+    ap.add_argument("--timing-inputs", help="JSONL supplying recorded per-frame timing globals")
     ap.add_argument("--watch-human-hp", type=int, choices=range(4),
                     help="log writes to one MP human's BLData HP, including PC and $ra")
     ap.add_argument("--weapon-anim-raw", action="store_true",
@@ -219,8 +222,9 @@ def main():
         if args.inputs:
             pad_span = _write_pad_script(args.inputs, pad_script)
             command += ["--pads", str(pad_script)]
-            if _write_frame_timing_script(args.inputs, timing_script):
-                command += ["--frame-timing", str(timing_script)]
+        timing_source = args.timing_inputs or args.inputs
+        if timing_source and _write_frame_timing_script(timing_source, timing_script):
+            command += ["--frame-timing", str(timing_script)]
 
         instances = []
 

@@ -218,11 +218,10 @@ the ring head. Duplicate end-frame counters are skipped; full rings drop the
 new sample and increment overflow. `mp_record.py` drains these immutable
 end-of-frame snapshots instead of batching live source reads, preventing
 fields from adjacent logic frames being mixed. Capacity remains payload-size dependent.
-The EE replay advances `VBlankCount` once before each emulated game-frame call,
-matching `VBlankInt` and the one-counter-increment-per-GameState-frame cadence
-observed in CTF and Arena P2S checkpoints. `mp_record.py` records this counter
-as `vblank_count`; it is useful for separating timer drift from gameplay-state
-divergence.
+The EE replay sets `VBlankCount` from a recorded `vblank_count` row before each
+emulated game-frame call, or increments it once when replaying legacy timing
+inputs without that field. `mp_record.py` captures the counter for distinguishing
+timer drift from gameplay-state divergence.
 The recurring `patch=1` payload in
 `tools/oracle/pcsx2/SLUS-20579_5B86BB62.pnach` must stay synchronized with
 `frame_hook_words()`; the hook rejects wrapped slots and any end beyond the
@@ -309,6 +308,18 @@ next frame. Fill compares only common EE fields in the v5/v6 capture schemas;
 the differing `seed_version` tag and absent version-specific fields are metadata.
 Row numbers come from the saved GameState counters, not the P2S filename or
 requested checkpoint frame.
+`mp_record.py` writes the source `FRAME_RATE` (`rate`), `FRAME_RATE_INT`,
+`FRAME_RATE_MUL`, `REC_FRAME_RATE`, and `vblank_count` on every normal or
+resync row. A 30/60-Hz transition is replayed from the recorded row, not inferred
+from host load: `ee_oracle.py --timing-inputs REC.jsonl` feeds those values to
+`nfmips` per frame. When `--inputs` already contains timing columns it is used
+as the timing source too; `ee_oracle_fill.py` automatically supplies its
+reference recording while keeping pad-only contiguous input files separate.
+The host's `--mp-seed` and `--mp-seed-each` paths pass all four recorded rate
+values to `FrameTiming` for each tick. Ordinary `--inputs` rows may append
+`rate frame_rate_int frame_rate_mul rec_frame_rate` before their existing
+foot-height/sync data; legacy rows with only `rate` retain derived 30/60-Hz
+timing.
 A two-row CTF hook replay (33604→33605) now matches `MPGame+0x190`,
 `+0x19c`, and `+0x1a4` exactly after modeling `VBlankInt`'s one-increment-
 per-game-frame update. The raw human collision delta is `HITDATA_tag+0x4c`:

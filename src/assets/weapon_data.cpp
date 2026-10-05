@@ -382,6 +382,7 @@ WeaponTable WeaponTable::from_elf(const Elf32& elf) {
         e.ricochet_sound = load<std::uint16_t>(fx, o + 24);
         e.ricochet_prob = fx[o + 26];
         e.restitution = load<float>(fx, o + 28);
+        e.emitter_id = load<std::uint32_t>(fx, o + 132);
         t.surfaces_.push_back(std::move(e));
     }
 

@@ -793,7 +793,9 @@ int run_server_impl(int argc, char** argv, const std::atomic<bool>* stop = nullp
                     info.players = 0;
                     for (const Peer& peer : peers)
                         if (peer.active) info.players = std::uint8_t(info.players + peer.local_players);
-                    info.max_players = std::uint8_t(active_settings.slot_count);
+                    info.max_players = std::uint8_t(
+                        active_settings.rules == nf::MpRuleSet::Extended ? active_settings.slot_count
+                                                                         : nf::kMpMaxLocalHumans);
                     info.bots = std::uint8_t(active_settings.bot_count());
                     info.slot_count = std::uint8_t(active_settings.slot_count);
                     info.modified_rules = active_settings.score_limit != 10 || active_settings.time_limit != 600.0f ||

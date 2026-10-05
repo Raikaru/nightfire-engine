@@ -76,17 +76,28 @@ def make_inputs(trace_path, out_path):
                         best, best_err = k, err
                 for m in range(a + 1, b):
                     flip_rate[m] = rb if m >= best else ra
+        def triple(rec, rate):
+            # Per-row timing for MpOracle-2's importer (columns after `rate`): copy the source
+            # record's fields exactly when present, else derive from the effective rate (matches
+            # FrameTiming's own mul()/rec()). Gap frames use the motion-fit rate via `rate`.
+            if rec is not None and "frame_rate_int" in rec:
+                return (int(rec["frame_rate_int"]), float(rec["frame_rate_mul"]),
+                        float(rec["rec_frame_rate"]))
+            r = rate if rate else 30.0
+            return (int(round(r)), 60.0 / r, 1.0 / r)
         for frame, rec in lines:
             if frame in flip_rate:
                 rate = flip_rate[frame]
             rate = by_frame[frame].get("rate", rate) if frame in by_frame else rate   # ...but the previous rate
+            fri, fmul, frec = triple(by_frame.get(frame), rate)
             pad = rec["pad"]
             src = by_frame.get(frame)
             if src:
                 height = struct.unpack_from("<f", bytes.fromhex(src["cb"]), 0xCC)[0]
             before = by_frame.get(frame - 1)
             sync = " %.9g %.9g %.9g" % tuple(before["pos"]) if before else ""
-            f.write("%d %x %d %d %d %d %g %.9g%s\n" % (frame, pad["w"], *pad["s"], rate, height, sync))
+            f.write("%d %x %d %d %d %d %g %d %.9g %.9g %.9g%s\n" %
+                    (frame, pad["w"], *pad["s"], rate, fri, fmul, frec, height, sync))
     return len(recs)
 
 

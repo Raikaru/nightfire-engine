@@ -7,10 +7,9 @@ namespace nf {
 
 namespace {
 
-// Sony libpad word bits (tSlot+0x122).
-constexpr std::uint16_t kL2 = 0x1, kR2 = 0x2, kL1 = 0x4, kR1 = 0x8, kTriangle = 0x10, kCircle = 0x20,
-                        kCross = 0x40, kSquare = 0x80, kSelect = 0x100, kStart = 0x800, kUp = 0x1000,
-                        kRight = 0x2000, kDown = 0x4000, kLeft = 0x8000;
+// Sony libpad word bits (tSlot+0x122) used here; shoulders and Select are handled elsewhere.
+constexpr std::uint16_t kTriangle = 0x10, kCircle = 0x20, kCross = 0x40, kSquare = 0x80, kStart = 0x800,
+                        kUp = 0x1000, kRight = 0x2000, kDown = 0x4000, kLeft = 0x8000;
 
 // (byte - 127) / 128, the stick scaling psiInput_MapInputs applies to every axis.
 float axis(std::uint8_t b) { return (float(b) - 127.0f) * 0.0078125f; }
