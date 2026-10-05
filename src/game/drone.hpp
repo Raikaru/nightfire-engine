@@ -294,6 +294,7 @@ public:
     float stand_height = 1.0327658653f; // collbody+0xCC
     float radius = 0.55f;               // collision capsule radius
     bool on_ground = false;
+    std::uint16_t collision_flags = 0; // obj+0x60: collision contact bits, including floor bit 0x8
     float ground_normal_y = 1.0f;
     float turn_rate = 0;                // current yaw rate (rad/tick)
     float speed_scale = 1.0f;

@@ -394,7 +394,7 @@ int run_match(const MatchLaunch& request) {
                     }
                 }
             }
-            world.tick(pads, timing);
+            session.tick(pads, timing);
             emitter_sim->update(world.player(0)->eye(), timing.FRAME_RATE_MUL, timing.REC_FRAME_RATE,
                                 [&world](int ch) { return world.objects().channel(unsigned(ch)); });
             for (int i = 0; i < options.humans; ++i) {

@@ -2606,13 +2606,58 @@ struct OracleFrameTiming {
     u32 vblank_count = 0;
 };
 
+void dump_mem_heap(Machine& m, const std::string& path) {
+    constexpr u32 kPtrHeap = 0x0030CF90;
+    constexpr u32 kPtrHeapEnd = 0x0030CF94;
+    constexpr u32 kHeapByteSize = 0x0030CF98;
+    constexpr u32 kMallocSize = 0x0030CF9C;
+    constexpr u32 kMallocMethod = 0x0030D800;
+    constexpr u32 kQuickBlock = 0x0030D804;
+    const u32 begin = m.mem.read<u32>(kPtrHeap);
+    const u32 end = m.mem.read<u32>(kPtrHeapEnd);
+    if (begin >= end || m.mem.ram_offset(begin) == ~u32(0)
+        || m.mem.ram_offset(end - 1) == ~u32(0))
+        throw std::runtime_error("invalid Mem heap bounds");
+    FILE* file = std::fopen(path.c_str(), "w");
+    if (!file) throw std::runtime_error("cannot open heap dump: " + path);
+    std::fprintf(file, "base=%08x end=%08x byte_size=%08x malloc_size=%08x "
+                       "method=%08x quick_block=%08x\n",
+                 begin, end, m.mem.read<u32>(kHeapByteSize),
+                 m.mem.read<u32>(kMallocSize), m.mem.read<u32>(kMallocMethod),
+                 m.mem.read<u32>(kQuickBlock));
+    u32 block = begin;
+    u32 count = 0;
+    const u32 limit = end - 12;
+    while (block < limit) {
+        if (m.mem.ram_offset(block + 11) == ~u32(0)) {
+            std::fclose(file);
+            throw std::runtime_error("Mem heap block header exceeds EE RAM");
+        }
+        const u32 size = m.mem.read<u32>(block + 4);
+        if (size < 12 || u64(block) + size > end) {
+            std::fclose(file);
+            throw std::runtime_error("invalid Mem heap block size");
+        }
+        std::fprintf(file, "%08x %08x %08x %04x %02x\n",
+                     block, size, m.mem.read<u32>(block),
+                     m.mem.read<u16>(block + 8), m.mem.read<u8>(block + 11));
+        block += size;
+        if (++count > (end - begin) / 12 + 1) {
+            std::fclose(file);
+            throw std::runtime_error("Mem heap block chain did not terminate");
+        }
+    }
+    std::fclose(file);
+}
+
 
 int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                   const std::string& pad_script, const std::string& timing_script,
                   int watch_human_hp_slot, u32 trace_frame, int trace_slot, bool trace_rng,
-                  const std::vector<int>& give_weapons,
+                  bool trace_allocations, const std::vector<int>& give_weapons,
                   int watch_drone_anim_slot, u32 watch_drone_frame,
-                  bool game_flow, bool sample_at_game_run_hook, u32 watch_addr = 0) {
+                  bool game_flow, bool sample_at_game_run_hook, u32 watch_addr,
+                  const std::string& heap_dump_path) {
     if (state.empty() || rows < 1)
         throw std::runtime_error("mp-oracle needs --state <p2s> and --rows N");
     if (sample_at_game_run_hook && !game_flow)
@@ -2625,9 +2670,11 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
         throw std::runtime_error("--sample-at-game-run-hook excludes --trace-frame");
     if ((trace_frame == 0) != (trace_slot == -1)
         || (trace_frame != 0 && (trace_slot < 4 || trace_slot > 7))
-        || (trace_frame != 0 && (watch_human_hp_slot >= 0 || trace_rng)))
+        || (trace_frame != 0 && (watch_human_hp_slot >= 0 || trace_rng || trace_allocations)))
         throw std::runtime_error(
-            "--trace-frame excludes --watch-human-hp and --trace-rng");
+            "--trace-frame excludes --watch-human-hp, --trace-rng, and --trace-allocations");
+    if (trace_rng && trace_allocations)
+        throw std::runtime_error("--trace-rng and --trace-allocations are mutually exclusive");
     std::map<u32, std::vector<OraclePad>> pads;
     if (!pad_script.empty()) {
         std::ifstream input(pad_script);
@@ -3018,6 +3065,8 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
             throw std::runtime_error("writing oracle stream failed");
     };
     std::vector<u8> compressed(compressBound(kRamSize));
+    const u32 heap_dump_frame = m.mem.read<u32>(kFrameStart) + u32(rows - 1);
+    bool heap_dumped = false;
     auto snapshot = [&]() {
         const u32 frame = m.mem.read<u32>(kFrameStart);
         const u32 done = m.mem.read<u32>(kDone);
@@ -3032,6 +3081,10 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
         write_u32(u32(compressed_size));
         if (std::fwrite(compressed.data(), 1, compressed_size, stdout) != compressed_size)
             throw std::runtime_error("writing oracle snapshot failed");
+        if (!heap_dump_path.empty() && frame == heap_dump_frame && !heap_dumped) {
+            dump_mem_heap(m, heap_dump_path);
+            heap_dumped = true;
+        }
     };
 
     const u8 magic[] = {'N', 'F', 'O', 'R'};
@@ -3096,6 +3149,71 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                 break;
             }
         });
+    }
+    struct AllocatorFunction {
+        u32 address;
+        const char* name;
+        bool is_free;
+    };
+    struct PendingAllocation {
+        u32 caller_return;
+        u32 caller;
+        u32 stack;
+        u32 frame;
+        const AllocatorFunction* function;
+        u32 arg0, arg1, arg2, pointer;
+    };
+    const std::array<AllocatorFunction, 2> allocator_functions = {{
+        {m.addr("Mem_Malloc__FUiUiUi"), "Mem_Malloc", false},
+        {m.addr("Mem_Free__FPPv"), "Mem_Free", true},
+    }};
+    std::vector<PendingAllocation> allocator_pending;
+    if (trace_allocations) {
+        std::fprintf(stderr, "MEM_TRACE enabled functions=%zu\n",
+                     allocator_functions.size());
+        m.set_instruction_observer(
+            [&](const nf::ee::Cpu& cpu, u32 pc, u32) {
+                if (sample_at_game_run_hook && pc == 0x001C98BCu
+                    && !sample_hook_seen) {
+                    snapshot();
+                    sample_hook_seen = true;
+                }
+                const u32 stack = u32(cpu.r[29].d[0]);
+                for (auto it = allocator_pending.begin();
+                     it != allocator_pending.end();) {
+                    if (pc != it->caller_return || stack != it->stack) {
+                        ++it;
+                        continue;
+                    }
+                    const u32 result = it->function->is_free
+                        ? (m.mem.ram_offset(it->arg0) != ~u32(0)
+                               ? m.mem.read<u32>(it->arg0) : 0)
+                        : cpu.r[2].w[0];
+                    std::fprintf(stderr,
+                        "MEM_CALL frame=%u op=%s arg0=%08x arg1=%08x arg2=%08x "
+                        "pointer=%08x result=%08x caller=%08x",
+                        it->frame, it->function->name, it->arg0, it->arg1, it->arg2,
+                        it->pointer, result, it->caller);
+                    if (auto symbol = m.symbol_at(it->caller))
+                        std::fprintf(stderr, " <%s+0x%x>", symbol->name.c_str(),
+                                     it->caller - symbol->value);
+                    std::fputc('\n', stderr);
+                    it = allocator_pending.erase(it);
+                }
+                for (const AllocatorFunction& function : allocator_functions) {
+                    if (pc != function.address) continue;
+                    const u32 caller_return = u32(cpu.r[31].d[0]);
+                    const u32 arg0 = cpu.r[4].w[0];
+                    const u32 pointer = function.is_free
+                        && m.mem.ram_offset(arg0) != ~u32(0)
+                        ? m.mem.read<u32>(arg0) : 0;
+                    allocator_pending.push_back({
+                        caller_return, caller_return - 8, stack,
+                        m.mem.read<u32>(kFrameStart), &function,
+                        arg0, cpu.r[5].w[0], cpu.r[6].w[0], pointer});
+                    break;
+                }
+            });
     }
     auto sample_hook_observer = [&](const nf::ee::Cpu&, u32 pc, u32) {
         if (pc == 0x001C98BCu && !sample_hook_seen) {
@@ -3227,7 +3345,7 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
             }
         }
         sample_hook_seen = false;
-        if (sample_at_game_run_hook && !trace_rng)
+        if (sample_at_game_run_hook && !trace_rng && !trace_allocations)
             m.set_instruction_observer(sample_hook_observer);
         try {
             m.call_keep(entry, {}, 200'000'000);
@@ -3239,7 +3357,7 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                          m.cpu.cur_pc, e.what());
             std::fputs(m.disasm_range(m.cpu.cur_pc - 16, 8).c_str(), stderr);
         }
-        if (!trace_rng) m.set_instruction_observer({});
+        if (!trace_rng && !trace_allocations) m.set_instruction_observer({});
         if (trace_frame != 0 && next_frame == trace_frame) {
             m.mem.set_watch({});
             if (!trace_done)
@@ -3254,6 +3372,8 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
         if (!sample_at_game_run_hook)
             snapshot();
     }
+    if (!heap_dump_path.empty() && !heap_dumped)
+        throw std::runtime_error("replay did not capture the requested Mem heap frame");
     if (std::fflush(stdout) != 0) throw std::runtime_error("flushing oracle stream failed");
     return 0;
 }
@@ -3268,6 +3388,8 @@ void usage() {
                  "         [--watch-human-hp 0..3 | --watch-drone-anim 4..7 --watch-drone-frame N]\n"
                  "         [--watch-addr EE_RAM_ADDRESS] [--trace-frame N --trace-slot 4..7] [--trace-rng]\n"
                  "         [--game-flow|--no-game-flow] [--sample-at-game-run-hook]\n"
+                 "         [--trace-allocations]\n"
+                 "         [--heap-dump file]\n"
                  "       nfmips <elf> sinf3-selftest (PS2Sinf3 angle-range loops and cardinal outputs)\n"
                  "       nfmips <elf> float-selftest (EE/VU float model assertions)\n"
                  "       nfmips <elf> symbols [substr]\n"
@@ -3342,11 +3464,12 @@ int main(int argc, char** argv) {
         }
 
         if (cmd == "mp-oracle") {
-            std::string state, pads, timing_script;
+            std::string state, pads, timing_script, heap_dump_path;
             int rows = 0, watch_human_hp_slot = -1, trace_slot = -1;
             int watch_drone_anim_slot = -1;
             u32 trace_frame = 0, watch_drone_frame = 0, watch_addr = 0;
-            bool trace_rng = false, game_flow = true, sample_at_game_run_hook = false;
+            bool trace_rng = false, trace_allocations = false;
+            bool game_flow = true, sample_at_game_run_hook = false;
             std::vector<int> give_weapons;
             for (size_t j = 2; j < av.size(); j++) {
                 if (av[j] == "--state" && j + 1 < av.size()) state = av[++j];
@@ -3366,9 +3489,12 @@ int main(int argc, char** argv) {
                     watch_drone_frame = u32(std::stoul(av[++j]));
                 else if (av[j] == "--watch-addr" && j + 1 < av.size())
                     watch_addr = u32(std::stoul(av[++j], nullptr, 0));
+                else if (av[j] == "--heap-dump" && j + 1 < av.size())
+                    heap_dump_path = av[++j];
                 else if (av[j] == "--give-weapon" && j + 1 < av.size())
                     give_weapons.push_back(std::stoi(av[++j]));
                 else if (av[j] == "--trace-rng") trace_rng = true;
+                else if (av[j] == "--trace-allocations") trace_allocations = true;
                 else if (av[j] == "--game-flow") game_flow = true;
                 else if (av[j] == "--no-game-flow") game_flow = false;
                 else if (av[j] == "--sample-at-game-run-hook")
@@ -3378,12 +3504,14 @@ int main(int argc, char** argv) {
                     "[--frame-timing file] [--give-weapon ID ...] [--watch-human-hp 0..3] "
                     "[--watch-drone-anim 4..7 --watch-drone-frame N] "
                     "[--trace-frame N --trace-slot 4..7] [--trace-rng] "
-                    "[--no-game-flow] [--sample-at-game-run-hook]");
+                    "[--trace-allocations] [--no-game-flow] "
+                    "[--sample-at-game-run-hook] [--heap-dump file]");
             }
             return cmd_mp_oracle(elf, state, rows, pads, timing_script,
-                                 watch_human_hp_slot, trace_frame, trace_slot, trace_rng, give_weapons,
-                                 watch_drone_anim_slot, watch_drone_frame, game_flow,
-                                 sample_at_game_run_hook, watch_addr);
+                                 watch_human_hp_slot, trace_frame, trace_slot, trace_rng,
+                                 trace_allocations, give_weapons, watch_drone_anim_slot,
+                                 watch_drone_frame, game_flow, sample_at_game_run_hook,
+                                 watch_addr, heap_dump_path);
         }
         if (cmd == "call") {
             if (av.size() < 3) {

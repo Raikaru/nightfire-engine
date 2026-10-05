@@ -13,6 +13,7 @@
 namespace nf::drone {
 
 namespace {
+constexpr std::uint16_t kCollisionGrounded = 0x8u;
 
 // +x of the object frame is the character's LEFT (the original's convention: CanStrafeLeft moves by +x).
 Vec3 to_world(const Vec3& local, float yaw) {
@@ -568,7 +569,9 @@ CollisionStepState collision_pre_root_step(Drone& d) {
         d.anim.source_collision_due = mode_allows_collision && collision_predicate;
         d.anim.source_gravity_due =
             (flags & 0x80u) != 0 &&
-            ((flags & 0x4u) != 0 || (mode_allows_collision && collision_predicate));
+            ((flags & 0x4u) != 0 ||
+             ((flags & 0x200u) != 0 && d.sys->config().level_id != 0x700004au &&
+              collision_predicate));
         d.anim.source_collision_valid = true;
     }
 
@@ -628,6 +631,8 @@ void collision_post_root_step(Drone& d, const CollisionStepState& state) {
         if (d.flags & 0x40) d.fly_velocity = d.fly_velocity * 0.9f;
     }
 
+    d.collision_flags = std::uint16_t(d.collision_flags & ~kCollisionGrounded);
+
     float source_feet_delta = 1.0f;
     bool source_hit_list_present = false;
     bool source_feet_delta_valid = false;
@@ -643,22 +648,30 @@ void collision_post_root_step(Drone& d, const CollisionStepState& state) {
         d.on_ground = feet.on_ground;
         source_hit_list_present = !capsule.hits.empty();
         if (source_collision_valid && source_collision_due && !d.mv.disabled) {
-            d.on_ground = capsule.contact != 0;
+            if (feet.on_ground) d.collision_flags |= kCollisionGrounded;
+            d.on_ground = (d.collision_flags & kCollisionGrounded) != 0;
             source_feet_delta_valid = true;
             if (feet.nearest) source_feet_delta = (d.pos[1] - h) - feet.nearest->point[1];
-            if (source_feet_delta < 0.2f) d.on_ground = true;
+            if (source_feet_delta < 0.2f) {
+                d.collision_flags |= kCollisionGrounded;
+                d.on_ground = true;
+            }
         }
         d.ground_normal_y = feet.ground_normal_y;
         if (source_hit_list_present) d.pos += capsule.push_out;
     } else {
         // NDrone2_DoCollision returned false: source skips the feet probe and hit push.
+        d.collision_flags = std::uint16_t(d.collision_flags & ~kCollisionGrounded);
         d.on_ground = false;
         d.ground_normal_y = 1.0f;
     }
     // Grounded source Drone_CollisionHandler skips gravity acceleration, integrates the stored fall vector once,
     // then clears Drone+0x484.
     if (!d.mv.disabled && (!source_collision_valid || source_gravity_due)) {
-        if (!d.on_ground ||
+        const bool grounded = source_collision_valid
+                                  ? (d.collision_flags & kCollisionGrounded) != 0
+                                  : d.on_ground;
+        if (!grounded ||
             (!(source_collision_valid && source_collision_due) && d.ground_normal_y < 0.5f)) {
             d.fall_velocity[1] -= 9.8f * timing.rec();
             d.fall_velocity[1] = std::clamp(d.fall_velocity[1], -45.0f, 45.0f);
