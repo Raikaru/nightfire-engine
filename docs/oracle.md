@@ -38,7 +38,10 @@ read its memory over PINE and drive it with a virtual pad.
 | `GameState+0x34` | `0x2A379C` | independent gameplay timer read by `Player_Update` and pickup respawn logic; seedable recordings store it as `timer_frame` |
 | `tSlot[0]` | `0x245680` | pad slot 0: `+0x122` button word (Sony layout, active-high), `+0x128..0x12B` rx ry lx ly after `psiInput_PollDevices`' dead zone |
 | `PlayerSetting` | `0x2A38C8` | player 0: `+0x14` 40 action floats, `+0x104` 40 flag bytes (1 held, 4 pressed, 8 repeat) |
-| `FRAME_RATE` | `0x30D0D0` | float, 60 / vsyncs per logic frame (60 or 30 here); `FRAME_RATE_MUL` `0x30D0D8`, `REC_FRAME_RATE` `0x30D0DC` |
+| `FRAME_RATE` / `FRAME_RATE_INT` | `0x30D0D0` / `0x30D0CC` | float tick rate and integer logic rate (60 or 30 Hz here) |
+| `FRAME_RATE_MUL` / `REC_FRAME_RATE` | `0x30D0D8` / `0x30D0DC` | per-frame 60-Hz scale and frame delta in seconds |
+| `VBlankCount` | `0x30CA4C` | incremented once by `VBlankInt`; P2S checkpoints advance one per replayed game frame |
+| `RealTimeCount` | `0x30C714` | `psiInitTimeIn100ths` baseline; match timer derives elapsed time from `VBlankCount - RealTimeCount` |
 
 Player `obj_tag` (observed): `+0x30` vec3 position, `+0x40` vec3 position copy, `+0x54` f32 yaw
 (radians; forward = `(sin yaw, 0, cos yaw)`; stick right decreases it), `+0x70` vec3
@@ -215,6 +218,11 @@ the ring head. Duplicate end-frame counters are skipped; full rings drop the
 new sample and increment overflow. `mp_record.py` drains these immutable
 end-of-frame snapshots instead of batching live source reads, preventing
 fields from adjacent logic frames being mixed. Capacity remains payload-size dependent.
+The EE replay advances `VBlankCount` once before each emulated game-frame call,
+matching `VBlankInt` and the one-counter-increment-per-GameState-frame cadence
+observed in CTF and Arena P2S checkpoints. `mp_record.py` records this counter
+as `vblank_count`; it is useful for separating timer drift from gameplay-state
+divergence.
 The recurring `patch=1` payload in
 `tools/oracle/pcsx2/SLUS-20579_5B86BB62.pnach` must stay synchronized with
 `frame_hook_words()`; the hook rejects wrapped slots and any end beyond the
@@ -301,13 +309,21 @@ next frame. Fill compares only common EE fields in the v5/v6 capture schemas;
 the differing `seed_version` tag and absent version-specific fields are metadata.
 Row numbers come from the saved GameState counters, not the P2S filename or
 requested checkpoint frame.
-A hook-phase CTF comparison at frame 33605 still has raw EE deltas: `MPGame`
-`+0x190`/`+0x19c` are 18.009516 vs 17.999517 seconds and `+0x1a4` is 3011 vs
-3010. `psiGetTimeIn100ths` derives this clock from `VBlankCount`; these are not
-post-draw sampling deltas. Human slot 0 `collbody+0x4c` is also different
-(`0x0538136d` vs zero); a write watch locates it within the 0x60-byte hit-data
-copy in `Player_FeetOnPoint+0x280` (`HITDATA_tag+0x4c`), whose semantic field
-name is not yet known. Fill does not suppress either residual.
+A two-row CTF hook replay (33604→33605) now matches `MPGame+0x190`,
+`+0x19c`, and `+0x1a4` exactly after modeling `VBlankInt`'s one-increment-
+per-game-frame update. The raw human collision delta is `HITDATA_tag+0x4c`:
+`Player_FeetOnPoint` copies the 0x60-byte hit-data record, and collision code
+writes a 16-byte point vector at `+0x40` (including the W lane at `+0x4c`).
+The audited player/collision/bot consumers use the xyz components; no gameplay
+reader of this W lane was found. The fill comparator expands `cb_raw` into
+named byte fields and omits only `pl[*].cb_raw.point_w` (bytes `0x4c..0x4f`);
+the rest of each collision record remains validated.
+The full Arena fill (157 generated rows, 156 PCSX2 overlaps) validates with
+this comparison. The CTF fill (549 generated rows, 548 overlaps) still rejects:
+its first gameplay-state difference is frame 33636, slot 5 `drone_raw+0x530`,
+the `sAnimScript*` written by `DroneAnim_SetHTAnim` and read by animation
+callbacks. It differs (`0x0012a510` EE vs `0x000ec980` PCSX2) and remains
+compared; later CTF bot-animation/drone raw fields also diverge.
 The input word is the raw active-high Sony tSlot mask (for example, Cross is
 `0x40` and R1 is `0x08`); stick bytes come from `pad_all[].s`. Add
 `--weapon-anim-raw` to capture the 0x100-byte pointed-to human animation object

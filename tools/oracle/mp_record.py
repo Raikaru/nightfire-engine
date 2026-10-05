@@ -701,15 +701,18 @@ def main():
         projectile_old_head = cache["dynamic_head"]
         source_cell_ranges = {}
         ranges, tags = [], []
-        ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4), (A.GS_FRAME, 4)]
-        tags += [("done", 0), ("frame", 0), ("timer_frame", 0)]
+        ranges += [(A.GS_DONE, 4), (A.GS_FRAME_START, 4), (A.GS_FRAME, 4),
+                   (A.VBLANK_COUNT, 4)]
+        tags += [("done", 0), ("frame", 0), ("timer_frame", 0), ("vblank", 0)]
         ranges += [(A.MPGAME, 0x1D0), (A.MPSETTINGS + A.MPS_MP_ACTIVE, 0x60),
                    (A.RNG_WORDS, 16), (A.SWITCH_FD - 1, 4), (A.FRAME_RATE, 4),
-                   (A.FRAME_RATE_INT, 4), (A.MP_ASSASSINATION_TARGET, 4),
+                   (A.FRAME_RATE_INT, 4), (A.FRAME_RATE_MUL, 4),
+                   (A.REC_FRAME_RATE, 4), (A.MP_ASSASSINATION_TARGET, 4),
                    (A.MP_ASSASSIN, 4), (A.GOLDENEYE_EFFECT, 4),
                    (A.GOLDENEYE_TARGET, 4)]
         tags += [("mpg", 0), ("mps", 0), ("rng", 0), ("sw", 0), ("rate", 0),
-                 ("rate_int", 0), ("assassination_target", 0), ("assassin", 0),
+                 ("rate_int", 0), ("rate_mul", 0), ("rec_rate", 0),
+                 ("assassination_target", 0), ("assassin", 0),
                  ("golden_effect", 0), ("golden_target", 0)]
         for s in range(4):
             setting = A.PLAYER_SETTING + s * A.PLAYER_SETTING_STRIDE
@@ -1098,10 +1101,19 @@ def main():
         mpg = bytag[("mpg", 0)]
         objs = [struct.unpack_from("<I", mpg, s * A.MP_SLOT_STRIDE + A.MPG_OBJ)[0] for s in range(8)]
         pkcount = struct.unpack_from("<H", bytag[("mps", 0)], A.MPS_PICKUP_COUNT - A.MPS_MP_ACTIVE)[0]
+        vblank_count = struct.unpack("<I", bytag[("vblank", 0)])[0]
+        rate = struct.unpack("<f", bytag[("rate", 0)])[0]
+        frame_rate_int = struct.unpack("<I", bytag[("rate_int", 0)])[0]
+        frame_rate_mul = struct.unpack("<f", bytag[("rate_mul", 0)])[0]
+        rec_frame_rate = struct.unpack("<f", bytag[("rec_rate", 0)])[0]
         if objs != cache["objs"] or pkcount != cache["pkcount"]:
             # Object set changed (respawn/re-register): core-only frame, re-resolve.
             resyncs += 1
-            rec = {"frame": frame0, "timer_frame": timer_frame0, "resync": 1, "mpg": mpg.hex(),
+            rec = {"frame": frame0, "timer_frame": timer_frame0, "resync": 1,
+                   "vblank_count": vblank_count, "rate": rate,
+                   "frame_rate_int": frame_rate_int,
+                   "frame_rate_mul": frame_rate_mul,
+                   "rec_frame_rate": rec_frame_rate, "mpg": mpg.hex(),
                    "mps": bytag[("mps", 0)].hex(), "rng": bytag[("rng", 0)].hex(),
                    "projectiles": [], "projectiles_available": False,
                    "state_missing": ["projectiles"]}
@@ -1122,11 +1134,11 @@ def main():
                 pine, cache, pine.read32(A.DYNAMIC_OBJ_LIST + A.OBJ_LIST_NEXT))
             resolve(pine)
             continue
-        rec = {"frame": frame0, "timer_frame": timer_frame0}
-        if rng_trace is not None:
-            rec["rng_calls"], rec["rng_trace"] = R.read_events(pine, rng_trace)
-        rec["rate"] = struct.unpack("<f", bytag[("rate", 0)])[0]
-        rec["frame_rate_int"] = struct.unpack("<I", bytag[("rate_int", 0)])[0]
+        rec = {"frame": frame0, "timer_frame": timer_frame0,
+               "vblank_count": vblank_count, "rate": rate,
+               "frame_rate_int": frame_rate_int,
+               "frame_rate_mul": frame_rate_mul,
+               "rec_frame_rate": rec_frame_rate}
         rec["pad_all"] = []
         for s in range(4):
             pad = bytag[("pad", s)]

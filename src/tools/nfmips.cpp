@@ -49,6 +49,11 @@ using nf::ee::u16;
 using nf::ee::u32;
 using nf::ee::u64;
 using nf::ee::u8;
+constexpr u32 kVBlankCount = 0x0030CA4C;
+constexpr u32 kFrameRateInt = 0x0030D0CC;
+constexpr u32 kFrameRate = 0x0030D0D0;
+constexpr u32 kFrameRateMul = 0x0030D0D8;
+constexpr u32 kRecFrameRate = 0x0030D0DC;
 using i16 = std::int16_t;
 
 u32 parse_u32(const std::string& s) {
@@ -2593,10 +2598,18 @@ struct OraclePad {
     u16 buttons = 0;
     u8 sticks[4] = {};
 };
+struct OracleFrameTiming {
+    u32 frame_rate_int = 0;
+    float frame_rate = 0;
+    float frame_rate_mul = 0;
+    float rec_frame_rate = 0;
+    u32 vblank_count = 0;
+};
+
 
 int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
-                  const std::string& pad_script, int watch_human_hp_slot,
-                  u32 trace_frame, int trace_slot, bool trace_rng,
+                  const std::string& pad_script, const std::string& timing_script,
+                  int watch_human_hp_slot, u32 trace_frame, int trace_slot, bool trace_rng,
                   const std::vector<int>& give_weapons,
                   int watch_drone_anim_slot, u32 watch_drone_frame,
                   bool game_flow, bool sample_at_game_run_hook, u32 watch_addr = 0) {
@@ -2628,6 +2641,23 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
             pads[frame].push_back({port, u16(buttons), {u8(x), u8(y), u8(rx), u8(ry)}});
         }
         if (!input.eof()) throw std::runtime_error("malformed pad script: " + pad_script);
+    }
+    std::map<u32, OracleFrameTiming> frame_timings;
+    if (!timing_script.empty()) {
+        std::ifstream input(timing_script);
+        if (!input) throw std::runtime_error("cannot open frame timing script: " + timing_script);
+        u32 frame = 0, rate_int = 0, vblank_count = 0;
+        float rate = 0, rate_mul = 0, rec_rate = 0;
+        while (input >> frame >> rate_int >> rate >> rate_mul >> rec_rate >> vblank_count) {
+            if (rate_int == 0 || !(rate > 0) || !(rate_mul > 0) || !(rec_rate > 0)
+                || !std::isfinite(rate) || !std::isfinite(rate_mul) || !std::isfinite(rec_rate))
+                throw std::runtime_error("invalid frame timing row");
+            const OracleFrameTiming timing{rate_int, rate, rate_mul, rec_rate, vblank_count};
+            if (!frame_timings.emplace(frame, timing).second)
+                throw std::runtime_error("duplicate frame timing row");
+        }
+        if (!input.eof())
+            throw std::runtime_error("malformed frame timing script: " + timing_script);
     }
 
     GlobalOpts opts;
@@ -2779,6 +2809,7 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                                      m.mem.read<u32>(kFrameAccumulator)
                                          + video_frame_rate / frame_rate_int);
                 }
+                m.mem.write<u32>(kVBlankCount, m.mem.read<u32>(kVBlankCount) + 1);
                 m.call_keep(entry, {}, 200'000'000);
                 current_after = m.mem.read<u8>(weapon_owner + 0x62);
             }
@@ -3077,6 +3108,15 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
         const u32 timer_before = m.mem.read<u32>(kFrame);
         const u32 next_frame = before + 1;
         const u32 next_timer_frame = timer_before + 1;
+        const auto timing = frame_timings.find(next_frame);
+        if (timing != frame_timings.end()) {
+            m.mem.write<u32>(kFrameRateInt, timing->second.frame_rate_int);
+            m.mem.write<float>(kFrameRate, timing->second.frame_rate);
+            m.mem.write<float>(kFrameRateMul, timing->second.frame_rate_mul);
+            m.mem.write<float>(kRecFrameRate, timing->second.rec_frame_rate);
+            if (timing->second.vblank_count != 0)
+                m.mem.write<u32>(kVBlankCount, timing->second.vblank_count);
+        }
         if (!game_flow) {
             const u32 frame_rate_int = m.mem.read<u32>(m.addr("FRAME_RATE_INT"));
             if (!frame_rate_int)
@@ -3096,6 +3136,8 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                 m.mem.write_block(address + 8, event.sticks, sizeof(event.sticks));
             }
         }
+        if (timing == frame_timings.end() || timing->second.vblank_count == 0)
+            m.mem.write<u32>(kVBlankCount, m.mem.read<u32>(kVBlankCount) + 1);
         bool trace_done = false;
         if (next_frame == trace_frame) {
             constexpr u32 kMpGame = 0x002A4980;
@@ -3300,7 +3342,7 @@ int main(int argc, char** argv) {
         }
 
         if (cmd == "mp-oracle") {
-            std::string state, pads;
+            std::string state, pads, timing_script;
             int rows = 0, watch_human_hp_slot = -1, trace_slot = -1;
             int watch_drone_anim_slot = -1;
             u32 trace_frame = 0, watch_drone_frame = 0, watch_addr = 0;
@@ -3310,6 +3352,8 @@ int main(int argc, char** argv) {
                 if (av[j] == "--state" && j + 1 < av.size()) state = av[++j];
                 else if (av[j] == "--rows" && j + 1 < av.size()) rows = std::stoi(av[++j]);
                 else if (av[j] == "--pads" && j + 1 < av.size()) pads = av[++j];
+                else if (av[j] == "--frame-timing" && j + 1 < av.size())
+                    timing_script = av[++j];
                 else if (av[j] == "--watch-human-hp" && j + 1 < av.size())
                     watch_human_hp_slot = std::stoi(av[++j]);
                 else if (av[j] == "--trace-frame" && j + 1 < av.size())
@@ -3331,13 +3375,13 @@ int main(int argc, char** argv) {
                     sample_at_game_run_hook = true;
                 else throw std::runtime_error(
                     "mp-oracle wants --state <p2s> --rows N [--pads file] "
-                    "[--give-weapon ID ...] [--watch-human-hp 0..3] "
+                    "[--frame-timing file] [--give-weapon ID ...] [--watch-human-hp 0..3] "
                     "[--watch-drone-anim 4..7 --watch-drone-frame N] "
                     "[--trace-frame N --trace-slot 4..7] [--trace-rng] "
                     "[--no-game-flow] [--sample-at-game-run-hook]");
             }
-            return cmd_mp_oracle(elf, state, rows, pads, watch_human_hp_slot,
-                                 trace_frame, trace_slot, trace_rng, give_weapons,
+            return cmd_mp_oracle(elf, state, rows, pads, timing_script,
+                                 watch_human_hp_slot, trace_frame, trace_slot, trace_rng, give_weapons,
                                  watch_drone_anim_slot, watch_drone_frame, game_flow,
                                  sample_at_game_run_hook, watch_addr);
         }

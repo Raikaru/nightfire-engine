@@ -435,18 +435,24 @@ struct MpSeedImporter::Impl {
     std::uint64_t selected = 0;
     std::map<std::uint64_t, Json> rows;
 
-    const Json& row(std::uint64_t frame) const {
+    const Json& row(std::uint64_t frame, bool allow_body_anim_gap = false) const {
         auto it = rows.find(frame);
         if (it == rows.end()) throw std::runtime_error("MP seed: no recorded frame " + std::to_string(frame));
-        if (!it->second.at("seed_ready").boolean()) throw std::runtime_error("MP seed: frame " + std::to_string(frame) + " is not seed_ready");
+        if (!it->second.at("seed_ready").boolean() && !allow_body_anim_gap)
+            throw std::runtime_error("MP seed: frame " + std::to_string(frame) + " is not seed_ready");
         const std::uint32_t version = uint_number(it->second.at("seed_version"));
         if (version < 2 || version > 6)
             throw std::runtime_error("MP seed: requires recorder schema v2 through v6");
-        if (const Json* ok = it->second.find("projectiles_available"); !ok || !ok->boolean()) throw std::runtime_error("MP seed: projectile snapshot is unavailable at frame " + std::to_string(frame));
+        if (const Json* ok = it->second.find("projectiles_available"); !ok || !ok->boolean())
+            throw std::runtime_error("MP seed: projectile snapshot is unavailable at frame " + std::to_string(frame));
         const auto& missing = it->second.at("state_missing").array();
         for (const Json& field : missing) {
-            if (field.string() != "transient_hit_zone")
-                throw std::runtime_error("MP seed: frame " + std::to_string(frame) + " is missing state '" + std::string(field.string()) + "'");
+            const std::string_view name = field.string();
+            const bool body_anim_gap = name == "pl[0].body_anim" || name == "pl[1].body_anim" ||
+                                       name == "pl[2].body_anim" || name == "pl[3].body_anim";
+            if (name != "transient_hit_zone" && !(allow_body_anim_gap && body_anim_gap))
+                throw std::runtime_error("MP seed: frame " + std::to_string(frame) + " is missing state '" +
+                                         std::string(name) + "'");
         }
         return it->second;
     }
@@ -541,12 +547,20 @@ void MpSeedImporter::configure(MatchLaunch& launch) const {
     launch.bot_characters = bot_chars.str();
 }
 
-bool MpSeedImporter::input_for(std::uint64_t frame, PadInputs& pads, float& rate, float& elapsed,
-                              float& total_elapsed) const {
+bool MpSeedImporter::input_for(std::uint64_t frame, PadInputs& pads, FrameTiming& timing,
+                              float& elapsed, float& total_elapsed) const {
     auto it = impl_->rows.find(frame);
     if (it == impl_->rows.end()) return false;
     const Json& r = it->second;
-    rate = float_number(r.at("rate"));
+    const float rate = float_number(r.at("rate"));
+    const Json* rate_int = r.find("frame_rate_int");
+    const Json* rate_mul = r.find("frame_rate_mul");
+    const Json* rec_rate = r.find("rec_frame_rate");
+    timing = FrameTiming{
+        rate,
+        rate_mul ? float_number(*rate_mul) : FrameTiming::kReferenceHz / rate,
+        rec_rate ? float_number(*rec_rate) : 1.0f / rate,
+        rate_int ? int_number(*rate_int) : static_cast<int>(rate + 0.5f)};
     const Json& mpg = r.at("mpg");
     elapsed = f32_hex_at(mpg, 0x190);
     total_elapsed = f32_hex_at(mpg, 0x19c);
@@ -569,8 +583,9 @@ void MpSeedImporter::restore(World& world, ArenaSession& session, bots::BotMatch
     restore_at(impl_->selected, world, session, bot_match);
 }
 
-void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession& session, bots::BotMatch* bot_match) const {
-    const Json& source = impl_->row(frame);
+void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession& session,
+                                bots::BotMatch* bot_match, bool allow_body_anim_gap) const {
+    const Json& source = impl_->row(frame, allow_body_anim_gap);
     const std::vector<std::byte> mps = raw_for(source, "mps", 0x60);
     const std::vector<std::byte> mpg = raw_for(source, "mpg", 0x1d0);
     world.frame_ = frame;
@@ -1079,12 +1094,14 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
 }
 void MpSeedImporter::restore_player_animation(std::uint64_t frame, std::size_t slot, PlayerAnimator& animator,
                                               int current_weapon, int category) const {
-    const Json& players = impl_->row(frame).at("pl");
+    const auto it = impl_->rows.find(frame);
+    if (it == impl_->rows.end())
+        throw std::runtime_error("MP seed: no recorded frame " + std::to_string(frame));
+    const Json& players = it->second.at("pl");
     if (slot >= players.array().size() || players.array()[slot].is_null()) return;
     const Json& player = players.array()[slot];
     if (!player.find("body_anim") || !player.find("anim_sets")) {
-        // Legacy captures omit the body state. Keep the animator's own PlayerAnimSetInit/update lifecycle; nfgame_mp
-        // advances it after this call and changes its stance/weapon from the current engine state.
+        // Rows without exact body state keep the live engine animation lifecycle.
         return;
     }
     restore_player_animator(animator, player, current_weapon, category);

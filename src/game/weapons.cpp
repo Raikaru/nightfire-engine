@@ -491,6 +491,7 @@ void WeaponSystem::advance_anim(int slot, PlayerWeapons& p, const World& world) 
                 if (c.op != 1 || c.words.size() < 2) continue;
                 const float f = c.words[0];
                 if (f > before && f <= after) {
+                    (void)game_rng().rand_int(500);   // AnimProcessScriptCmds sound pitch: Rand_Rand(500).
                     const Player* pl = world.player(slot);
                     sound(c.words[1], pl ? pl->pos : Vec3{}, false, slot);
                 }

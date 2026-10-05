@@ -62,7 +62,26 @@ def _checkpoints(directory):
 
 
 def _flatten(row):
-    return mp_compare.flatten_fields(row)
+    fields = mp_compare.flatten_fields(row)
+    # HITDATA/BLData collision data is copied as a 0x60-byte block. Bytes
+    # 0x4c..0x4f form the W lane of the point vector at +0x40; collision code
+    # writes and copies it, but gameplay consumers use the point's xyz.
+    # Normalize cb_raw per byte, excluding only the named point_w component.
+    for slot, player in enumerate(row.get("pl", [])):
+        if not isinstance(player, dict) or not isinstance(player.get("cb_raw"), str):
+            continue
+        key = f"pl[{slot}].cb_raw"
+        raw = bytes.fromhex(player["cb_raw"])
+        fields.pop(key, None)
+        for offset, value in enumerate(raw):
+            if offset == 0x4c and len(raw) >= 0x50:
+                fields[f"{key}.point_w"] = raw[offset:offset + 4].hex()
+                continue
+            if 0x4c < offset < 0x50:
+                continue
+            fields[f"{key}.byte[0x{offset:x}]"] = value
+    return {field: value for field, value in fields.items()
+            if not field.endswith(".cb_raw.point_w")}
 
 
 def _compare_rows(reference, generated, tolerance):

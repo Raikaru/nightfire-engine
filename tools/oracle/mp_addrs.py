@@ -12,7 +12,10 @@ GS_FRAME = GAMESTATE + 0x34     # separate counter; live-diverges from +0x3C, no
 GS_FRAME_START = GAMESTATE + 0x3C  # ++ at START of each logic update
 FRAME_RATE = 0x30D0D0          # float, 60 / vsyncs per logic frame
 FRAME_RATE_INT = 0x30D0CC       # int, 30 or 60
+FRAME_RATE_MUL = 0x30D0D8       # float, 60 Hz normalized per-frame scale
 REC_FRAME_RATE = 0x30D0DC       # float dt
+VBLANK_COUNT = 0x30CA4C         # [ACTION.ELF] incremented by VBlankInt__Fi
+REAL_TIME_COUNT = 0x30C714     # [ACTION.ELF] psiInitTimeIn100ths__Fv baseline
 
 # ---- RNG (bit-exact stream, src/core/rng.hpp) -------------------------------
 RNG_X = 0x30D0A0
