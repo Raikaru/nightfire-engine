@@ -261,6 +261,7 @@ ANIM_SUBOBJECT_OFFSET = 0x70
 ANIM_LAYER_HEAD_OFFSET = 0x2C
 ANIM_LAYER_RAW_SIZE = 0xC0
 ANIM_SEQ_RAW_SIZE = 0xB0
+ANIM_SCRIPT_RAW_SIZE = 0xC0
 ANIM_MAX_LAYERS = 64
 ANIM_SET_LIST_OFFSET = 0x98
 ANIM_SET_RAW_SIZE = 0x34
@@ -737,10 +738,16 @@ def main():
                 if cache["cb"].get(s):
                     tags.append(("cb_raw", s))
                     ranges.append((cache["cb"][s], A.CB_RAW_SIZE))
+            drone_anim_ptrs = {}
             for k, d in cache["drone"].items():
                 bv = A.BOT_VARS + k * A.BOT_VARS_STRIDE
                 tags += [("dr_raw", k), ("bv_raw", k)]
                 ranges += [(d, A.DRONE_RAW_SIZE), (bv, A.BOT_VARS_STRIDE)]
+                script_ptr = pine.read32(d + A.DRONE_ANIM_SCRIPT)
+                drone_anim_ptrs[k] = script_ptr
+                if valid_ee_pointer(script_ptr, ANIM_SCRIPT_RAW_SIZE):
+                    tags.append(("dr_anim_script_raw", k))
+                    ranges.append((script_ptr, ANIM_SCRIPT_RAW_SIZE))
                 route_node = cache["route_nodes"].get(k)
                 if route_node and route_node[2]:
                     tags.append(("route_nodes", k))
@@ -914,7 +921,20 @@ def main():
         changed_player_anim_slots = set()
         changed_anim_set_slots = set()
         changed_route_slots = set()
+        changed_drone_script_slots = set()
         if args.seedable:
+            for k in range(4):
+                drone_raw = bytag.get(("dr_raw", k))
+                if drone_raw is None:
+                    continue
+                script_ptr = struct.unpack_from(
+                    "<I", drone_raw, A.DRONE_ANIM_SCRIPT)[0]
+                if (script_ptr != drone_anim_ptrs.get(k, 0)
+                        or (script_ptr and not valid_ee_pointer(
+                            script_ptr, ANIM_SCRIPT_RAW_SIZE))):
+                    changed_drone_script_slots.add(k + 4)
+                    transition_missing.append(
+                        f"pl[{k + 4}].drone_anim_script")
             for slot in range(n_humans):
                 state = cache["human_body_anim"].get(slot)
                 obj_raw = bytag.get(("obj", slot))
@@ -1369,9 +1389,32 @@ def main():
             if s >= 4 and ("drone", s - 4) in bytag:
                 k = s - 4
                 if args.seedable:
-                    entry["drone_raw"] = bytag[("dr_raw", k)].hex()
+                    drone_raw = bytag[("dr_raw", k)]
+                    entry["drone_raw"] = drone_raw.hex()
                     entry["bv_raw"] = bytag[("bv_raw", k)].hex()
-                    entry["alive"] = struct.unpack_from("<f", bytag[("dr_raw", k)], A.DRONE_HEALTH)[0] > 0.0
+                    entry["alive"] = (
+                        struct.unpack_from("<f", drone_raw, A.DRONE_HEALTH)[0] > 0.0)
+                    script_raw = bytag.get(("dr_anim_script_raw", k))
+                    if (script_raw is not None
+                            and s not in changed_drone_script_slots):
+                        entry["drone_anim_script"] = {
+                            "entry": struct.unpack_from("<I", script_raw, 0x5C)[0],
+                            "script_id": struct.unpack_from("<I", script_raw, 0x74)[0],
+                            "flags": struct.unpack_from("<I", script_raw, 0x78)[0],
+                            "timestamp": struct.unpack_from("<I", script_raw, 0x84)[0],
+                            "frame": struct.unpack_from("<f", script_raw, 0x90)[0],
+                            "previous_frame": struct.unpack_from(
+                                "<f", script_raw, 0x94)[0],
+                            "speed": struct.unpack_from("<f", script_raw, 0x98)[0],
+                            "blend_a": struct.unpack_from("<f", script_raw, 0xA8)[0],
+                            "blend_b": struct.unpack_from("<f", script_raw, 0xAC)[0],
+                            "duration_frames": struct.unpack_from("<h", script_raw, 0xB0)[0],
+                            "entry_flags": struct.unpack_from("<H", script_raw, 0xB2)[0],
+                            "entry_type": script_raw[0xB3],
+                            "mode": script_raw[0xB4],
+                            "state": script_raw[0xB5],
+                            "initialized": script_raw[0xB6],
+                        }
                 dd = bytag[("drone", k)]
                 entry["bhp"] = round(struct.unpack_from("<f", dd, 4)[0], 3)
                 entry["dmg"] = round(struct.unpack("<f", bytag[("dmg", k)])[0], 3)

@@ -1115,6 +1115,17 @@ table above.
 
 ## 12. Known gaps (need runtime tracing, not derivable from the decompile)
 * Recoil phase offsets (float registers dropped by IDA). (The pain overlay alpha is proven since 2026-10-02: `old + min(21.3333*dmg, 128)` capped at 255, via nfmips diff-mpweap.)
-* Fields flagged **unknown** in §2.1 (+52, +80, +88, +96, +100, +140, +156) are populated but not read by any function examined; `Check_Target`, `Draw_LaserBeam`, `Draw_TaserBeam`, `Bullet_DoTrails`, `Effect_*` internals and drone/BOT weapon paths were not decompiled here.
+* Fields flagged **unknown** in §2.1 (+52, +80, +88, +96, +100, +140, +156) are populated but not read by any function examined; `Check_Target`, `Draw_LaserBeam`, `Draw_TaserBeam`, `Bullet_DoTrails`, `Effect_Bullet`, `Effect_RicochetProb`, and drone/BOT weapon paths were not decompiled here.
 * `Player_WeaponHasAmmo` return expression is lost in the decompile (semantics inferred).
 * Emulated static-initializer output was validated for internal consistency (ids, bases, labels resolving to sensible names, clip sizes matching `Player_EquipWeapon` use) but no runtime memory dump was available.
+
+## 13. Bullet impact emitters and projectile tick RNG
+
+`Bullet_update` advances flying bullets by `(Rand_FRand(0.5) + 0.5) * speed`. On a collision,
+`Bullet_CollisionHandler` calls `Effect_Create` with flags `0x61`; when the selected `EffectInfo` row
+has an emitter id at `+132`, `Effect_Create` creates that level-defined emitter. Its object-control updates
+run from the next tick: each spawned particle consumes four `Rand_FRandHalf(1)` draws, uses the definition's
+`f[1] + f[2] * Rand_FRandHalf(1)` lifetime, and a finite emitter stops filling once all particle slots are
+occupied. For the Skyrail material exercised at source frame 11560, emitter `0x0c00000d` has 20 slots,
+budget 2, and produces eight `Rand_FRandHalf` calls per tick at 11561–11570. `WeaponSystem` models this
+source lifecycle in the global game RNG stream for headless simulation; rendering is separate.
