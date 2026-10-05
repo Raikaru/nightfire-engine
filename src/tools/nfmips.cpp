@@ -2683,18 +2683,58 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
             throw std::runtime_error("Player_EquipWeapon rejected weapon " + std::to_string(weapon));
         const u32 weapon_owner = m.mem.read<u32>(object + 0xDC);
         if (!weapon_owner) throw std::runtime_error("--give-weapon human has no weapon owner");
-        const u8 current_weapon = m.mem.read<u8>(weapon_owner + 0x62);
+        const u8 current_before = m.mem.read<u8>(weapon_owner + 0x62);
+        const u8 selected_before = m.mem.read<u8>(weapon_owner + 0x63);
         m.mem.write<u8>(weapon_owner + 0x63, u8(weapon));
-        if (current_weapon != u8(weapon)) {
+        std::fprintf(stderr,
+                     "SELECT_WEAPON slot=0 id=%d before_current=%u before_selected=%u\n",
+                     weapon, unsigned(current_before), unsigned(selected_before));
+        if (current_before != u8(weapon)) {
             nf::ee::CallArgs select_args;
             select_args.i(object);
             m.call_keep("Player_WeaponSelect__FP7obj_tag", select_args);
         }
-        const u8 current_after = m.mem.read<u8>(weapon_owner + 0x62);
+        u8 current_after = m.mem.read<u8>(weapon_owner + 0x62);
         const u8 selected_after = m.mem.read<u8>(weapon_owner + 0x63);
         std::fprintf(stderr,
+                     "PLAYER_WEAPON_SELECT slot=0 id=%d owner_current=%u owner_selected=%u\n",
+                     weapon, unsigned(current_after), unsigned(selected_after));
+        if (selected_after != u8(weapon))
+            throw std::runtime_error("Player_WeaponSelect changed selected weapon unexpectedly");
+        if (current_after != u8(weapon)) {
+            const u32 entry = m.addr(game_flow ? "GameFlow_Main__Fv" : "Game_Run__Fv");
+            constexpr u32 kTslot0 = 0x00245680;
+            constexpr u32 kPadInput = 0x120;
+            m.mem.write<u16>(kTslot0 + kPadInput + 2, 0);
+            const u32 frame_before = m.mem.read<u32>(kFrameStart);
+            const u32 timer_before = m.mem.read<u32>(kFrame);
+            constexpr u32 kSelectionFrameLimit = 180;
+            for (u32 tick = 0; current_after != u8(weapon) && tick < kSelectionFrameLimit; ++tick) {
+                if (!game_flow) {
+                    const u32 frame_rate_int = m.mem.read<u32>(m.addr("FRAME_RATE_INT"));
+                    if (!frame_rate_int)
+                        throw std::runtime_error("FRAME_RATE_INT is zero during weapon selection");
+                    const u32 video_frame_rate = m.mem.read<u32>(m.addr("VIDEO_FRAME_RATE"));
+                    m.mem.write<u32>(kFrameStart, m.mem.read<u32>(kFrameStart) + 1);
+                    m.mem.write<u32>(kFrame, m.mem.read<u32>(kFrame) + 1);
+                    m.mem.write<u32>(kFrameAccumulator,
+                                     m.mem.read<u32>(kFrameAccumulator)
+                                         + video_frame_rate / frame_rate_int);
+                }
+                m.call_keep(entry, {}, 200'000'000);
+                current_after = m.mem.read<u8>(weapon_owner + 0x62);
+            }
+            const u32 frame_after = m.mem.read<u32>(kFrameStart);
+            const u32 timer_after = m.mem.read<u32>(kFrame);
+            if (current_after != u8(weapon))
+                throw std::runtime_error("--give-weapon selection did not finish within 180 frames");
+            if (frame_after == frame_before || timer_after == timer_before)
+                throw std::runtime_error("--give-weapon selection transition did not advance game time");
+        }
+        std::fprintf(stderr,
                      "GAVE_WEAPON slot=0 id=%d bl=%08x owner_current=%u owner_selected=%u\n",
-                     weapon, bl_data, unsigned(current_after), unsigned(selected_after));
+                     weapon, bl_data, unsigned(current_after),
+                     unsigned(m.mem.read<u8>(weapon_owner + 0x63)));
     }
     if ((watch_drone_anim_slot == -1) != (watch_drone_frame == 0)
         || (watch_drone_anim_slot != -1

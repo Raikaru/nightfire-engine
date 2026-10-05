@@ -1,3 +1,6 @@
 /build/
 __pycache__/
 build-*/
+
+# Screenshots render disc-derived art; never commit them.
+docs/*.png

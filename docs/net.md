@@ -126,41 +126,15 @@ TMPDIR="$HOME/.cache/netlobby-tmp" xvfb-run -a ./build-netlobby/nightfire ../nig
   --frames 30 --shot build-netlobby/netlobby-direct-password-join-v6.bmp --name DirectPasswordClient --mute
 ```
 
-The gallery below (1280x720) was captured against three local servers: `nfmaster --port 27901`, `nfserver <data> --port 27500 --name "Nightfire LAN Party" --bots 2`, and two `--master 127.0.0.1:27901` servers on ports 27520 (`--password secret`) and 27530. Each screen is one `--size WxH --online-master 127.0.0.1:27901 --page 0x40000002` run with the presses `wait60,down,cross,wait20` (Local/Online), then `,down,cross,wait20` (Host/Join), then `,cross,wait60` (host setup) or `,down,cross,wait10` (browser), followed by `net-down` (browser), `net-circle,net-text:192.168.1.20:27500` (direct IP) or `net-circle,net-text:127.0.0.1:27520,net-cross,net-text:secr` (password).
-
-| Local/Online list | Online Host/Join list |
-|---|---|
-| ![Local and Online choice in the Select Scenario layout](netlobby-local-online-v7.png) | ![Online Host and Join choice](netlobby-host-join-choice-v7.png) |
-
-| Host setup (original Join Game page) | Populated LAN/master server browser |
-|---|---|
-| ![Original host setup page](netlobby-host-scenario-v7.png) | ![Server browser with LAN and master results](netlobby-server-browser-v7.png) |
-
-| Direct-IP entry | Password prompt |
-|---|---|
-| ![Direct IPv4 entry on the codename keyboard](netlobby-direct-ip-v7.png) | ![Password prompt with server details](netlobby-password-prompt-v7.png) |
-
-The same screens at 4:3 (1024x768), 16:9 (1920x1080) and 21:9 (2560x1080), and the original PCSX2 multiplayer pages they follow:
-
-![Online screens at 4:3, 16:9 and 21:9](netlobby-aspects-v7.png)
-
-![PCSX2 Select Scenario and Join Game beside the engine's choice list and server browser](netlobby-original-compare-v7.png)
+Gallery captures (1280x720) were taken against three local servers: `nfmaster --port 27901`, `nfserver <data> --port 27500 --name "Nightfire LAN Party" --bots 2`, and two `--master 127.0.0.1:27901` servers on ports 27520 (`--password secret`) and 27530. Each screen is one `--size WxH --online-master 127.0.0.1:27901 --page 0x40000002` run with the presses `wait60,down,cross,wait20` (Local/Online), then `,down,cross,wait20` (Host/Join), then `,cross,wait60` (host setup) or `,down,cross,wait10` (browser), followed by `net-down` (browser), `net-circle,net-text:192.168.1.20:27500` (direct IP) or `net-circle,net-text:127.0.0.1:27520,net-cross,net-text:secr` (password). The same screens were also checked at 4:3 (1024x768), 16:9 (1920x1080) and 21:9 (2560x1080) beside the original PCSX2 multiplayer pages. Screenshots render disc-derived art, so they are not kept in the repository; regenerate them locally with these commands.
 
 
 
-The current protocol-4 graphical soak ran two `nightfire --connect` clients against one `nfserver` with four server bots on map `07000024.bin`. Each client completed 9,000 input frames with 5% outbound loss and 50 ms one-way latency on both client and server; each saved a 1280x720 screenshot. Client A reported 2,850 prediction corrections (mean 10.74 cm, p99 0.00 cm) and 127,821 remote-position samples (p99 jitter 0.000 cm); client B reported 2,866 corrections (mean 4.80 cm, p99 0.00 cm) and 69,271 samples (p99 jitter 0.000 cm). Captures:
-
-| Client A | Client B |
-|---|---|
-| ![Networked multiplayer client A](net-soak-a.png) | ![Networked multiplayer client B](net-soak-b.png) |
+The current protocol-4 graphical soak ran two `nightfire --connect` clients against one `nfserver` with four server bots on map `07000024.bin`. Each client completed 9,000 input frames with 5% outbound loss and 50 ms one-way latency on both client and server; each saved a 1280x720 screenshot (inspected locally, not committed). Client A reported 2,850 prediction corrections (mean 10.74 cm, p99 0.00 cm) and 127,821 remote-position samples (p99 jitter 0.000 cm); client B reported 2,866 corrections (mean 4.80 cm, p99 0.00 cm) and 69,271 samples (p99 jitter 0.000 cm).
 
 This soak proves sustained graphical client/server connectivity and rendered networked match state under the injected conditions; it does not prove PCSX2 equivalence or lag-compensated damage. A separate current-protocol headless two-client/four-bot localhost match completed 300 inputs per client; their shared tick-456 snapshot had identical scoreboard records (bot slot 7 at 1 kill/1 score and human slot 3 at 1 death), and matching records continued through tick 612. An earlier protocol-2 headless four-client soak recorded 2,991 shared snapshots without scoreboard mismatches.
 
-For an active-match visual sample, two additional clients joined the same four-bot server on port 27721, each rendered 300 frames and saved an inspected 1280x720 screenshot. These captures show live gameplay rather than the result-screen captures at the end of the soak:
-
-| Live client A | Live client B |
-|---|---|
-| ![Live network multiplayer client A](net-client-a.png) | ![Live network multiplayer client B](net-client-b.png) |
+For an active-match visual sample, two additional clients joined the same four-bot server on port 27721, each rendered 300 frames and saved an inspected 1280x720 screenshot showing live gameplay rather than the result screen at the end of the soak.
 
 After matching `nfserver`'s bot weapon-bank and drone-system wiring to the offline MP setup, a four-client/four-bot lossy soak completed with 9,000 inputs per client. The server and all clients used 5% packet loss and 100 ms one-way latency; clients exited successfully after about 301–302 seconds. Their final snapshots (ticks 10965, 10977, 10989, and 11001) had identical scoreboards: bots in slots 5, 6, and 7 finished with 5, 1, and 5 kills respectively, while all four human clients remained idle. This validates sustained transport and consistent authoritative score replication during bot combat, not active human combat or prediction-correction accuracy.
 An additional graphical prediction soak used one idle local player with 100 ms one-way latency configured on both client and server, using protocol-4 `--frames 9000 --shot` runs. With no loss, 2,997 snapshot reconciliations averaged 0.00 cm and had p99 0.00 cm; the initial authoritative baseline was 47.18 m from the locally spawned pose, followed by three startup corrections of 2.47, 2.47, and 1.65 cm. With 5% loss at both endpoints, 2,843 reconciliations averaged 0.00 cm and had p99 0.00 cm; after the initial 30.61 m baseline, no correction over 0.01 cm was logged. The metric excludes the first baseline and measures displacement after authoritative state application and unacknowledged-input replay. These are idle-input results, not evidence that active local movement meets the same correction bound; an earlier 1,800-frame moving-input diagnostic before the baseline reset measured p99 20.86 cm. The captures are `build-netpredict/predict-zero-metric.bmp` and `build-netpredict/predict-loss-metric.bmp`.
@@ -208,9 +182,7 @@ After syncing the input-queue fix, the VPS server was incrementally rebuilt with
 
 The firewall added only the authorized game and registry UDP ports, `27500/udp` and `27900/udp` (the existing SSH management service was unchanged). `nfmaster` and `nfserver` run as enabled root user services with linger; their logs are `~/nightfire/logs/nfmaster.log` and `~/nightfire/logs/nfserver.log`. Check them with `systemctl --user status nfmaster.service nfserver.service`; stop the deployment with `systemctl --user stop nfserver.service nfmaster.service` (and prevent user-session restart with `systemctl --user disable nfserver.service nfmaster.service`).
 
-Before the final input-queue fix, a graphical client completed 1,800 input frames against the public endpoint and saved the inspected 1280×720 capture below. That earlier session logged 359 prediction corrections (mean 7.68 cm, maximum 81.55 cm) after a 101.64 m initial authoritative baseline; the post-fix active-input measurements above supersede those correction figures.
-
-![Live public Skyrail match rendered by the network client](net-vps-client.png)
+Before the final input-queue fix, a graphical client completed 1,800 input frames against the public endpoint and saved an inspected 1280×720 capture of the live Skyrail match. That earlier session logged 359 prediction corrections (mean 7.68 cm, maximum 81.55 cm) after a 101.64 m initial authoritative baseline; the post-fix active-input measurements above supersede those correction figures.
 
 A VPS-side Extended capacity smoke used an `nfserver --ruleset extended --bots 0 --logic-hz 60 --port 27676 --ticks 1800` server and eight headless clients, each joining with `--local-players 2 --frames 600`. The clients were assigned adjacent slot pairs covering 0–15; all eight clients and the bounded server exited 0. Each client received 300 complete 16-slot snapshots, with 300 shared ticks and no scoreboard differences.
 
