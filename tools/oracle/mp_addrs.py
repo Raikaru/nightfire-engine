@@ -128,6 +128,7 @@ BOT_TRAIT = 0x76B              # s8 preferred trait opponent slot
 DRONE_BOTVARS = 0xD1C
 DRONE_HEALTH = 0xAC            # f32 bot health
 DRONE_LASTDMG = 0x150          # f32 last damage taken
+DRONE_ANIM_SCRIPT = 0x530        # sAnimScript_tag* (dynamic heap object)
 # goal record (0x50)
 GOAL_POS = 0x00                # CelPos 0x20
 GOAL_DISTRACT_LIM = 0x20       # f32

@@ -61,12 +61,9 @@ def _checkpoints(directory):
     return result
 
 
-def _flatten(row):
+def _flatten(row, script_pointer_slots=()):
     fields = mp_compare.flatten_fields(row)
-    # HITDATA/BLData collision data is copied as a 0x60-byte block. Bytes
-    # 0x4c..0x4f form the W lane of the point vector at +0x40; collision code
-    # writes and copies it, but gameplay consumers use the point's xyz.
-    # Normalize cb_raw per byte, excluding only the named point_w component.
+    # Collision consumers use xyz from the copied point; its W lane is residue.
     for slot, player in enumerate(row.get("pl", [])):
         if not isinstance(player, dict) or not isinstance(player.get("cb_raw"), str):
             continue
@@ -74,10 +71,19 @@ def _flatten(row):
         raw = bytes.fromhex(player["cb_raw"])
         fields.pop(key, None)
         for offset, value in enumerate(raw):
-            if offset == 0x4c and len(raw) >= 0x50:
-                fields[f"{key}.point_w"] = raw[offset:offset + 4].hex()
+            if 0x4C <= offset < 0x50:
+                if offset == 0x4C and len(raw) >= 0x50:
+                    fields[f"{key}.point_w"] = raw[offset:offset + 4].hex()
                 continue
-            if 0x4c < offset < 0x50:
+            fields[f"{key}.byte[0x{offset:x}]"] = value
+    for slot, player in enumerate(row.get("pl", [])):
+        if not isinstance(player, dict) or not isinstance(player.get("drone_raw"), str):
+            continue
+        key = f"pl[{slot}].drone_raw"
+        raw = bytes.fromhex(player["drone_raw"])
+        fields.pop(key, None)
+        for offset, value in enumerate(raw):
+            if slot in script_pointer_slots and 0x530 <= offset < 0x534:
                 continue
             fields[f"{key}.byte[0x{offset:x}]"] = value
     return {field: value for field, value in fields.items()
@@ -92,8 +98,15 @@ def _compare_rows(reference, generated, tolerance):
                 "seed_version"}
     reference = {key: value for key, value in reference.items() if key not in metadata}
     generated = {key: value for key, value in generated.items() if key not in metadata}
-    expected = _flatten(reference)
-    actual = _flatten(generated)
+    script_pointer_slots = {
+        slot for slot, (expected_player, actual_player) in enumerate(
+            zip(reference.get("pl", []), generated.get("pl", [])))
+        if isinstance(expected_player, dict) and isinstance(actual_player, dict)
+        and isinstance(expected_player.get("drone_anim_script"), dict)
+        and isinstance(actual_player.get("drone_anim_script"), dict)
+    }
+    expected = _flatten(reference, script_pointer_slots)
+    actual = _flatten(generated, script_pointer_slots)
     if partial:
         expected = {field: value for field, value in expected.items()
                     if not field.endswith(".complete")}

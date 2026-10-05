@@ -62,6 +62,10 @@ struct ReplayFrame {
     std::optional<Vec3> sync_pos;        // recorded position before this frame (--sync)
     bool has_rate = false;
     float rate = World::kTickHz;
+    // Per-row timing triple (compare.py make-inputs, MpOracle-2's importer): explicit logic Hz,
+    // 60 Hz multiple and seconds-per-tick. Absent in legacy rows (derived from `rate` instead).
+    std::optional<int> frame_rate_int;
+    std::optional<float> frame_rate_mul, rec_frame_rate;
     std::optional<float> stand_height;   // recorded collbody+0xCC (animated foot height), if given
 };
 
@@ -72,8 +76,9 @@ struct Replay {
 };
 
 // Text input file: `start x y z yaw [pitch [ground_normal_y]]`, then `frame sony_word_hex rx ry lx ly
-// [frame_rate [stand_height [x y z]]]` per line (x y z: the recorded position before the frame,
-// applied with --sync).
+// [frame_rate [[int mul rec] stand_height [x y z]]]` per line (x y z: the recorded position before
+// the frame, applied with --sync). The optional per-row timing triple (logic Hz, 60 Hz multiple,
+// seconds per tick) overrides the rate-derived fields; without it legacy rows keep their meaning.
 Replay read_replay(const std::string& path) {
     std::ifstream in(path);
     if (!in) throw std::runtime_error("cannot open inputs file " + path);
@@ -98,10 +103,26 @@ Replay read_replay(const std::string& path) {
         f.pad.buttons = buttons_from_sony_pad_word(std::uint16_t(word));
         f.pad.rx = std::uint8_t(rx), f.pad.ry = std::uint8_t(ry), f.pad.lx = std::uint8_t(lx), f.pad.ly = std::uint8_t(ly);
         if (s >> f.rate) f.has_rate = true;
-        float height;
-        if (s >> height) f.stand_height = height;
-        Vec3 sp;
-        if (s >> sp[0] >> sp[1] >> sp[2]) f.sync_pos = sp;
+        // Optional tail: either legacy `[stand_height [x y z]]` or the per-row timing triple
+        // `[int mul rec [stand_height [x y z]]]`. The triple's first column is exactly 30 or 60
+        // (a foot height never is), which disambiguates the 4-number case.
+        std::vector<double> tail;
+        for (double v; s >> v;) tail.push_back(v);
+        std::size_t k = 0;
+        if (tail.size() >= 3 && (tail[0] == 30.0 || tail[0] == 60.0)) {
+            f.frame_rate_int = int(tail[0]);
+            f.frame_rate_mul = float(tail[1]);
+            f.rec_frame_rate = float(tail[2]);
+            k = 3;
+        }
+        if (tail.size() > k) {
+            f.stand_height = float(tail[k]);
+            ++k;
+        }
+        if (tail.size() >= k + 3) {
+            Vec3 sp{float(tail[k]), float(tail[k + 1]), float(tail[k + 2])};
+            f.sync_pos = sp;
+        }
         r.frames.push_back(f);
     }
     return r;
@@ -504,7 +525,12 @@ int run(int argc, char** argv) {
         if (script) script->apply(i, world, weapons, pads);
         // Cross/use goes through Movement's Player_Activate -> SpObjects::activate_at hook now.
         if (mission_ptr) mission_ptr->pre_tick(world, std::vector<bool>(4, false));
-        const FrameTiming timing{f && f->has_rate ? f->rate : float(logic_hz)};
+        FrameTiming timing{f && f->has_rate ? f->rate : float(logic_hz)};
+        if (f && f->frame_rate_int && f->frame_rate_mul && f->rec_frame_rate) {   // per-row triple overrides the rate-derived fields
+            timing.FRAME_RATE_INT = *f->frame_rate_int;
+            timing.FRAME_RATE_MUL = *f->frame_rate_mul;
+            timing.REC_FRAME_RATE = *f->rec_frame_rate;
+        }
         world.tick(pads, timing);
         drone_cli.after_tick(world);
         if (mission_ptr) {

@@ -465,8 +465,8 @@ float WeaponSystem::script_frame(const PlayerWeapons& p) const {
     return p.anim && p.anim_script != 0 ? p.anim->frame() : 0.0f;
 }
 
-// One logic frame of the anim object: FRAME_RATE_MUL script frames; script sound commands (op 1) fire when the
-// script passes their frame (AnimProcessScriptCmds).
+// One logic frame of the anim object. CharacterInstance::tick emits AnimProcessScriptCmds and owns its Rand_Rand(500)
+// sound-pitch draw; this pass dispatches the corresponding audio at the player position.
 void WeaponSystem::advance_anim(int slot, PlayerWeapons& p, const World& world) {
     if (!p.anim) return;
     const int steps = std::max(1, int(std::lround(timing_.FRAME_RATE_MUL)));
@@ -491,7 +491,6 @@ void WeaponSystem::advance_anim(int slot, PlayerWeapons& p, const World& world) 
                 if (c.op != 1 || c.words.size() < 2) continue;
                 const float f = c.words[0];
                 if (f > before && f <= after) {
-                    (void)game_rng().rand_int(500);   // AnimProcessScriptCmds sound pitch: Rand_Rand(500).
                     const Player* pl = world.player(slot);
                     sound(c.words[1], pl ? pl->pos : Vec3{}, false, slot);
                 }
@@ -717,8 +716,8 @@ void WeaponSystem::anim_update(int slot, PlayerWeapons& p, World& world, FrameTi
             // Threat blocks +208 and triggers +212 (spec polarity).
             const bool threat = drones_ && drones_->any_visible_threat();
             if (p.fidget_frames > 0) p.fidget_frames--;
-            // +204 first per state-0 frame (count only — fires even aiming, any phase).
-            if (p.idle_frames >= kFidgetDeep && cur.anim_deepidle != 0) {
+            // Source phase dispatch handles active phases before phase-0 +204 deep-idle selection.
+            if (p.idle_phase == 0 && p.idle_frames >= kFidgetDeep && cur.anim_deepidle != 0) {
                 play_script(p, cur.anim_deepidle, false);
                 if (p.anim_script == cur.anim_deepidle) {
                     p.idle_phase = 1;
@@ -1087,11 +1086,12 @@ void WeaponSystem::init_bullet(int slot, PlayerWeapons& p, World& world) {
 void WeaponSystem::process_health_events(int slot, PlayerWeapons& p, Player& pl) {
     const HealthEvents health_events = pl.take_events();
     for (const SoundCue& c : health_events.sounds) sound(c.id, c.position, true);
-    if (health_events.died && !p.dead && tuning_.mode == GameMode::Multiplayer && rules_) {
-        const WeaponDef& held = table_.weapon(p.current);
+    if (!pl.alive() && !p.dead && tuning_.mode == GameMode::Multiplayer && rules_) {
+        const int weapon_id = p.current == kNoWeapon ? p.previous : p.current;
+        const WeaponDef& held = table_.weapon(weapon_id);
         if (held.pickup_celglist != 0) {
             const int base = held.base;
-            const int rounds = p.weapon[std::size_t(ammo_index(p.current))].clip;
+            const int rounds = p.weapon[std::size_t(ammo_index(weapon_id))].clip;
             const auto axes = pl.view_axes();
             Mat4 anim_pose = identity();
             if (p.anim && !p.anim->skin().parent.empty())

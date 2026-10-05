@@ -559,8 +559,8 @@ total time, configured time limit and time remaining, mode/map/score-limit/
 weapon-set metadata, phase and raw match state code, team/participant scores
 and MP status bits, assassin/target and GoldenEye strike clock, per-slot
 respawn countdowns, controller pads/action values/flags, human position,
-velocity/substate/health/armour/weapon inventories and timers, bot movement
-state, live/waiting pickups, ordered objective state, live engine projectiles,
+velocity/substate/health/armour/weapon inventories and timers, human weapon
+animation script/frame cursors, bot movement state, live/waiting pickups, ordered objective state, live engine projectiles,
 and per-draw RNG call kind/caller source location/result bits with overflow
 counts.
 schema-v2 row, configures the map/mode/roster/options, restores the supported
