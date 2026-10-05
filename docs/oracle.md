@@ -301,6 +301,13 @@ next frame. Fill compares only common EE fields in the v5/v6 capture schemas;
 the differing `seed_version` tag and absent version-specific fields are metadata.
 Row numbers come from the saved GameState counters, not the P2S filename or
 requested checkpoint frame.
+A hook-phase CTF comparison at frame 33605 still has raw EE deltas: `MPGame`
+`+0x190`/`+0x19c` are 18.009516 vs 17.999517 seconds and `+0x1a4` is 3011 vs
+3010. `psiGetTimeIn100ths` derives this clock from `VBlankCount`; these are not
+post-draw sampling deltas. Human slot 0 `collbody+0x4c` is also different
+(`0x0538136d` vs zero); a write watch locates it within the 0x60-byte hit-data
+copy in `Player_FeetOnPoint+0x280` (`HITDATA_tag+0x4c`), whose semantic field
+name is not yet known. Fill does not suppress either residual.
 The input word is the raw active-high Sony tSlot mask (for example, Cross is
 `0x40` and R1 is `0x08`); stick bytes come from `pad_all[].s`. Add
 `--weapon-anim-raw` to capture the 0x100-byte pointed-to human animation object
