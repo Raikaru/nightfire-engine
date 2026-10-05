@@ -2,7 +2,8 @@
 """Replay multiplayer rows from a PCSX2 P2S through GameFlow_Main.
 
 The default runs Game_Run and Game_Draw, including draw-side visibility state,
-while emitting the same mp_record v5 snapshot schema as the live recorder.
+while emitting the same mp_record v6 snapshot schema as the live recorder,
+including player body AnimSet/layer state captured directly from EE RAM.
 Use ``ee_oracle.py fill CHECKPOINT_DIR PCSX2.jsonl OUT.jsonl`` to replay dense
 checkpoint intervals and validate every overlapping PCSX2 row before writing.
 """
@@ -133,7 +134,7 @@ def main():
         return ee_oracle_fill.main(sys.argv[2:])
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("state", help="initial PCSX2 .p2s checkpoint")
-    ap.add_argument("out", help="output mp_record v5 JSONL")
+    ap.add_argument("out", help="output mp_record v6 JSONL")
     ap.add_argument("--elf", default=str(pathlib.Path.home() / "Projects/nightfire-data/ps2/ACTION.ELF"))
     ap.add_argument("--nfmips", default="build/nfmips")
     ap.add_argument("--rows", type=int, required=True,
@@ -143,6 +144,8 @@ def main():
                     help="log writes to one MP human's BLData HP, including PC and $ra")
     ap.add_argument("--weapon-anim-raw", action="store_true",
                     help="capture the full human weapon-animation object range")
+    ap.add_argument("--sample-current-frame", action="store_true",
+                    help="run Game_Run once at the saved frame before advancing")
     ap.add_argument("--game-flow", dest="game_flow", action="store_true", default=True,
                     help="run GameFlow_Main and its view capture (default)")
     ap.add_argument("--no-game-flow", dest="game_flow", action="store_false",
@@ -170,6 +173,8 @@ def main():
         command += command_watch_human_hp
         if args.trace_rng:
             command.append("--trace-rng")
+        if args.sample_current_frame:
+            command.append("--sample-current-frame")
         if not args.game_flow:
             command.append("--no-game-flow")
         for weapon in args.give_weapon:
@@ -183,13 +188,15 @@ def main():
 
         def pine_factory(slot):
             pine = _StreamPine(slot, command=command, expected_rows=args.rows)
-            if (pad_span and args.rows > 1
-                    and not (pad_span[0] <= pine.frame + 1
-                             and pad_span[1] >= pine.frame + args.rows - 1)):
-                pine.close()
-                raise ValueError(
-                    f"input frames {pad_span[0]}..{pad_span[1]} do not cover "
-                    f"frames {pine.frame + 1}..{pine.frame + args.rows - 1}")
+            if pad_span and (args.rows > 1 or args.sample_current_frame):
+                first_input_frame = pine.frame if args.sample_current_frame else pine.frame + 1
+                last_input_frame = pine.frame + args.rows - 1
+                if not (pad_span[0] <= first_input_frame
+                        and pad_span[1] >= last_input_frame):
+                    pine.close()
+                    raise ValueError(
+                        f"input frames {pad_span[0]}..{pad_span[1]} do not cover "
+                        f"frames {first_input_frame}..{last_input_frame}")
             instances.append(pine)
             return pine
         def configure_ranges(pine, ranges):

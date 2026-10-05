@@ -132,6 +132,8 @@ struct ArenaSeedSnapshot {
         std::uint16_t status = 0;
         bool dead = false, out = false;
         float respawn_remaining = -1;
+        std::uint64_t death_frame = 0;
+        bool has_death_frame = false;
     };
     struct Objective {
         int state = 0, carrier = -1, team = kTeamNone;

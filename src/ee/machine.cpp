@@ -99,7 +99,7 @@ void Machine::load_elf(const std::string& path) {
         }
     }
 
-    // $gp / $sp like the game boot: _gp and _stack symbols exist in ACTION.ELF.
+    // _start passes _stack and _stack_size to SetupThread, which returns the top.
     if (auto g = symbol("_gp")) cpu.r[28].d[0] = cpu.r[28].d[1] = 0, cpu.r[28].d[0] = g->value;
     else std::fprintf(stderr, "nfmips: no _gp symbol in %s ($gp left 0; set it manually)\n", path.c_str());
     cpu.r[29].d[0] = kStackTop;
@@ -317,7 +317,7 @@ void Machine::install_libc_hooks() {
 u32 Machine::alloc(u32 bytes) {
     const u32 p = (alloc_ptr_ + 15) & ~15u;
     alloc_ptr_ = p + ((bytes + 15) & ~15u);
-    if (alloc_ptr_ >= kStackTop - 4096) fail("EE scratch allocator exhausted");
+    if (alloc_ptr_ >= kStackBase - 4096) fail("EE scratch allocator exhausted");
     return p;
 }
 

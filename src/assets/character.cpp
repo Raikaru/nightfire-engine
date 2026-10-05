@@ -790,6 +790,7 @@ std::vector<AnimSet> read_anim_sets(const Elf32& elf) {
         if (!sym) throw FormatError(std::string("ACTION.ELF has no symbol AnimSet_") + name);
         const Bytes t = elf.at(sym->value, 0x28);
         AnimSet set{name, {}, {}};
+        set.source_address = sym->value;
         std::size_t i = 0;
         for (; i < 10 && load<std::uint32_t>(t, i * 4) != 0; ++i) set.ladder.push_back(load<std::uint32_t>(t, i * 4));
         for (++i; i < 10 && load<std::uint32_t>(t, i * 4) != 0; ++i) set.strafe.push_back(load<std::uint32_t>(t, i * 4));
@@ -1209,6 +1210,7 @@ bool CharacterInstance::restore_layers(const std::vector<LayerSnapshot>& snapsho
         layer.mask_root_y = (snapshot.flags & 0x02000000u) != 0;
         layer.fresh = snapshot.fresh;
         layer.strafe = snapshot.strafe;
+        layer.anim_set = snapshot.anim_set;
         if (layer.drive == Drive::Distance && layer.seq)
             layer.table = distance_table(*layer.seq);
         next_id = std::max(next_id, layer.id + 1);
@@ -1224,6 +1226,24 @@ bool CharacterInstance::restore_layers(const std::vector<LayerSnapshot>& snapsho
     dirty_ = true;
     return true;
 }
+void CharacterInstance::restore_anim_set_context(const AnimSet* set, float scale, float phase_base, int set_index,
+                                                 int cooldown, int strafe_side) {
+    set_ = set;
+    set_scale_ = scale;
+    set_phase_base_ = phase_base;
+    set_index_ = set_index;
+    set_cooldown_ = cooldown;
+    set_strafe_ = true;
+    strafe_side_ = strafe_side;
+    set_primary_ = set_secondary_ = strafe_layer_ = 0;
+    for (const Layer& layer : layers_) {
+        if (!layer.anim_set) continue;
+        if (layer.drive == Drive::Distance) set_primary_ = layer.id;
+        else if (layer.drive == Drive::Phase) set_secondary_ = layer.id;
+        if (layer.strafe) strafe_layer_ = layer.id;
+    }
+}
+
 
 
 std::vector<CharacterInstance::LayerInfo> CharacterInstance::layer_infos() const {

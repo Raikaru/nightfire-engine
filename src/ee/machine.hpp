@@ -154,7 +154,9 @@ public:
         instruction_observer_ = std::move(observer);
     }
 
-    static constexpr u32 kStackTop = 0x01FE0000u;  // game's _stack symbol
+    static constexpr u32 kStackBase = 0x01FE0000u;  // ACTION.ELF _stack, passed to SetupThread
+    static constexpr u32 kStackSize = 0x00020000u;  // ACTION.ELF _stack_size
+    static constexpr u32 kStackTop = kStackBase + kStackSize;
     static constexpr u32 kAllocBase = 0x01E00000u;  // scratch region below the stack
 
 private:

@@ -102,9 +102,11 @@ Determined from `ACTION.ELF` disassembly, not assumed:
   ...). Each class counts separately (ints never consume an FPU slot).
 - Results: integer in `v0` (+`v1`), float in `f0`. `AccelFunc0` returns with
   `jr ra` / `mov.s $f0,$f1` (delay slot); it does not store through its pointer.
-- `$gp` = `_gp` (`0x314670`), `$sp` starts below `_stack` (`0x01FE0000`,
-  `_stack_size` `0x20000`). The harness returns through a sentinel `ra`
-  (`0xFFFFFFF0`, unmapped): reaching it ends the call instead of trapping.
+- `$gp` = `_gp` (`0x314670`). `_start` passes `_stack` base `0x01FE0000` and
+  `_stack_size` `0x20000` to `SetupThread`, then moves its returned stack
+  pointer into `$sp`; the stack interval ends at `0x02000000`. `nfmips` calls
+  start 512 bytes below that top; its scratch allocator stops below the stack
+  base.
 - More than 8 float args is rejected (registers `f12`-`f19`); more int args
   spill to the stack normally.
 

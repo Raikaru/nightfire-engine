@@ -116,7 +116,9 @@ void ArenaSystem::restore_snapshot(const ArenaSeedSnapshot& snapshot) {
         slot.dead = source.dead;
         slot.out = source.out;
         slot.spawn_frame = frame_;
-        if (source.dead && source.respawn_remaining >= 0.0f && rate_ > 0.0f) {
+        if (source.dead && source.has_death_frame) {
+            slot.died_frame = std::min(frame_, source.death_frame);
+        } else if (source.dead && source.respawn_remaining >= 0.0f && rate_ > 0.0f) {
             const double age = std::max(0.0, double(kHumanRespawnDelay - source.respawn_remaining) * double(rate_));
             const std::uint64_t age_frames = std::min(frame_, std::uint64_t(std::llround(age)));
             slot.died_frame = frame_ - age_frames;

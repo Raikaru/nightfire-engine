@@ -236,8 +236,10 @@ void ArenaSystem::update_objectives(FrameTiming timing) {
             case K::Hill: koh_update(i, timing); break;
             default: break;
         }
-        // Carried items ride with the carrier.
-        if (o.carrier >= 0 && valid(o.carrier) && slots_[std::size_t(o.carrier)].body) {
+        // A CTF source snapshot can have a nonnegative carrier slot while the flag is home.
+        // MP_FlagUpdate follows the carrier transform only in the carried state.
+        if (o.carrier >= 0 && valid(o.carrier) && slots_[std::size_t(o.carrier)].body &&
+            (o.kind != K::Flag || o.state == 1)) {
             o.pos = slots_[std::size_t(o.carrier)].body->position();
             o.volume_centre = o.pos;
         }

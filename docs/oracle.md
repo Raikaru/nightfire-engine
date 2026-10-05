@@ -234,17 +234,18 @@ yet live-probed; bot hit-zone and flash fields are not mapped.
 Use `python3 tools/oracle/mp_record.py OUT.jsonl --load-slot SLOT --seedable
 --frames N` for a seedable per-logic-frame capture. Seedable reads come from
 the end-of-`Game_Run` frame ring; objective blobs, weapon-animation objects,
-bot route-node buffers, AI path graphs, and bot body-animation layers are
-included in its immutable snapshot. Dynamic pointers are checked against the
-sampled records. When a pointer changes, the recorder refreshes that range
-schema but still emits the frame, with `partial: true`, `seed_ready: false`,
-and `state_missing` naming only fields whose pointed-to bytes were not part of
-that frame's snapshot. All other fields in the transition row remain captured.
-Bot collision-body bytes are also captured per seedable frame as
-`pl[4..7].cb_raw` (0xD0 bytes from each bot's `obj_tag+0xDC` owner/collision-body
-block); bytes `+0xCC..+0xCF` are the collision foot-height baseline. Bot
-collision-body data is required for `seed_ready`. Each complete row carries
-`seed_version: 5`, the separately sampled GameState+0x34 `timer_frame`, four RNG
+bot route-node buffers, AI path graphs, bot body-animation layers, and human
+body-animation layers plus AnimSet lists are included in its immutable
+snapshot. Dynamic pointers are checked against the sampled records. When a
+pointer changes, the recorder refreshes that range schema but still emits the
+frame, with `partial: true`, `seed_ready: false`, and `state_missing` naming
+only fields whose pointed-to bytes were not part of that frame's snapshot.
+All other fields in the transition row remain captured. Bot collision-body
+bytes are also captured per seedable frame as `pl[4..7].cb_raw` (0xD0 bytes
+from each bot's `obj_tag+0xDC` owner/collision-body block); bytes
+`+0xCC..+0xCF` are the collision foot-height baseline. Bot collision-body
+data is required for `seed_ready`. Each complete row carries
+`seed_version: 6`, the separately sampled GameState+0x34 `timer_frame`, four RNG
 words, four controller inputs (`pad_all`), MP settings/game state, the eight
 `mp_roster` records, indexed `pk[]` pickup records, every objective extension
 blob (`objx`), and `objectives[]` records resolved from `MP_OBJ_EXT+0x84`
@@ -260,6 +261,11 @@ retained as `assassin_ptr`, `target_ptr`, and `golden_target_ptr`. With
 `--weapon-anim-raw`, the 0x100-byte target is also emitted as
 `weapon_anim_raw`; its `+0xDC` owner pointer and owner+`0x70` sAnimObject
 resolve the shared layer/sequence schema at `pl[0..3].anim`.
+For each human, `body_anim` captures the full layer/sequence chain resolved
+from the player animation owner, and `anim_sets` contains the ordered raw
+0x34-byte linked nodes rooted at owner+`0x98` (including the `+0x2C` random
+timer). This state is required when seeding the body animation; v5 recordings
+predate these fields and must be recaptured with the updated recorder.
 `golden_effect_handle` and `golden_effect_active` expose the GoldenEye effect
 actor; no remaining-effect tick value is mapped.
 Bot goal targets pointing to an objective descriptor are retained in
@@ -278,19 +284,20 @@ For deterministic offline replay from an existing PCSX2 savestate, use
 `ee_oracle.py STATE.p2s OUT.jsonl --rows N [--inputs REC.jsonl]`. The wrapper
 delegates to `nfmips mp-oracle`, which runs `GameFlow_Main` by default,
 including `Game_Draw` and draw-side visibility state. Use `--no-game-flow` to
-run `Game_Run` only, without draw-side visibility state. Row one is the saved
-P2S; each following row advances GameState's frame/timer counters and
-video-frame accumulator using `GameFlow_Main`'s
-`VIDEO_FRAME_RATE / FRAME_RATE_INT` edge, then applies the
-corresponding `pad_all` values and calls `Game_Run` exactly once. A second call
-would advance world state again while leaving the supplied frame counters
-unchanged. `N` includes the initial row; pad input must cover every frame after
-it. Row numbers come from the saved GameState counters, not the P2S filename or
-requested checkpoint frame. The input word is the raw active-high Sony tSlot
-mask (for example, Cross is `0x40` and R1 is `0x08`); stick bytes come from
-`pad_all[].s`. Add `--weapon-anim-raw` to capture the 0x100-byte pointed-to
-human animation object as `pl[].weapon_anim_raw` for replay code that needs
-more than the enum.
+run `Game_Run` only, without draw-side visibility state. By default row one is
+the saved P2S and each following row advances GameState's frame/timer counters
+and video-frame accumulator using the `VIDEO_FRAME_RATE / FRAME_RATE_INT` edge,
+then calls the selected entry exactly once. `--sample-current-frame` (only
+with `--no-game-flow`) instead treats the saved state as an unfinished frame:
+it applies that frame's pad and calls `Game_Run` before advancing counters.
+`ee_oracle_fill.py` uses this mode, matching `mp_record.py`'s end-of-`Game_Run`
+sample point and excluding draw-side state. `N` is the number of emitted rows;
+pad input must cover each simulated frame. Row numbers come from the saved
+GameState counters, not the P2S filename or requested checkpoint frame. The
+input word is the raw active-high Sony tSlot mask (for example, Cross is
+`0x40` and R1 is `0x08`); stick bytes come from `pad_all[].s`. Add
+`--weapon-anim-raw` to capture the 0x100-byte pointed-to human animation object
+as `pl[].weapon_anim_raw` for replay code that needs more than the enum.
 `--trace-rng` logs each `Rand_Random` caller and result to stderr. Repeat
 `--give-weapon ID` to call `Player_EquipWeapon` and select a weapon for human
 slot 0 before the first frame; it mutates the P2S state and is intended for
@@ -1055,12 +1062,15 @@ to erase that post-tick write and skip slot 6's frame-35 animation update at
 seed-each restore, while still importing the raw byte when no such pass wrote
 it.
 This carry models the one-frame ordering only when the host visibility result
-matches the source. The longer Arena samples expose a separate limit in that
-approximation: slot 6's source `obj+0xfc` remains zero while the host camera
-test repeatedly marks it visible, so its animation advances early. Arena
-frames 17466, 18076, and 20090 are first affected at 17468, 18078, and 20092
-respectively. This is a culling/visibility residual, not evidence that the raw
-counter should be fabricated or forced from the next recorder row.
+The longer Arena samples expose a separate limit in that approximation. At
+frame 17468, slot 6's source `obj+0xfc` remains zero while the host camera test
+marks it visible. A raw-RAM `View_CaptureScene` trace never calls
+`Vision_InView` for slot 6's source cel (`obj+0x20 == 0x015d3810`), even though
+a direct `Vision_InView` call on that cel's own sphere returns visible. Thus
+the residual is not just a disagreement in the four-plane sphere test: the
+host tests all mapped room spheres, while source `View_AddCels` only tests its
+scene candidate list. Do not force the source counter from the next recorder
+row; the candidate-list membership still needs to be modeled.
 
 ### Extended seeded campaign results
 
@@ -1078,14 +1088,14 @@ divergent frames among N compared transitions.
 | Arena 23797 (307) | 0/307 | 0/307 | exact aligned state |
 | Arena 15386 (230) | 5/230 | 1/230 | continuous first differs at 15602 by a small `pl[5].pos[2]` residual; bot 4 state differs at 15615 |
 | Arena 15728 (306) | 62/306 | 0/306 | continuous first differs at 15960 in `pl[5].pos[2]` |
-| Arena 17466 (245), 18076 (305) | 244/245, 304/305 | 244/245, 304/305 | slot 6 animation advances one frame while the source counter stays zero (first differences 17468 and 18078) |
-| Arena 20090 (306) | 305/306 | 305/306 | first difference 20092: slot 6 animation frame 23 vs source 22 |
+| Arena 17466 (245), 18076 (305) | 244/245, 304/305 | 244/245, 304/305 | slot 6 animation advances one frame while source counter stays zero (first differences 17468 and 18078); source frame 17468 trace shows its cel omitted from `View_AddCels` candidates |
+| Arena 20090 (306) | 305/306 | 305/306 | first difference 20092: slot 6 animation frame 23 vs source 22; candidate-list mismatch remains under investigation |
 | Arena 23509 | 58/242 | 0/242 | continuous first differs at 23550 in `pl[5].pos[0]` |
 | CTF 34665 (307) | 0/307 | 0/307 | exact aligned state; includes frame 34716 slot 6 animation |
 | CTF 36025 (277) | 0/277 | 0/277 | exact aligned state |
-| CTF 34086 (215) | 215/215 | 215/215 | first frame 34087: source player 0 dead, host alive after seed |
-| CTF 34334 (223) | 223/223 | 20/223 | first frame 34335: player weapon animation state; later foot/position drift and RNG order diverge at 34473 |
-| CTF 36995 (263), 37656 (306), 38319 (306) | divergent | divergent | first mismatch is `objs[0,1,0].pos[0]` (frames 36996, 37657, 38320 respectively) |
+| CTF 34086 (215) | alive/dead now match; first residual at frame 34087 is player 0 foot animation | v5 seed-each not revalidated | importer now restores the human death frame from `obj+0xec`; remaining animation comparison needs v6 body-animation fields |
+| CTF 34334 (223) | 223/223 | 20/223 | first frame 34335: player weapon animation state; later foot/position drift and RNG order diverge at 34473; pending v6 recorder rows |
+| CTF 36995 (263), 37656 (263), 38319 (263) | no objective-position residuals in each tested window | not rerun | first non-objective differences: 37107 bot RNG, 37777 small `pl[6].pos` residual, and 38493 bot RNG, respectively |
 
 Demo's older BotVars slot 4 `+0x8c` seed failure did not recur in the
 checkpointed windows. Remaining differences above are not established as
@@ -1101,10 +1111,12 @@ fall displacement on source-collision ticks.
 
 `View_AddCels` (0x1E6BA0) calls `Vision_InView` (0x1E89E0) with each
 candidate cel's own `cel+0x8c` radius and `cel+0x80` center before adding its
-objects. The map parser's `parseentity_transform_bounding_box` (0x1D0FB0)
-transforms the model sphere center and copies its model radius unchanged;
-the host stores that sphere and tests it against the four camera side planes.
-There is no portal-recursion fallback in this cel-visibility decision.
+objects. A frame-17468 source-RAM trace confirms the slot-6 cel is not among
+the candidates reached from this viewer, despite passing a direct sphere test.
+The map parser's `parseentity_transform_bounding_box` (0x1D0FB0) transforms
+the model sphere center and copies its model radius unchanged; the host stores
+that sphere and currently tests every mapped room against the four camera side
+planes, without matching the source candidate-list membership.
 In multiplayer, `World::tick` keeps the Game_Run boundary explicit: player
 movement/collision and player-weapon updates precede `MP_Update`, then
 `Drone_InitComms` prepares global opponent/sight state before object-control

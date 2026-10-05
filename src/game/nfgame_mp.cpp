@@ -278,11 +278,14 @@ int run_match(const MatchLaunch& request) {
         if (!body_skin) throw std::runtime_error("MP player animation has no character skin");
         headless_bodies.reserve(std::size_t(options.humans));
         for (int i = 0; i < options.humans; ++i) {
+            int weapon_id = 1;
             int category = 1;
-            if (const PlayerWeapons* state = session.weapons().state(i))
-                category = int(session.weapons().table().weapon(state->current).category);
+            if (const PlayerWeapons* state = session.weapons().state(i)) {
+                weapon_id = state->current;
+                category = int(session.weapons().table().weapon(weapon_id).category);
+            }
             headless_bodies.push_back(
-                std::make_unique<PlayerAnimator>(*weapon_bank, *body_skin, headless_anim_sets, category));
+                std::make_unique<PlayerAnimator>(*weapon_bank, *body_skin, headless_anim_sets, weapon_id, category));
         }
     }
 
@@ -320,7 +323,16 @@ int run_match(const MatchLaunch& request) {
                 const std::uint64_t next_frame = world.frame() + 1;
                 if (!importer->input_for(next_frame, pads, tick_rate, match_elapsed, match_total_elapsed))
                     throw std::runtime_error("MP seed: no contiguous recorded pad input for frame " + std::to_string(next_frame));
-                if (launch.mp_seed_each) importer->restore_at(world.frame(), world, session, bot_match.get());
+                if (launch.mp_seed_each) {
+                    importer->restore_at(world.frame(), world, session, bot_match.get());
+                    for (int i = 0; i < options.humans; ++i) {
+                        const auto* state = session.weapons().state(i);
+                        if (!state) throw std::runtime_error("MP seed: human weapon state is unavailable");
+                        importer->restore_player_animation(
+                            world.frame(), std::size_t(i), *headless_bodies[std::size_t(i)], state->current,
+                            int(session.weapons().table().weapon(state->current).category));
+                    }
+                }
                 session.arena().set_seeded_clock_for_tick(match_elapsed, match_total_elapsed);
             } else {
                 for (int i = 0; i < options.humans; ++i) pads[std::size_t(i)] = scripts[std::size_t(i)].at(f);
@@ -344,7 +356,8 @@ int run_match(const MatchLaunch& request) {
             }
             if (mp_trace.is_open())
                 mp_trace.dump(world, session.arena(), session.weapons(), pads,
-                              bot_match ? &bot_match->bots() : nullptr);
+                              bot_match ? &bot_match->bots() : nullptr,
+                              importer && importer->body_anim_sets_unseeded(world.frame(), std::size_t(options.humans)));
         }
         mp_trace.close();
         report();

@@ -1,5 +1,7 @@
 #include "game/player_anim.hpp"
 #include "core/rng.hpp"
+#include <algorithm>
+#include <cstring>
 
 #include <string_view>
 
@@ -40,17 +42,89 @@ float skin_model_min_y(CharacterBank& bank, const SkinDef& skin) {
 
 }  // namespace
 
-PlayerAnimator::PlayerAnimator(CharacterBank& bank, const SkinDef& skin, const std::vector<AnimSet>& sets, int category)
+PlayerAnimator::PlayerAnimator(CharacterBank& bank, const SkinDef& skin, const std::vector<AnimSet>& sets, int weapon_id,
+                               int category)
     : skin_(skin), sets_(sets), character_(bank, skin), model_min_y_(skin_model_min_y(bank, skin)),
-      category_(category) {
+      weapon_id_(weapon_id), category_(category) {
     select_set();
 }
 
 void PlayerAnimator::set_weapon(int weapon_id, int category, GameRng* rng) {
     if (weapon_id == weapon_id_ && category == category_) return;
-    if (weapon_id != weapon_id_ && rng) rng->random(); // Player_SetWeaponAnim -> PlayerAnimSetInit -> AnimSetInit
     weapon_id_ = weapon_id;
     category_ = category;
+    initialize_set(rng);
+}
+
+bool PlayerAnimator::restore_source_state(
+    int current_weapon, int current_category, bool crouched,
+    const std::vector<std::array<std::uint8_t, 0x34>>& anim_sets,
+    const std::vector<CharacterInstance::LayerSnapshot>& layers, float distance_accumulator) {
+    if (anim_sets.size() > 4) return false;
+    source_anim_sets_ = anim_sets;
+    weapon_id_ = current_weapon;
+    category_ = current_category;
+    crouched_ = crouched;
+
+    const AnimSet* active_set = nullptr;
+    float phase_base = 0.37f;
+    float distance_scale = kDistanceScale;
+    int set_index = -1, cooldown = 0, strafe_side = -1;
+    if (!source_anim_sets_.empty()) {
+        const auto& raw = source_anim_sets_.back();
+        std::uint32_t table_address = 0;
+        std::memcpy(&table_address, raw.data() + 0x18, sizeof(table_address));
+        const auto found = std::find_if(sets_.begin(), sets_.end(), [table_address](const AnimSet& set) {
+            return set.source_address == table_address;
+        });
+        if (found == sets_.end()) return false;
+        active_set = &*found;
+        for (int candidate : {1, 2, 3, 4, 5, 6, 999, 0}) {
+            const auto names = stance_names(candidate);
+            if (found->name == names.first || found->name == names.second) {
+                category_ = candidate;
+                break;
+            }
+        }
+        std::memcpy(&phase_base, raw.data() + 0x24, sizeof(phase_base));
+        std::memcpy(&distance_scale, raw.data() + 0x28, sizeof(distance_scale));
+        set_index = static_cast<std::int8_t>(raw[0x2e]);
+        strafe_side = static_cast<std::int8_t>(raw[0x2f]);
+        cooldown = raw[0x30];
+    } else {
+        active_set = &find_set(sets_, stance_names(category_).first);
+    }
+
+    auto restored_layers = layers;
+    for (auto& layer : restored_layers) {
+        const auto ladder = active_set ? std::find(active_set->ladder.begin(), active_set->ladder.end(), layer.script)
+                                       : std::vector<std::uint32_t>::const_iterator{};
+        const auto strafe = active_set ? std::find(active_set->strafe.begin(), active_set->strafe.end(), layer.script)
+                                       : std::vector<std::uint32_t>::const_iterator{};
+        layer.anim_set = active_set && (ladder != active_set->ladder.end() || strafe != active_set->strafe.end());
+        layer.strafe = active_set && strafe != active_set->strafe.end();
+    }
+    if (!character_.restore_layers(restored_layers, distance_accumulator)) return false;
+    character_.restore_anim_set_context(active_set, distance_scale, phase_base, set_index, cooldown, strafe_side);
+    return true;
+}
+
+void PlayerAnimator::initialize_set(GameRng* rng) {
+    source_anim_sets_.clear();
+    std::array<std::uint8_t, 0x34> node{};
+    const auto names = stance_names(category_);
+    const AnimSet& set = find_set(sets_, crouched_ ? names.second : names.first);
+    const float phase_base = 0.37f;
+    const std::uint32_t random = rng ? rng->random() : 0;
+    const std::uint16_t random_timer = std::uint16_t((random & 0x3FFu) + 255u);
+    const float distance_scale = kDistanceScale;
+    std::memcpy(node.data() + 0x18, &set.source_address, sizeof(set.source_address));
+    std::memcpy(node.data() + 0x24, &phase_base, sizeof(phase_base));
+    std::memcpy(node.data() + 0x28, &distance_scale, sizeof(distance_scale));
+    std::memcpy(node.data() + 0x2C, &random_timer, sizeof(random_timer));
+    node[0x2E] = 0xFF;
+    node[0x2F] = 0xFF;
+    source_anim_sets_.push_back(node);
     select_set();
 }
 
@@ -62,7 +136,7 @@ void PlayerAnimator::select_set() {
 float PlayerAnimator::update(bool crouched, const Vec3& velocity, float mul, GameRng* rng) {
     if (crouched != crouched_) {
         crouched_ = crouched;
-        select_set();
+        initialize_set(rng);
     }
     character_.set_game_rng(rng);
     character_.update_locomotion(velocity[2], mul * 0.1f, velocity[0], mul * 0.075f, mul);
