@@ -483,7 +483,7 @@ bool WeaponSystem::step_projectile(Projectile& b, World& world, FrameTiming timi
 
     float step_speed = b.speed;
     if (b.state == Projectile::State::Spawn) {
-        step_speed = (game_rng().frand(1.0f) + 0.5f) * b.speed;   // first frame: (Rand_FRand(1) + 0.5) * speed
+        step_speed = (game_rng().frand(0.5f) + 0.5f) * b.speed;   // Bullet_update: Rand_FRand(0.5) + 0.5
         b.state = Projectile::State::Flying;
     } else if (def.range < b.travelled) {
         b.state = Projectile::State::OutOfRange;

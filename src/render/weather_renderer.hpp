@@ -19,12 +19,14 @@
 // Rain draws the shared Raindrop mesh per drop; snow and billboard emitters draw camera-facing
 // textured quads, mesh emitters draw their model per particle.
 namespace nf {
+class GameRng;
 class WeatherRenderer {
 public:
-    explicit WeatherRenderer(Level& level);
+    explicit WeatherRenderer(Level& level, bool render_resources = true);
     bool active() const { return type_ >= 0 || !emitters_.empty(); }
     // Level id (0x07000005...): selects the InitDrops velocity spread (levels 07-09 are tighter).
     void set_level(std::uint32_t id) { level_id_ = id; }
+    void set_game_rng(GameRng* rng) { game_rng_ = rng; }
     // Advance drops and emitters by one logic step (`delta_seconds`), around `viewer` (the camera eye).
     // `frame_mul` and `delta_seconds` are FrameTiming::FRAME_RATE_MUL / REC_FRAME_RATE respectively.
     // `channel` answers switch-channel state for switch-gated emitters (absent = always on).
@@ -89,6 +91,8 @@ private:
     void update_emitters(float frame_mul, float delta_seconds, const std::function<bool(int)>& channel);
 
     Level& level_;
+    bool render_resources_ = true;
+    GameRng* game_rng_ = nullptr;
     int type_ = -1;                 // Env param 0: 0 snow, 1 rain, 2 slow snow
     std::uint32_t level_id_ = 0;
     std::size_t max_drops_ = 0;

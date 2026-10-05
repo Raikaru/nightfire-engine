@@ -5,6 +5,7 @@
 #include <cstdio>
 
 #include "assets/sprites.hpp"
+#include "core/rng.hpp"
 
 namespace nf {
 
@@ -91,7 +92,8 @@ GLuint upload_rgba(int w, int h, const std::uint32_t* px) {
 
 }  // namespace
 
-WeatherRenderer::WeatherRenderer(Level& level) : level_(level) {
+WeatherRenderer::WeatherRenderer(Level& level, bool render_resources)
+    : level_(level), render_resources_(render_resources) {
     if (!level_.map()) return;
     const auto& statics = level_.map()->chunk.statics;
     const auto& chunks = level_.chunks();
@@ -121,6 +123,7 @@ WeatherRenderer::WeatherRenderer(Level& level) : level_(level) {
     }
     parse_emitter_defs();
     build_emitters();
+    if (!render_resources_) return;
     build_leaf_emitters(leaf_points);
     program_ = compile_program(kVertexShader, kFragmentShader);
     u_mvp_ = glGetUniformLocation(program_, "u_mvp");
@@ -243,22 +246,24 @@ void WeatherRenderer::build_emitters() {
         const std::uint32_t dur = si.param(1, 0);
         e.remaining = dur == 0 ? -1.0f : dur == 1 ? 0.0f : float(dur) * (1.0f / 60.0f);
         e.parts.resize(std::size_t(def->count));
-        if (def->model_hash == -1) {
-            if (const Texture* t = sprites.find(def->tex_hash); t && !t->rgba.empty())
-                e.tex = upload_rgba(int(t->width), int(t->height), t->rgba.data());
-            if (e.tex != 0) owned_gl_.push_back(e.tex);
-        } else {
-            for (std::size_t c = 0; c < chunks.size() && e.mesh_vao == 0; ++c) {
-                for (std::size_t m = 0; m < chunks[c].chunk.models.size(); ++m) {
-                    if (chunks[c].chunk.models[m].hash != def->model_hash) continue;
-                    const GfxMesh& mesh = level_.mesh(c, m);
-                    if (mesh.batches.empty()) break;
-                    build_model_mesh(mesh, chunks[c].chunk.textures, e.mesh_vao, e.mesh_batches, owned_gl_);
-                    break;
+        if (render_resources_) {
+            if (def->model_hash == -1) {
+                if (const Texture* t = sprites.find(def->tex_hash); t && !t->rgba.empty())
+                    e.tex = upload_rgba(int(t->width), int(t->height), t->rgba.data());
+                if (e.tex != 0) owned_gl_.push_back(e.tex);
+            } else {
+                for (std::size_t c = 0; c < chunks.size() && e.mesh_vao == 0; ++c) {
+                    for (std::size_t m = 0; m < chunks[c].chunk.models.size(); ++m) {
+                        if (chunks[c].chunk.models[m].hash != def->model_hash) continue;
+                        const GfxMesh& mesh = level_.mesh(c, m);
+                        if (mesh.batches.empty()) break;
+                        build_model_mesh(mesh, chunks[c].chunk.textures, e.mesh_vao, e.mesh_batches, owned_gl_);
+                        break;
+                    }
                 }
             }
         }
-        if (e.tex != 0 || e.mesh_vao != 0) emitters_.push_back(std::move(e));
+        if (!render_resources_ || e.tex != 0 || e.mesh_vao != 0) emitters_.push_back(std::move(e));
     }
 }
 // Falling leaves (LeafGen_Create/Leaf_Create, class 0x2B): mesh instances of the shared Leaf model
@@ -376,6 +381,7 @@ void WeatherRenderer::add_drop(const Vec3& viewer) {
 // their A channel on (or 0) and their B channel off (or 0).
 void WeatherRenderer::update_emitters(float frame_mul, float delta_seconds,
                                       const std::function<bool(int)>& channel) {
+    auto random = [this](float range) { return game_rng_ ? game_rng_->frand(range) : frand(range); };
     auto on = [&](int ch) { return ch == 0 || (channel && channel(ch)); };
     for (Emitter& e : emitters_) {
         const EmitterDef& def = *e.def;
@@ -406,9 +412,9 @@ void WeatherRenderer::update_emitters(float frame_mul, float delta_seconds,
             if (pt.age < pt.life) continue;
             --budget;
             e.spawn_budget -= 1.0f;
-            const float az = az_b + az_r * frand(1.0f);
-            const float pol = pol_b + pol_r * frand(1.0f);
-            const float sp = speed * frand(1.0f);
+            const float az = az_b + az_r * random(1.0f);
+            const float pol = pol_b + pol_r * random(1.0f);
+            const float sp = speed * random(1.0f);
             // Cone around the placement up (Emitter_Update builds the basis from Mat_GetUp).
             const float saz = std::sin(az), caz = std::cos(az);
             const float spol = std::sin(pol), cpol = std::cos(pol);
@@ -433,7 +439,7 @@ void WeatherRenderer::update_emitters(float frame_mul, float delta_seconds,
             pt.vy = d[1] * sp;
             pt.vz = d[2] * sp;
             pt.age = 0;
-            pt.life = std::max(0.05f, life + life_rand * frand(1.0f));
+            pt.life = std::max(0.05f, life + life_rand * random(1.0f));
         }
     }
 }
@@ -441,7 +447,7 @@ void WeatherRenderer::update_emitters(float frame_mul, float delta_seconds,
 void WeatherRenderer::update(const Vec3& viewer, float frame_mul, float delta_seconds,
                              const std::function<bool(int)>& channel) {
     update_emitters(frame_mul, delta_seconds, channel);
-    if (type_ < 0) return;
+    if (!render_resources_ || type_ < 0) return;
     // First tick fills every drop around the viewer (the f9f5 respawn path).
     if (!filled_) {
         filled_ = true;

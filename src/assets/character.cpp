@@ -1045,6 +1045,8 @@ void CharacterInstance::update_locomotion(float speed, float max_speed, float st
             }
     }
     if (appended) tick(mul);   // AnimSetUpdate's trailing AnimObjectUpdate on append frames
+    // AnimSetUpdate's final AnimListBuild draws only when its active list is not a singleton.
+    if (game_rng_ && layers_.size() != 1) (void)game_rng_->random();
     dirty_ = true;
 }
 
@@ -1336,8 +1338,6 @@ void CharacterInstance::advance(float seconds, float mul) {
         tick_accumulator_ -= 1.0f;
         tick(mul);
     }
-    // AnimSetUpdate builds the final list after AnimObjectUpdate has resolved fades and culls dead layers.
-    if (game_rng_ && set_ && layers_.size() != 1) (void)game_rng_->random();
 }
 
 void CharacterInstance::set_frame(float frame) {

@@ -40,6 +40,10 @@ struct FrameTiming {
         : FRAME_RATE(rate), FRAME_RATE_MUL(kReferenceHz / rate), REC_FRAME_RATE(1.0f / rate),
           FRAME_RATE_INT(static_cast<int>(rate + 0.5f)) {}
 
+    FrameTiming(float rate, float mul, float rec, int rate_int)
+        : FRAME_RATE(rate), FRAME_RATE_MUL(mul), REC_FRAME_RATE(rec),
+          FRAME_RATE_INT(rate_int) {}
+
     float mul() const { return FRAME_RATE_MUL; }
     float rec() const { return REC_FRAME_RATE; }
 };

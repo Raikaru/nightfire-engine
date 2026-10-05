@@ -150,6 +150,9 @@ void World::replay_player(int index, const ActionInput& input, FrameTiming timin
     inputs_[std::size_t(index)] = input;
     p->update(inputs_[std::size_t(index)], settings_[std::size_t(index)], collision_, timing);
     p->resolve_collisions(collision_);
+    // Live tick runs update_camera after resolve: re-simulation must consume the identical
+    // RNG draws (active camera shake) and keep the same eye state, or the shared stream desyncs.
+    p->update_camera(timing);
 }
 
 void World::camera_shake(const Vec3& pos, float radius) {

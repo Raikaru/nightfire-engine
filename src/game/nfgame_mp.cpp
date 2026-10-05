@@ -318,6 +318,10 @@ int run_match(const MatchLaunch& request) {
         std::unique_ptr<Window> shot_window;
         std::unique_ptr<LevelRenderer> shot_renderer;
         std::unique_ptr<WeatherRenderer> shot_weather;
+        std::unique_ptr<WeatherRenderer> emitter_sim =
+            std::make_unique<WeatherRenderer>(level, false);
+        emitter_sim->set_level(level_id);
+        emitter_sim->set_game_rng(&game_rng());
         if (!launch.shot.empty()) {
             shot_window = std::make_unique<Window>("nfgame - " + bin_name, 1280, 720, true);
             shot_renderer = std::make_unique<LevelRenderer>(level);
@@ -327,13 +331,14 @@ int run_match(const MatchLaunch& request) {
         }
         for (long f = 0; f < frames; ++f) {
             PadInputs pads{};
-            float tick_rate = float(launch.logic_hz), match_elapsed = 0.0f, match_total_elapsed = 0.0f;
+            FrameTiming timing{float(launch.logic_hz)};
+            float match_elapsed = 0.0f, match_total_elapsed = 0.0f;
             if (importer) {
                 const std::uint64_t next_frame = world.frame() + 1;
-                if (!importer->input_for(next_frame, pads, tick_rate, match_elapsed, match_total_elapsed))
+                if (!importer->input_for(next_frame, pads, timing, match_elapsed, match_total_elapsed))
                     throw std::runtime_error("MP seed: no contiguous recorded pad input for frame " + std::to_string(next_frame));
                 if (launch.mp_seed_each) {
-                    importer->restore_at(world.frame(), world, session, bot_match.get());
+                    importer->restore_at(world.frame(), world, session, bot_match.get(), true);
                     for (int i = 0; i < options.humans; ++i) {
                         const auto* state = session.weapons().state(i);
                         if (!state) throw std::runtime_error("MP seed: human weapon state is unavailable");
@@ -346,8 +351,8 @@ int run_match(const MatchLaunch& request) {
             } else {
                 for (int i = 0; i < options.humans; ++i) pads[std::size_t(i)] = scripts[std::size_t(i)].at(f);
             }
-            const FrameTiming timing{tick_rate};
-            session.tick(pads, timing);
+            emitter_sim->update(world.player(0)->eye(), timing.FRAME_RATE_MUL, timing.REC_FRAME_RATE,
+                                [&world](int ch) { return world.objects().channel(unsigned(ch)); });
             for (int i = 0; i < options.humans; ++i) {
                 PlayerAnimator& body = *headless_bodies[std::size_t(i)];
                 const Player& player = *world.player(i);
@@ -414,6 +419,7 @@ int run_match(const MatchLaunch& request) {
     LevelRenderer renderer(level);
     renderer.set_level(level_id);
     WeatherRenderer weather(level);
+    weather.set_game_rng(&game_rng());
     weather.set_level(level_id);
     ObjectDrawList objects(level, arena);
     std::unique_ptr<drone::DroneRenderer> drone_renderer;
