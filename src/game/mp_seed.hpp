@@ -36,8 +36,8 @@ public:
                                   int current_weapon, int category) const;
     // True when any captured human lacks exact body AnimSet state and keeps the live engine lifecycle instead.
     bool body_anim_sets_unseeded(std::uint64_t frame, std::size_t humans) const;
-    bool input_for(std::uint64_t frame, PadInputs& pads, FrameTiming& timing, float& elapsed,
-                   float& total_elapsed) const;
+    bool input_for(std::uint64_t frame, PadInputs& pads, FrameTiming& timing,
+                   std::uint64_t& timer_frame, float& elapsed, float& total_elapsed) const;
 
 private:
     struct Impl;

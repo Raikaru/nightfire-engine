@@ -191,6 +191,7 @@ public:
 
     // --- players (MP participant slot 0..15) ------------------------------------------------------
     void spawn_player(int slot, const SpawnLoadout& loadout = {});   // MP_EquipPlayer, done lazily by tick()
+    void ensure_player(int slot, World& world);   // create slot state on demand (no-op when absent/missing)
     void respawn(int slot, const Vec3& position, float yaw, const SpawnLoadout& loadout);
     bool has_player(int slot) const;
     bool alive(int slot) const;
@@ -271,7 +272,6 @@ private:
     };
     void update_impact_emitters(FrameTiming timing);
     void create_impact_emitter(std::uint32_t id);
-    void ensure_player(int slot, World& world);
     void tick_player(int slot, World& world, FrameTiming timing);
     void process_health_events(int slot, PlayerWeapons& state, Player& player);
     void anim_update(int slot, PlayerWeapons& p, World& world, FrameTiming timing);   // Player_SetWeaponAnimObj

@@ -282,8 +282,9 @@ HumanBody& ArenaSession::ensure_human_actor(int slot, std::string_view name, boo
     return body;
 }
 
-void ArenaSession::tick(const PadInputs& pads, FrameTiming timing) {
-    world_.tick(pads, timing);
+void ArenaSession::tick(const PadInputs& pads, FrameTiming timing,
+                        std::optional<std::uint64_t> timer_frame) {
+    world_.tick(pads, timing, timer_frame);
     weapons_->post_tick_rng();   // MP Player_LaserPointer / muzzle draws follow all bot systems.
     // A death the movement half decided on its own (fall damage, hurt volume) is the combat half's too.
     const ArenaSettings& settings = arena_->settings();

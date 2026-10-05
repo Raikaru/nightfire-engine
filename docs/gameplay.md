@@ -107,7 +107,10 @@ Spawn (`Player_Start` / `Player_Init` / `Player_StandAtNewPosition`): the marker
 `flags` (entity type, the `switch` in `parsemap_create_dynamic_objects`) is 0x2D or 0x24 (single player,
 `Player_AddNewStartPos`, model name `Player1`) or 0x25 (multiplayer arena, `MP_RegisterSpawnPoint`). The player
 appears at the marker facing euler.y, probes down 3.0 from marker + 0.1 (`build_PointOnFloor`) and stands 1.1
-above the floor. `find_spawn_points` lists single-player markers first.
+above the floor. `find_spawn_points` lists multiplayer markers first: MP maps ship a few stray single-player
+markers (07000024 has three 0x24 `Player1` statics among 33 0x25 `MPStart` ones), and nfgame reads the game mode
+off the front spawn, so single-first ordering left MP maps running the single-player tick path (which never calls
+`Player::update`). Single-player-only maps are unaffected (their multiplayer list is empty).
 
 ## Single-player gameplay (`nfgame` and `nightfire`)
 
@@ -214,17 +217,19 @@ participant/per-bot tables cover only eight participants/four bots. The bot deci
    position (locomotion root is Y-only: walk/strafe script flags zero root X/Z). It moves the object by the
    change of the root translation **while a transition script runs** (nfmips frame diffs); idle or in-air
    wobble of the height leaves the body where it is. The port applies height *drops* vertically and freezes
-   *rises*: the climb comes from pushes against the deep fresh-foot capsule, whose penetration depth
-   self-corrects to the recorded height (a lifted capsule would break marginal contact and fall).
-   Fresh transitions (crouch timer high) and non-crouch transitions still lift vertically. A
-   non-transitioning crouch that ends the frame airborne reverts the shift. Values for the multiplayer
-   skin 0x05000089: 1.0328 idle, a 1.050..1.077 double hump every ~13.5 frames at 60 Hz while walking,
-   ~0.61 crouched, ~0.93 crouch-walking. `Player::stand_height` is the input: replays supply the recorded
-   value, and the port keeps the idle value otherwise because the animation state machine that drives it
-   is not wired in (`CharacterInstance::root_height()` + `update_locomotion` exist; driving them with the
-   player's speed did not reproduce the recorded phase and amplitude yet: the AnimSetAppend arguments
-   0.37 / 0.5 and the distance-table phase would have to be matched). Effect without it: walking positions
-   differ by up to a few cm in y, crouching by up to 0.4 m during the transition.
+  *rises*: the climb comes from pushes against the deep fresh-foot capsule, whose penetration depth
+  self-corrects to the recorded height (a lifted capsule would break marginal contact and fall).
+  Fresh transitions (crouch timer high) and non-crouch transitions still lift vertically. A
+  non-transitioning crouch that ends the frame airborne reverts the shift. Values for the multiplayer
+  skin 0x05000089: 1.0328 idle, a 1.050..1.077 double hump every ~13.5 frames at 60 Hz while walking,
+  ~0.61 crouched, ~0.93 crouch-walking. `Player::stand_height` is the input: replay rows that carry the recorded
+  value drive the capsule exactly (oracle parity); otherwise the `PlayerAnimator` the player owns supplies it.
+  `Player::update` ticks the animator every logic frame with the frame's walk velocity (stance follows weapon
+  switches via `Player::set_body_weapon`, which nfgame forwards from the weapon state each tick) and reads back
+  `CharacterInstance::foot_height` (steady states match the recording: idle within 2 mm, crouched within 1 mm at
+  the matching weapon category). Animator-driven free runs stay within ~1 cm of the recorded-height runs on
+  every oracle scenario. Two gaps remain on the Characters side: the stance-flip transition arcs (the recorded
+  stand-to-crouch root rises 1.03 -> 1.10 before falling to 0.61; the animator snaps) and a ~2 mm idle-root offset.
 - Water, zero-G and scan mode (`player_water.cpp`, `player_zerog.cpp`, `player_scan.cpp`), ladders and
   creep walls (`player_climb.cpp`, `ladder.cpp`, `object_world.cpp`), grapple/wire/zip line
   (`player_rope.cpp`, `grapple.cpp`, `wire.cpp`) and vehicles/movers (below) are implemented and hooked

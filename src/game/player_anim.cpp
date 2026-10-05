@@ -28,6 +28,19 @@ const AnimSet& find_set(const std::vector<AnimSet>& sets, std::string_view name)
         if (s.name == name) return s;
     throw FormatError("ACTION.ELF has no AnimSet_" + std::string(name));
 }
+// PlayerAnimStand2Crouch / PlayerAnimCrouch2Stand: weapon category -> transition script (MP path reads
+// weapon_data+0x84). Speed is forced to ±4.0 with the 0xd000000 OR (X/Z root mask); loop state comes from
+// the caller.
+constexpr std::uint32_t kStand2Crouch[] = {0x060009ddu, 0x060009b1u, 0x060001dcu, 0x060001d0u,
+                                           0x060001e8u, 0x060009b9u, 0x060001f3u};
+constexpr std::uint32_t kCrouch2Stand[] = {0x060009dau, 0x060009aeu, 0x060001ddu, 0x060001d1u,
+                                           0x060001e9u, 0x060009b6u, 0x060001f4u};
+std::uint32_t stance_transition(int category, bool to_crouch) {
+    const std::uint32_t* table = to_crouch ? kStand2Crouch : kCrouch2Stand;
+    if (category >= 1 && category <= 6) return table[category - 1];
+    if (category == 999) return table[2];   // SP rifle stance plays the Rifle pair
+    return table[6];
+}
 
 // AnimSetAppend(obj, table, 0.37, 0.5) (0x3EBD70A4, 0x3F000000): the second value is the distance scale that
 // reproduces the recorded walk cycle.
@@ -43,9 +56,10 @@ float skin_model_min_y(CharacterBank& bank, const SkinDef& skin) {
 }  // namespace
 
 PlayerAnimator::PlayerAnimator(CharacterBank& bank, const SkinDef& skin, const std::vector<AnimSet>& sets, int weapon_id,
-                               int category)
+                               int category, bool initial_setup_pending)
     : skin_(skin), sets_(sets), character_(bank, skin), model_min_y_(skin_model_min_y(bank, skin)),
-      weapon_id_(weapon_id), category_(category) {
+      weapon_id_(weapon_id), category_(category), initial_setup_pending_(initial_setup_pending) {
+    character_.use_explicit_blend_weights();
     select_set();
 }
 
@@ -53,7 +67,18 @@ void PlayerAnimator::set_weapon(int weapon_id, int category, GameRng* rng) {
     if (weapon_id == weapon_id_ && category == category_) return;
     weapon_id_ = weapon_id;
     category_ = category;
+    transition_script_ = 0;
     initialize_set(rng);
+}
+
+void PlayerAnimator::start_transition() {
+    // PlayerAnimStand2Crouch / Crouch2Stand: append the stance's transition clip on top of the fresh set
+    // (it dominates the fold as the oldest full-weight layer), played once at ±4.0 with the X/Z root mask.
+    // Falls back to the snapped set when the bank lacks the script.
+    transition_script_ = stance_transition(category_, crouched_);
+    if (!character_.play(transition_script_, false, 4.0f) ||
+        !character_.set_layer_root_xz(transition_script_, true))
+        transition_script_ = 0;
 }
 
 bool PlayerAnimator::restore_source_state(
@@ -98,11 +123,13 @@ bool PlayerAnimator::restore_source_state(
         layer.strafe = active_set && strafe != active_set->strafe.end();
     }
     if (!character_.restore_layers(restored_layers, distance_accumulator)) return false;
+    character_.use_explicit_blend_weights();
     character_.restore_anim_set_context(active_set, distance_scale, phase_base, set_index, cooldown, strafe_side);
     return true;
 }
 
 void PlayerAnimator::initialize_set(GameRng* rng) {
+    initial_setup_pending_ = false;
     source_anim_sets_.clear();
     std::array<std::uint8_t, 0x34> node{};
     const auto names = stance_names(category_);
@@ -127,13 +154,24 @@ void PlayerAnimator::select_set() {
 }
 
 float PlayerAnimator::update(bool crouched, const Vec3& velocity, float mul, GameRng* rng) {
-    if (crouched != crouched_) {
+    if (initial_setup_pending_) {
         crouched_ = crouched;
+        initialize_set(rng);
+    } else if (crouched != crouched_) {
+        crouched_ = crouched;
+        initialize_set(rng);
+        start_transition();
+    } else if (transition_script_ != 0 && character_.layer_ended(transition_script_)) {
+        // Transition clip finished: rebuild the set context (dropping it) and resume locomotion this update,
+        // mirroring the re-init when scripts stop or the crouch timer expires.
+        transition_script_ = 0;
         initialize_set(rng);
     }
     character_.set_game_rng(rng);
-    character_.update_locomotion(velocity[2], mul * 0.1f, velocity[0], mul * 0.075f, mul);
+    if (transition_script_ == 0)
+        character_.update_locomotion(velocity[2], mul * 0.1f, velocity[0], mul * 0.075f, mul);
     character_.advance(mul / CharacterInstance::kFramesPerSecond, mul);
+    character_.resolve_blend_weights();
     return character_.foot_height(model_min_y_);
 }
 

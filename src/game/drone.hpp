@@ -282,7 +282,7 @@ public:
     // ---- body (obj+0x30/+0x54/+0xe0, collision) -------------------------------------------------------------
     Vec3 pos{};                         // obj+0x30 (above the feet by stand_height)
     int source_view_room = -1;            // obj+0x20 cell used by View_AddCels
-    Vec3 source_view_pos{};              // last obj+0x30 used to track source_view_room through portals
+    Vec3 source_view_center{};            // previous obj+0x80 world-sphere center for control_handle_cel_change
     Vec3 source_view_center_offset{};     // source view sphere center at obj+0x80 relative to obj+0x30
     float source_view_radius = 0;         // source view sphere radius at obj+0x8c
     bool source_view_sphere_valid = false;

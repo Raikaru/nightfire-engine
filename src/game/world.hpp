@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -67,9 +68,10 @@ public:
     Player& spawn_player(int index, const SpawnPoint& at);
     void add_system(std::unique_ptr<System> system) { systems_.push_back(std::move(system)); }
 
-    // One fixed logic frame. The default gameplay rate is deterministic 60 Hz.
+    // One fixed logic frame. Replays may override the independently sampled GameState timer.
     void tick(const PadInputs& pads) { tick(pads, FrameTiming{kTickHz}); }
-    void tick(const PadInputs& pads, FrameTiming timing);
+    void tick(const PadInputs& pads, FrameTiming timing,
+              std::optional<std::uint64_t> timer_frame = std::nullopt);
 
     // Replays one already-mapped input for a single predicted player. Does not advance the world frame,
     // camera or other players/systems, which are not rewound with the authoritative player snapshot.

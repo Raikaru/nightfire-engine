@@ -3,6 +3,7 @@
 #include <array>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -82,7 +83,8 @@ public:
     HumanBody& ensure_human_actor(int slot, std::string_view name, bool preserve_bot = true);
 
     // One logic frame: World::tick, then MP weapon-view RNG after all bot systems, then event routing.
-    void tick(const PadInputs& pads, FrameTiming timing = FrameTiming{World::kTickHz});
+    void tick(const PadInputs& pads, FrameTiming timing = FrameTiming{World::kTickHz},
+              std::optional<std::uint64_t> timer_frame = std::nullopt);
 
     // HUD data of viewer `slot` from its player's eye.
     ArenaHud hud(int slot) const;

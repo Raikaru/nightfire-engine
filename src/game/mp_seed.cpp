@@ -548,7 +548,7 @@ void MpSeedImporter::configure(MatchLaunch& launch) const {
 }
 
 bool MpSeedImporter::input_for(std::uint64_t frame, PadInputs& pads, FrameTiming& timing,
-                              float& elapsed, float& total_elapsed) const {
+                              std::uint64_t& timer_frame, float& elapsed, float& total_elapsed) const {
     auto it = impl_->rows.find(frame);
     if (it == impl_->rows.end()) return false;
     const Json& r = it->second;
@@ -561,6 +561,8 @@ bool MpSeedImporter::input_for(std::uint64_t frame, PadInputs& pads, FrameTiming
         rate_mul ? float_number(*rate_mul) : FrameTiming::kReferenceHz / rate,
         rec_rate ? float_number(*rec_rate) : 1.0f / rate,
         rate_int ? int_number(*rate_int) : static_cast<int>(rate + 0.5f)};
+    const Json* timer = r.find("timer_frame");
+    timer_frame = timer ? uint_number(*timer) : frame;
     const Json& mpg = r.at("mpg");
     elapsed = f32_hex_at(mpg, 0x190);
     total_elapsed = f32_hex_at(mpg, 0x19c);
@@ -985,9 +987,16 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
             if (!result) throw std::runtime_error("MP seed: BotSystem restore rejected slot " + std::to_string(s) + " code " + std::to_string(int(result.code)) + " blob " + std::to_string(int(result.blob)) + " offset 0x" + [&] { std::ostringstream os; os << std::hex << result.offset; return os.str(); }());
             if (bots::BotSystem::Bot* bot = system.bot_at_slot(s);
                 bot && bot->drone) {
-                bot->drone->source_view_room =
-                    world.rooms().find(bot->drone->pos, world.collision());
-                bot->drone->source_view_pos = bot->drone->pos;
+                const Json* cell_raw = item.find("cell_raw");
+                if (cell_raw && !cell_raw->is_null()) {
+                    const auto cell = raw_for(item, "cell_raw", 0xA0);
+                    bot->drone->source_view_room = world.rooms().find_source_cell(
+                        u32_at(cell, 0x3c), vec3_at(cell, 0x80), f32_at(cell, 0x8c));
+                    if (bot->drone->source_view_room == RoomMap::kNone)
+                        throw std::runtime_error("MP seed: source bot cel does not map to a unique level room");
+                } else {
+                    bot->drone->source_view_room = world.rooms().find(bot->drone->pos, world.collision());
+                }
                 bot->drone->source_view_sphere_valid = false;
                 if (uint_number(source.at("seed_version")) >= 5) {
                     const Vec3 source_center = vec3_at(obj, 0x80);
@@ -995,6 +1004,9 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                     bot->drone->source_view_radius = f32_at(obj, 0x8c);
                     bot->drone->source_view_sphere_valid = true;
                 }
+                bot->drone->source_view_center = bot->drone->pos;
+                if (uint_number(source.at("seed_version")) >= 5)
+                    bot->drone->source_view_center = vec3_at(obj, 0x80);
             }
             if (uint_number(source.at("seed_version")) >= 5) {
                 const Json* anim = item.find("anim");

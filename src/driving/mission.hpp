@@ -99,10 +99,17 @@ public:
         bool kturn = false, rolling = false, braking = false;
     };
     PlayerDebug player_debug() const;
-    // Vehicle-side of Movement-2's board/leave API (GT_LoseControl equivalent): autopilot drives
-    // the player vehicle (engine idles through the normal audio path).
+    // Vehicle-side of Movement-2's board/leave API. Original mapping (DRIVING.ELF):
+    // Car_Activate = player drives manually (autodrive off; pad flows to the vehicle);
+    // GunImp_Activate = autopilot drives while the gunner fires (take_control path;
+    // player-aimed gunfire is not modelled); GT_TakeControl = autopilot drives;
+    // GT_LoseControl / leave = manual again. Integration calls take_control() on
+    // Player::board_vehicle(Scripted) (and Gun), lose_control() on leave_vehicle()
+    // (and Car_Activate manual). Engine idles through the normal audio path throughout.
     void set_autodrive(bool on) { autodrive_ = on; }
     bool autodrive() const { return autodrive_; }
+    void take_control() { autodrive_ = true; }   // GT_TakeControl / GunImp_Activate
+    void lose_control() { autodrive_ = false; }  // GT_LoseControl / Car_Activate / leave
 
     // Render matrices for AI car i (body + wheels) and helicopters.
     Mat4 ai_body_matrix(std::size_t i) const;

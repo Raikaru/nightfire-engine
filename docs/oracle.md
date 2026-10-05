@@ -206,7 +206,7 @@ Tools: `tools/oracle/mp_addrs.py` (address map, single source of truth),
 `mp_compare.py` (`summary`/`determinism`/`diff`),
 `mp_scenario.py` (scripted menu setup: slot 1 main menu -> configured match).
 
-`mp_frame_trace.py` phase-locks recorder reads to the end of `Game_Run`: the hook is at
+`mp_frame_trace.py` phase-locks recorder reads to the end-of-`Game_Run` state at
 `0x001C98BC` (after `control_movement_object_handler`), code is in EE RAM at
 `0x01FE6000`, descriptors at `0x01FE8000`, and the snapshot ring spans
 `0x0008E000..0x000FFFFF`. The 456-KiB region below ACTION's `0x00100000` load
@@ -214,10 +214,12 @@ base was zero in the sampled CTF, Demolition, Team, and Arena savestates; with
 the current ~40-KiB seed payload this gives eight ring slots rather than two.
 Each configured sample copies the requested ranges plus `GS_DONE`,
 `GS_FRAME_START`, and `GS_FRAME` into a 16-byte-header slot, then publishes
-the ring head. Duplicate end-frame counters are skipped; full rings drop the
-new sample and increment overflow. `mp_record.py` drains these immutable
-end-of-frame snapshots instead of batching live source reads, preventing
-fields from adjacent logic frames being mixed. Capacity remains payload-size dependent.
+the ring head. At this hook, the steady phase is `GS_FRAME_START - GS_DONE == 2`;
+`mp_record.py` stores `GS_DONE` as `gs_done` and clears `seed_ready` only for
+rows outside this relation. Duplicate end-frame counters are skipped; full rings
+drop the new sample and increment overflow. `mp_record.py` drains these immutable
+end-of-frame snapshots instead of batching live source reads, preventing fields
+from adjacent logic frames from being mixed. Capacity remains payload-size dependent.
 The EE replay sets `VBlankCount` from a recorded `vblank_count` row before each
 emulated game-frame call, or increments it once when replaying legacy timing
 inputs without that field. `mp_record.py` captures the counter for distinguishing
@@ -247,11 +249,13 @@ snapshot. Dynamic pointers are checked against the sampled records. When a
 pointer changes, the recorder refreshes that range schema but still emits the
 frame, with `partial: true`, `seed_ready: false`, and `state_missing` naming
 only fields whose pointed-to bytes were not part of that frame's snapshot.
-All other fields in the transition row remain captured. Bot collision-body
-bytes are also captured per seedable frame as `pl[4..7].cb_raw` (0xD0 bytes
-from each bot's `obj_tag+0xDC` owner/collision-body block); bytes
-`+0xCC..+0xCF` are the collision foot-height baseline. Bot collision-body
-data is required for `seed_ready`. Each complete row carries
+All other fields in the transition row remain captured. Each live player's and
+bot's `obj_tag+0x20` cell pointer and its 0xA0-byte cell (`cell_ptr`,
+`cell_raw`) are included for source-cell mapping. Bot collision-body bytes are
+also captured per seedable frame as `pl[4..7].cb_raw` (0xD0 bytes from each
+bot's `obj_tag+0xDC` owner/collision-body block); bytes `+0xCC..+0xCF` are the
+collision foot-height baseline. Bot collision-body data is required for
+`seed_ready`. Each complete row carries
 `seed_version: 6`, the separately sampled GameState+0x34 `timer_frame`, four RNG
 words, four controller inputs (`pad_all`), MP settings/game state, the eight
 `mp_roster` records, indexed `pk[]` pickup records, every objective extension
@@ -275,6 +279,9 @@ timer). v6 recordings restore this state exactly. Legacy v5 recordings lack
 these fields and retain the engine's own animation lifecycle instead; their
 engine trace rows set `body_anim_sets_unseeded: true` to mark that body state
 as approximate.
+Bot replays restore each bot's burst count, next-bullet time, and last-shot
+time (`Drone+0xbc0`, `+0xbc4`, `+0xbc8`), along with `obj+0x60` collision
+contact flags; these affect per-tick firing and collision behavior.
 `golden_effect_handle` and `golden_effect_active` expose the GoldenEye effect
 actor; no remaining-effect tick value is mapped.
 Bot goal targets pointing to an objective descriptor are retained in
@@ -320,9 +327,12 @@ values to `FrameTiming` for each tick. Ordinary `--inputs` rows may append
 `rate frame_rate_int frame_rate_mul rec_frame_rate` before their existing
 foot-height/sync data; legacy rows with only `rate` retain derived 30/60-Hz
 timing.
-A two-row CTF hook replay (33604→33605) now matches `MPGame+0x190`,
-`+0x19c`, and `+0x1a4` exactly after modeling `VBlankInt`'s one-increment-
-per-game-frame update. The raw human collision delta is `HITDATA_tag+0x4c`:
+Seeded host replays also pass each row's absolute `timer_frame` (GameState+0x34)
+to `World::tick`; this source clock is independent of the row's logic-frame
+index and must not be reconstructed from it.
+A two-row CTF hook replay (33604→33605) matches `MPGame+0x190`, `+0x19c`,
+and `+0x1a4` exactly after modeling `VBlankInt`'s one-increment-per-game-frame
+update. The raw human collision delta is `HITDATA_tag+0x4c`:
 `Player_FeetOnPoint` copies the 0x60-byte hit-data record, and collision code
 writes a 16-byte point vector at `+0x40` (including the W lane at `+0x4c`).
 The audited player/collision/bot consumers use the xyz components; no gameplay
@@ -330,11 +340,30 @@ reader of this W lane was found. The fill comparator expands `cb_raw` into
 named byte fields and omits only `pl[*].cb_raw.point_w` (bytes `0x4c..0x4f`);
 the rest of each collision record remains validated.
 The full Arena fill (157 generated rows, 156 PCSX2 overlaps) validates with
-this comparison. The CTF fill (549 generated rows, 548 overlaps) still rejects:
-its first gameplay-state difference is frame 33636, slot 5 `drone_raw+0x530`,
-the `sAnimScript*` written by `DroneAnim_SetHTAnim` and read by animation
-callbacks. It differs (`0x0012a510` EE vs `0x000ec980` PCSX2) and remains
-compared; later CTF bot-animation/drone raw fields also diverge.
+this comparison. The older CTF recording (549 generated rows, 548 overlaps)
+still rejects at frame 33636, slot 5 `drone_raw+0x530`: this is a dynamic
+`sAnimScript*` address, not script state. New recordings decode the pointed-to
+`sAnimScript_tag` fields (`entry`, script ID/flags/timestamp, frame/speed,
+blend values, duration, and state bytes) as `drone_anim_script`. Fill ignores
+the four pointer bytes only when both rows have that decoded pointee; older
+recordings without it still compare the raw address. At frame 33665 the source
+P2S pointee at `0x010ec980` and generated pointee at `0x0112a510` decode to
+identical semantic fields (including script ID `0x06000a11`, frame 29, and
+duration 93). The existing CTF JSONL predates the decoder, so a complete
+semantic CTF fill still needs a new source recording.
+Heap diagnostics are available with `nfmips mp-oracle --heap-dump FILE` (also
+forwarded by `ee_oracle.py --heap-dump FILE`) and `--trace-allocations`.
+The source P2S and nfmips heap maps match at frame 33604, but differ at 33665.
+In the replay trace, the first confirmed cache free is frame 33606 from
+`AgeSkinCache__Fv+0x4c` (`Mem_Free` of `0x01074040` through cache slot
+`0x00246404`). Source frame 33665 still has the cache entry alive with timer 3
+and a valid pointer. The sparse source checkpoints do not show whether that
+same free ran at 33606, so this is the earliest observed replay cache mutation,
+not an exact source-side first-divergence frame. Headless replay runs the aging
+path but not the draw-side `psiDrawSkinObjectMatrix -> CacheSkin` refresh, so
+render-only skin-cache activity is not replay-equivalent and changes later heap
+addresses.
+
 The input word is the raw active-high Sony tSlot mask (for example, Cross is
 `0x40` and R1 is `0x08`); stick bytes come from `pad_all[].s`. Add
 `--weapon-anim-raw` to capture the 0x100-byte pointed-to human animation object
@@ -1079,6 +1108,20 @@ import enables source-compatible gates that are recomputed each tick from
 predicates, not seed-only state: `NDrone2_Collision` and the feet snap continue
 to run or skip according to the current source gate after the import frame.
 
+The bot object collision word `obj+0x60` is separate from the cylinder query's
+`contact` result. Bit `0x8` is the floor-contact flag consumed by
+`Drone_CollisionHandler`: when set, the handler skips gravity acceleration,
+integrates the stored fall vector, then clears `Drone+0x484`. Seedable bot
+restoration imports the word from `obj_raw+0x60`; the host refreshes bit `0x8`
+from the floor probe and uses that bit, rather than cylinder contact, for the
+grounded gravity branch.
+
+`NDrone2_DoGravity` is an additional gate: it returns false when
+`Drone+0x4f8` bit `0x80` is clear, or when bit `0x4` is clear and bit `0x200`
+is also clear. A false result clears `Drone+0x484` without adding gravity.
+When bit `0x200` is set, the original also has state and animation conditions
+before it permits gravity; the host mirrors the observed MP eligibility gates.
+
 `NDrone2_DoAnimation` recomputes its gate every bot Control tick from the
 source `0x80000` flag, class, root height, `obj+0xfc`, forced-animation
 `Drone+0x538`, and animation flags. The raw `obj+0xfc` byte is seeded as a
@@ -1091,17 +1134,21 @@ radius, not the collision capsule. `Drone+0x580` is not part of this gate.
 
 The recorder's bot-layer `effective_weight` is the raw `sAnimScript+0x9c`
 cache, distinct from blend time/duration at `+0xa8/+0xac`. `AnimFrameResolve`
-refreshes the cache from that ratio only when the object resolves; a fresh
-offscreen layer can retain zero while both blend values are one. The seed
-importer restores `+0x9c`, traces emit that stored value, and
-`CharacterInstance::palette()` refreshes it when the host pose resolves.
-In seed-each mode, the source row at frame 34715 has slot 6 `obj+0xfc == 0`,
-while the camera visibility pass writes the host counter to 2 after the tick;
-the next source row records 1. Reimporting frame 34715's pre-render byte used
-to erase that post-tick write and skip slot 6's frame-35 animation update at
-34716. The host now carries the visibility-generated counter over the next
-seed-each restore, while still importing the raw byte when no such pass wrote
-it.
+updates blend time and the ratio cache together when the bot animation tick
+passes `NDrone2_DoAnimation`; an offscreen object whose gate rejects animation
+keeps its previous `+0x9c` even when `blend_time/blend_duration` differs. Every
+bot `CharacterInstance` now refreshes the cache during its tick, under this
+gate, rather than during palette/render resolution. Player animation instead
+refreshes explicitly after `PlayerAnimator::advance`, on the active update path.
+The v6 CTF replay from frame 33662 to 33665 compares without divergent
+fields (0/3); slot 5's weights at frames 33663–33665 are `.1`,
+`.06666667`, and `.033333335`, matching the source. Its source rows include
+0xA0-byte `cell_raw` payloads for bot slots 4–6. At offscreen frame 34054,
+slot 5's source layer has `blend_time/blend_duration = 1/1` and cached
+`effective_weight = 0`; the host retains weight 0. That frame still has
+player 0 state/position/foot and RNG residuals, so this probe does not establish
+full frame parity.
+
 The Arena view-counter discrepancy was a stale viewer-cel seed as well as a
 candidate-culling issue. `View_CaptureScene` roots `Vision_Portal_Recurse` from
 the viewer's linked cel (`viewer+4`); importing a player's `obj+0x20` cell
@@ -1114,6 +1161,15 @@ formerly divergent frame 18078; its only residual is `pl[6].pos[1]` at
 frame 18347 (2.8 mm). The earlier frame-17466 replay now matches frame 17468;
 its 206-transition comparison has two RNG-only divergences, at 17479 and
 17520.
+
+Bot room seeds now use `cell_raw` (`obj+0x20`) to recover the source-linked
+room when those bytes are present. For seeded objects with source sphere data,
+`DroneSystem::after_tick` compares the new `obj+0x80` center (position plus the
+seeded center offset) with the previous center and only tracks the room when
+they differ, matching `control_handle_cel_change`'s movement early-out. This
+runs after object control and before camera visibility. Legacy v5 bot rows
+without `cell_raw` still use positional room lookup and cannot resolve the
+exact source cel at the seed boundary.
 
 ### Extended seeded campaign results
 
@@ -1139,6 +1195,27 @@ divergent frames among N compared transitions.
 | CTF 34086 (215) | alive/dead now match; first residual at frame 34087 is player 0 foot animation | v5 seed-each not revalidated | importer now restores the human death frame from `obj+0xec`; remaining animation comparison needs v6 body-animation fields |
 | CTF 34334 (223) | 223/223 | 20/223 | first frame 34335: player weapon animation state; later foot/position drift and RNG order diverge at 34473; pending v6 recorder rows |
 | CTF 36995 (263), 37656 (263), 38319 (263) | no objective-position residuals in each tested window | not rerun | first non-objective differences: 37107 bot RNG, 37777 small `pl[6].pos` residual, and 38493 bot RNG, respectively |
+
+The following historical windows were run before the bot-owned blend-cache
+and source-sphere movement refinements above. They are a baseline, not final
+verification of the current tree; the bounded Arena replay also predates v6
+source-cell capture.
+
+| Recording / window set | Continuous | Seed-each | First divergence |
+| --- | ---: | ---: | --- |
+| Arena slot233 bounded (116 windows) | 4074/7027 | 1298/7027 | frame 15351, slot 4 bot animation frame 36 vs 35 |
+| Arena v5 14642/14727 (6 windows) | 0/289 | 0/289 | none |
+| CTF slot232 bounded (58 windows) | 2607/5072 | 1254/5072 | frame 33663, slot 5 bot animation weight 0.1 vs 0.1333333 |
+| Demo checkpointed 15290–15989 (10 windows, including 15904) | 40/345 | 35/345 | frame 15291, player 0 weapon slot 79 clip 251 vs 250 |
+| Team team3bot-v5 (2 windows) | 0/337 | 0/337 | none |
+| Team cb-dense2 (1 window) | 0/370 | 0/370 | none |
+
+The bounded slot233 v5 source rows omit `cell_raw`. During the replay, the host
+visibility pass marked the bot's tracked room 40 invisible at frame 15350 before
+the frame-15351 animation residual; without the source-linked cel bytes these
+runs cannot establish whether the cell traversal or source-cell seed is at
+fault. This is an unresolved seed/input limitation, not proof that the residual
+is a recorder artifact.
 
 Demo's older BotVars slot 4 `+0x8c` seed failure did not recur in the
 checkpointed windows. Remaining differences above are not established as

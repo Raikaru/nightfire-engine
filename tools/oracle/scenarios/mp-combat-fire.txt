@@ -1,0 +1,18 @@
+# mp_record.py --script, frame offsets relative to the first recorded row.
+# Start with --freeze-bot 5 --face-bot 5. Run once with PlayerSetting+2=1
+# (MP auto-aim on), then again with PlayerSetting+2=0, same weapon/state.
+# Brief turn away, fire off-axis, counter-turn back to the frozen target, fire
+# aligned, then repeat while holding aim (L1) to compare hip/aim behavior.
+0 release
+2 axis LX 0.15
+10 down r1
+22 up r1
+24 axis LX -0.15
+32 release
+40 down r1
+54 up r1
+62 down l1
+66 down r1
+86 up r1
+88 up l1
+96 release

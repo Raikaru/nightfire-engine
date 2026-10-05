@@ -1,0 +1,13 @@
+# mp_record.py --script. Repeat from the same match start with weapon 42
+# (Militek MGL), weapon 45 (unguided Sentinel), and weapon 52 (Frag Grenade).
+# Use --freeze-bot 5 --face-bot 5. Fire one slightly off-axis explosive, then
+# one aligned shot; leave enough frames for flight/fuse and splash damage.
+0 release
+2 axis LX 0.15
+12 down r1
+16 up r1
+20 axis LX -0.15
+30 axis LX 0
+38 down r1
+42 up r1
+150 release

@@ -45,6 +45,7 @@
 #include "game/nfgame_mp.hpp"
 #include "game/weapons.hpp"
 #include "game/world.hpp"
+#include "game/player_anim.hpp"
 #include "render/character_renderer.hpp"
 #include "render/gl.hpp"
 #include "render/level_renderer.hpp"
@@ -450,6 +451,35 @@ int run(int argc, char** argv) {
     world.add_system(std::move(weapon_system));
     if (drone_cli.enabled()) drone_cli.setup(world, level, *weapon_bank, action_elf, gf, weapons, bin_name);
     weapons.set_drone_system(drone_cli.system());   // null without --sp (idle-fidget threat gate)
+    // Body animation (PlayerAnimator, the movement-side foot height): replay rows that carry the recorded
+    // height drive the capsule exactly (oracle parity); otherwise the animator inside Player::update supplies
+    // it live. Skins follow the mode: the Mp_ body for arenas (as in nfgame_mp), Player_Init's per-level skin
+    // for story maps. Replay runs with recorded heights never tick the animator, so they stay bit-identical.
+    std::vector<AnimSet> body_anim_sets = read_anim_sets(action_elf);
+    const SkinDef* body_skin = nullptr;
+    if (multiplayer) {
+        for (const auto& [hash, def] : weapon_bank->skins()) {
+            (void)hash;
+            const std::string name = weapon_bank->skin_name(def);
+            if (name.size() > 3 && (name[0] == 'M' || name[0] == 'm') && (name[1] == 'p' || name[1] == 'P') &&
+                name[2] == '_') {
+                body_skin = &def;
+                break;
+            }
+        }
+    } else {
+        body_skin = weapon_bank->skin(single_player_skin(level_id_from_bin_name(bin_name)));
+    }
+    if (body_skin) {
+        // Unarmed (71) until the loadout says otherwise; the per-tick forward below follows switches.
+        int weapon_id = 71, category = 0;
+        if (const PlayerWeapons* st = weapons.state(0)) {
+            weapon_id = st->current;
+            category = int(weapons.table().weapon(weapon_id).category);
+        }
+        player.set_body_animator(
+            std::make_unique<PlayerAnimator>(*weapon_bank, *body_skin, body_anim_sets, weapon_id, category));
+    }
     // Single-player mission flow (objectives, doors, triggers, cutscenes): skipped for arenas
     // and with --no-mission (bare movement for oracle traces). The World owns the system;
     // mission_ptr stays valid for the session.
@@ -521,6 +551,9 @@ int run(int argc, char** argv) {
         const ReplayFrame* f = i < long(replay.frames.size()) ? &replay.frames[std::size_t(i)] : nullptr;
         if (f) pads[0] = f->pad;
         if (f && f->stand_height) player.stand_height = *f->stand_height;
+        // A recorded height drives the capsule exactly (oracle parity); otherwise the live body
+        // animator inside Player::update supplies it (player 0 has one on live runs, see above).
+        player.set_stand_height_from_replay(f && f->stand_height);
         if (sync && f && f->sync_pos) player.pos = *f->sync_pos;
         if (script) script->apply(i, world, weapons, pads);
         // Cross/use goes through Movement's Player_Activate -> SpObjects::activate_at hook now.
@@ -532,6 +565,9 @@ int run(int argc, char** argv) {
             timing.REC_FRAME_RATE = *f->rec_frame_rate;
         }
         world.tick(pads, timing);
+        // The live body animator follows weapon switches (PlayerAnimSetInit*); a no-op without one.
+        if (const PlayerWeapons* wst = weapons.state(0))
+            player.set_body_weapon(wst->current, int(weapons.table().weapon(wst->current).category));
         drone_cli.after_tick(world);
         if (mission_ptr) {
             for (const auto& t : mission_ptr->take_texts())

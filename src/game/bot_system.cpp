@@ -715,6 +715,7 @@ BotSystem::SnapshotRestoreResult BotSystem::restore_snapshot(
     d.fire_window = raw_u8(drone_raw, 0x21) != 0;
     d.burst_left = raw_i32(drone_raw, 0xbc0);
     d.next_bullet_time = raw_u32(drone_raw, 0xbc4);
+    d.last_shot_time = raw_u32(drone_raw, 0xbc8);
     d.fire_requested = raw_u8(drone_raw, 0x3b) != 0;
     d.burst_done = raw_u8(drone_raw, 0x3c) != 0;
     d.one_shot = raw_u8(drone_raw, 0x3d) != 0;
