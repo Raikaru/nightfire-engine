@@ -658,7 +658,7 @@ def main():
     ap.add_argument("--freeze-bot", type=int, choices=range(4, 8),
                     help="hold this MP bot's initial position and yaw while recording")
     ap.add_argument("--face-bot", type=int, choices=range(4, 8),
-                    help="place the human 8 units behind this frozen bot, facing it")
+                    help="place the human 8 units behind this bot once, facing it")
     ap.add_argument("--autoaim", choices=(0, 1), type=int,
                     help="set P0 PlayerSetting+2 after pointer resolution")
     ap.add_argument("--timeout", type=float, default=1200.0)
@@ -675,8 +675,9 @@ def main():
     if args.rng_calls and args.rng_calls_preinstalled:
         ap.error("choose only one RNG hook installation mode")
     valid_checkpoint_args(ap, args)
-    if args.face_bot is not None and args.freeze_bot != args.face_bot:
-        ap.error("--face-bot must name the same slot as --freeze-bot")
+    if (args.freeze_bot is not None and args.face_bot is not None
+            and args.freeze_bot != args.face_bot):
+        ap.error("--freeze-bot and --face-bot must name the same bot")
     if args.weapon_anim_raw and not args.seedable:
         ap.error("--weapon-anim-raw requires --seedable")
 
@@ -698,24 +699,29 @@ def main():
         set_pcsx2_paused(pine, False)
     if args.rng_calls_preinstalled:
         rng_trace = R.attach(pine)
-    if args.freeze_bot is not None:
-        freeze_obj = pine.read32(
-            A.MPGAME + args.freeze_bot * A.MP_SLOT_STRIDE + A.MPG_OBJ)
-        if not freeze_obj or pine.read_block(freeze_obj + A.OBJ_TYPE, 1)[0] != 2:
-            raise RuntimeError(f"slot {args.freeze_bot} does not contain a live bot")
-        freeze_pose = (
-            struct.unpack("<3f", pine.read_block(freeze_obj + A.OBJ_POS, 12)),
-            struct.unpack("<f", pine.read_block(freeze_obj + A.OBJ_YAW, 4))[0],
+    if args.freeze_bot is not None or args.face_bot is not None:
+        bot_slot = (args.freeze_bot if args.freeze_bot is not None
+                    else args.face_bot)
+        bot_obj = pine.read32(
+            A.MPGAME + bot_slot * A.MP_SLOT_STRIDE + A.MPG_OBJ)
+        if not bot_obj or pine.read_block(bot_obj + A.OBJ_TYPE, 1)[0] != 2:
+            raise RuntimeError(f"slot {bot_slot} does not contain a live bot")
+        bot_pose = (
+            struct.unpack("<3f", pine.read_block(bot_obj + A.OBJ_POS, 12)),
+            struct.unpack("<f", pine.read_block(bot_obj + A.OBJ_YAW, 4))[0],
         )
-        freeze_object_pose(pine, freeze_obj, freeze_pose)
+        if args.freeze_bot is not None:
+            freeze_obj = bot_obj
+            freeze_pose = bot_pose
+            freeze_object_pose(pine, freeze_obj, freeze_pose)
         if args.face_bot is not None:
             face_obj = pine.read32(A.MPGAME + A.MPG_OBJ)
             if not face_obj or pine.read_block(face_obj + A.OBJ_TYPE, 1)[0] != 3:
                 raise RuntimeError("slot 0 does not contain a live human player")
-            bot_yaw = freeze_pose[1]
-            face_pose = ((freeze_pose[0][0] - 8.0 * math.sin(bot_yaw),
-                          freeze_pose[0][1],
-                          freeze_pose[0][2] - 8.0 * math.cos(bot_yaw)), bot_yaw)
+            bot_yaw = bot_pose[1]
+            face_pose = ((bot_pose[0][0] - 8.0 * math.sin(bot_yaw),
+                          bot_pose[0][1],
+                          bot_pose[0][2] - 8.0 * math.cos(bot_yaw)), bot_yaw)
             freeze_object_pose(pine, face_obj, face_pose)
             bl = pine.read32(face_obj + A.OBJ_BL)
             if bl:
@@ -960,6 +966,7 @@ def main():
                         indexed=True, child_tag="human_anim_seq_raw",
                         head_tag="human_anim_list_head",
                         filter_spec=nested_pointer_spec(
+                            ANIM_OWNER_OFFSET,
                             ANIM_SUBOBJECT_OFFSET + ANIM_LAYER_HEAD_OFFSET)))
             for k, state in cache["bot_anim"].items():
                 owner = state["owner"]
@@ -1292,7 +1299,9 @@ def main():
                    "mode": struct.unpack_from(
                        "<I", bytag[("mps", 0)],
                        A.MPS_SCENARIO_MASK - A.MPS_MP_ACTIVE)[0],
-                   "rng": bytag[("rng", 0)].hex(),
+                   "weapon_set": struct.unpack_from(
+                       "<I", bytag[("mps", 0)],
+                       A.MPS_WEAPON_SET - A.MPS_MP_ACTIVE)[0],
                    "projectiles": [], "projectiles_available": False,
                    "state_missing": ["projectiles"]}
             if rng_trace is not None:
@@ -1341,6 +1350,8 @@ def main():
         rec["mps"] = mps_raw.hex()
         rec["mode"] = struct.unpack_from(
             "<I", mps_raw, A.MPS_SCENARIO_MASK - A.MPS_MP_ACTIVE)[0]
+        rec["weapon_set"] = struct.unpack_from(
+            "<I", mps_raw, A.MPS_WEAPON_SET - A.MPS_MP_ACTIVE)[0]
         if args.seedable:
             roster = bytag[("mp_roster", 0)]
             rec["mp_roster"] = []
@@ -2011,6 +2022,8 @@ def main():
         stalled_warned = False
         if checkpoint_meta:
             rec["checkpoint"] = checkpoint_meta
+        if rng_trace is not None:
+            rec["rng_calls"], rec["rng_trace"] = R.read_events(pine, rng_trace)
         records.append(rec)
         out.write(json.dumps(rec) + "\n")
         if len(records) % 200 == 0:

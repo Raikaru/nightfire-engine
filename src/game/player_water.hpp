@@ -52,6 +52,10 @@ public:
                             std::vector<std::uint8_t>& visible) const;
     bool cell_in_view(int target, const std::vector<std::uint8_t>& visible, const Vec3& eye, const Vec3& right,
                       const Vec3& up, const Vec3& forward, float tan_half_x, float tan_half_y) const;
+    // Collide_StraddleCels: walk portals intersected by an object's view sphere, then test those cels
+    // against View_AddCels' visible list. Used by View_AddForcedObjects for class-2 objects with radius > 0.5.
+    bool straddled_cell_in_view(int source_room, const Vec3& center, float radius,
+                                const std::vector<std::uint8_t>& visible) const;
     // cel+0x90 (kNoWater for kNone).
     float water_level(int room) const;
 

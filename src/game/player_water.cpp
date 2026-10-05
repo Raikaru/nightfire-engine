@@ -345,6 +345,53 @@ bool RoomMap::cell_in_view(int target, const std::vector<std::uint8_t>& visible,
            depth * tan_half_y + vertical_margin >= std::abs(dot(delta, up));
 }
 
+bool RoomMap::straddled_cell_in_view(int source_room, const Vec3& center, float radius,
+                                    const std::vector<std::uint8_t>& visible) const {
+    constexpr std::size_t kMaxStraddledCels = 0x7e; // Collide_StraddleCels' CelList_194 capacity
+    if (source_room < 0 || std::size_t(source_room) >= rooms_.size() ||
+        std::size_t(source_room) >= visible.size())
+        return false;
+
+    const float hit_radius = radius * 1.5f; // Intersect_Portal's type-0x1000 portal test
+    const float hit_radius_sq = hit_radius * hit_radius;
+    const auto sphere_hits_portal = [&](const Portal& portal) {
+        float box_dist_sq = 0.0f;
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            const float nearest = std::clamp(center[axis], portal.lo[axis], portal.hi[axis]);
+            const float delta = center[axis] - nearest;
+            box_dist_sq += delta * delta;
+        }
+        if (box_dist_sq >= hit_radius_sq) return false;
+
+        const auto& q = portal.quad;
+        const Vec3 first = closest_on_triangle(center, q[0], q[1], q[2]) - center;
+        if (dot(first, first) < hit_radius_sq) return true;
+        const Vec3 second = closest_on_triangle(center, q[2], q[3], q[0]) - center;
+        return dot(second, second) < hit_radius_sq;
+    };
+
+    std::array<int, kMaxStraddledCels> cells{};
+    std::size_t cell_count = 1;
+    cells[0] = source_room;
+    for (std::size_t cursor = 0; cursor < cell_count; ++cursor) {
+        const int room = cells[cursor];
+        if (std::size_t(room) < visible.size() && visible[std::size_t(room)]) return true;
+        for (const Portal& portal : rooms_[std::size_t(room)].portals) {
+            if (portal.dest < 0 || std::size_t(portal.dest) >= rooms_.size() ||
+                !sphere_hits_portal(portal))
+                continue;
+            bool already_added = false;
+            for (std::size_t i = 0; i < cell_count; ++i)
+                if (cells[i] == portal.dest) {
+                    already_added = true;
+                    break;
+                }
+            if (!already_added && cell_count < cells.size()) cells[cell_count++] = portal.dest;
+        }
+    }
+    return false;
+}
+
 // --- Player: water -------------------------------------------------------------------------------------------
 
 float Player::water_level() const { return rooms ? rooms->water_level(water.room) : kNoWater; }
