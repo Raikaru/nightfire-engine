@@ -331,7 +331,8 @@ int run_match(const MatchLaunch& request) {
                 PlayerAnimator& body = *headless_bodies[std::size_t(i)];
                 const Player& player = *world.player(i);
                 if (const PlayerWeapons* state = session.weapons().state(i))
-                    body.set_category(int(session.weapons().table().weapon(state->current).category));
+                    body.set_weapon(state->current,
+                                    int(session.weapons().table().weapon(state->current).category), &game_rng());
                 body.update(player.substate == SubState::Crouch, player.velocity, timing.FRAME_RATE_MUL,
                             &game_rng());
                 (void)body.take_events();

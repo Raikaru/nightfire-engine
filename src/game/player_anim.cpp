@@ -1,4 +1,5 @@
 #include "game/player_anim.hpp"
+#include "core/rng.hpp"
 
 #include <string_view>
 
@@ -40,12 +41,15 @@ float skin_model_min_y(CharacterBank& bank, const SkinDef& skin) {
 }  // namespace
 
 PlayerAnimator::PlayerAnimator(CharacterBank& bank, const SkinDef& skin, const std::vector<AnimSet>& sets, int category)
-    : skin_(skin), sets_(sets), character_(bank, skin), model_min_y_(skin_model_min_y(bank, skin)), category_(category) {
+    : skin_(skin), sets_(sets), character_(bank, skin), model_min_y_(skin_model_min_y(bank, skin)),
+      category_(category) {
     select_set();
 }
 
-void PlayerAnimator::set_category(int category) {
-    if (category == category_) return;
+void PlayerAnimator::set_weapon(int weapon_id, int category, GameRng* rng) {
+    if (weapon_id == weapon_id_ && category == category_) return;
+    if (weapon_id != weapon_id_ && rng) rng->random(); // Player_SetWeaponAnim -> PlayerAnimSetInit -> AnimSetInit
+    weapon_id_ = weapon_id;
     category_ = category;
     select_set();
 }

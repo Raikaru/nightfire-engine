@@ -460,6 +460,7 @@ void DroneSystem::after_tick(World& world, FrameTiming) {
 
 void DroneSystem::after_camera_update(World& world, FrameTiming) {
     const RoomMap& rooms = world.rooms();
+    for (const auto& dp : drones_) dp->anim.source_object_anim_from_view = false;
     constexpr float kDefaultFov = 1.0471976f;
     constexpr float kPs2Aspect = 4.0f / 3.0f;
     for (int slot = 0; slot < World::kMaxPlayers; ++slot) {
@@ -491,6 +492,7 @@ void DroneSystem::after_camera_update(World& world, FrameTiming) {
                 depth * tan_half_x + radius * x_radius >= horizontal &&
                 depth * tan_half_y + radius * y_radius >= vertical;
             if (!in_frustum) continue;
+            d.anim.source_object_anim_from_view = true;
             d.anim.source_object_anim = 2;
         }
     }

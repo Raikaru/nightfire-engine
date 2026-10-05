@@ -262,11 +262,15 @@ ANIM_LAYER_HEAD_OFFSET = 0x2C
 ANIM_LAYER_RAW_SIZE = 0xC0
 ANIM_SEQ_RAW_SIZE = 0xB0
 ANIM_MAX_LAYERS = 64
+ANIM_SET_LIST_OFFSET = 0x98
+ANIM_SET_RAW_SIZE = 0x34
+ANIM_SET_MAX_NODES = 4
 
 
 def refresh_animation_slot(pine, cache, k, obj=None, kind="bot"):
     """Resolve the sAnimObject and body-layer chain behind an obj_tag owner."""
-    bucket = cache["bot_anim"] if kind == "bot" else cache["human_anim"]
+    bucket = (cache["bot_anim"] if kind == "bot" else
+              cache["human_body_anim"] if kind == "human_body" else cache["human_anim"])
     if obj is None:
         obj = cache["objs"][4 + k]
     if not obj:
@@ -303,6 +307,43 @@ def refresh_animation_slot(pine, cache, k, obj=None, kind="bot"):
     bucket[k] = {
         "obj": obj, "owner": owner, "anim": anim, "head": head,
         "layers": layers, "chain_complete": chain_complete,
+    }
+
+def refresh_player_anim_sets(pine, cache, slot):
+    """Capture the player's AnimSetAppend list at anim-owner+0x98."""
+    obj = cache["objs"][slot]
+    if not obj:
+        cache["human_anim_sets"].pop(slot, None)
+        return
+    obj_raw = pine.read_block(obj, 0x100)
+    owner = struct.unpack_from("<I", obj_raw, ANIM_OWNER_OFFSET)[0]
+    if not valid_ee_pointer(owner, 0x120):
+        cache["human_anim_sets"].pop(slot, None)
+        return
+    head = pine.read32(owner + ANIM_SET_LIST_OFFSET)
+    nodes = []
+    visited = set()
+    cursor = head
+    previous = 0
+    chain_complete = True
+    while cursor:
+        if (cursor in visited or len(nodes) >= ANIM_SET_MAX_NODES
+                or not valid_ee_pointer(cursor, ANIM_SET_RAW_SIZE)):
+            chain_complete = False
+            nodes = []
+            break
+        visited.add(cursor)
+        raw = pine.read_block(cursor, ANIM_SET_RAW_SIZE)
+        if struct.unpack_from("<I", raw)[0] != previous:
+            chain_complete = False
+            nodes = []
+            break
+        nodes.append({"address": cursor})
+        previous = cursor
+        cursor = struct.unpack_from("<I", raw, 4)[0]
+    cache["human_anim_sets"][slot] = {
+        "obj": obj, "owner": owner, "head": head, "nodes": nodes,
+        "chain_complete": chain_complete,
     }
 
 
@@ -544,7 +585,7 @@ def main():
              "ports": [], "dynamic_head": 0, "dynamic_members": set(),
              "dynamic_scan_ok": True, "projectiles": {}, "goal_refs": {}, "ai_paths": {},
              "objective_ptrs": [], "route_nodes": {}, "weapon_anim_targets": {},
-             "bot_anim": {}, "human_anim": {}}
+             "bot_anim": {}, "human_anim": {}, "human_body_anim": {}, "human_anim_sets": {}}
     def resolve(pine):
         """(Re)resolve all pointer caches with unguarded reads; caller retries."""
         settings = pine.read_block(A.PLAYER_SETTING, A.PLAYER_SETTING_STRIDE * 4)
@@ -607,6 +648,10 @@ def main():
         if args.seedable:
             refresh_ai_paths(pine, cache)
             refresh_animations(pine, cache)
+            for slot in range(n_humans):
+                refresh_animation_slot(
+                    pine, cache, slot, obj=cache["objs"][slot], kind="human_body")
+                refresh_player_anim_sets(pine, cache, slot)
             if args.weapon_anim_raw:
                 for slot in range(n_humans):
                     refresh_animation_slot(
@@ -698,6 +743,14 @@ def main():
                     ranges.append((route_node[0], route_node[2]))
             for k, state in cache["bot_anim"].items():
                 add_animation_ranges(ranges, tags, k, state, "anim")
+            for slot, state in cache["human_body_anim"].items():
+                add_animation_ranges(ranges, tags, slot, state, "human_body_anim")
+            for slot, state in cache["human_anim_sets"].items():
+                tags.append(("human_anim_set_head", slot))
+                ranges.append((state["owner"] + ANIM_SET_LIST_OFFSET, 4))
+                for index, node in enumerate(state["nodes"]):
+                    tags.append(("human_anim_set_raw", (slot, index)))
+                    ranges.append((node["address"], ANIM_SET_RAW_SIZE))
             if args.weapon_anim_raw:
                 for slot, state in cache["human_anim"].items():
                     add_animation_ranges(ranges, tags, slot, state, "human_anim")
@@ -848,8 +901,62 @@ def main():
                 objective_ptrs = []
                 transition_missing.extend(("objectives", "bot_goal_targets"))
         changed_animation_slots = set()
+        changed_player_anim_slots = set()
+        changed_anim_set_slots = set()
         changed_route_slots = set()
         if args.seedable:
+            for slot in range(n_humans):
+                state = cache["human_body_anim"].get(slot)
+                obj_raw = bytag.get(("obj", slot))
+                if obj_raw is None:
+                    continue
+                owner = struct.unpack_from("<I", obj_raw, ANIM_OWNER_OFFSET)[0]
+                body_head = bytag.get(("human_body_anim_list_head", slot))
+                body_head = struct.unpack("<I", body_head)[0] if body_head else 0
+                if (state is None or owner != state["owner"] or body_head != state["head"]):
+                    refresh_animation_slot(
+                        pine, cache, slot, obj=cache["objs"][slot], kind="human_body")
+                    changed_player_anim_slots.add(slot)
+                    transition_missing.append(f"pl[{slot}].body_anim")
+                else:
+                    for index, layer in enumerate(state["layers"]):
+                        raw = bytag[("human_body_anim_layer_raw", (slot, index))]
+                        next_ptr = struct.unpack_from("<I", raw, 0x48)[0]
+                        seq_ptr = struct.unpack_from("<I", raw, 0x50)[0]
+                        seq_ptr = seq_ptr if valid_ee_pointer(seq_ptr, ANIM_SEQ_RAW_SIZE) else 0
+                        expected_next = (
+                            state["layers"][index + 1]["address"]
+                            if index + 1 < len(state["layers"]) else 0)
+                        if next_ptr != expected_next or seq_ptr != layer["seq_primary"]:
+                            refresh_animation_slot(
+                                pine, cache, slot, obj=cache["objs"][slot], kind="human_body")
+                            changed_player_anim_slots.add(slot)
+                            transition_missing.append(f"pl[{slot}].body_anim")
+                            break
+                state = cache["human_anim_sets"].get(slot)
+                if state is None or owner != state["owner"]:
+                    refresh_player_anim_sets(pine, cache, slot)
+                    changed_anim_set_slots.add(slot)
+                    transition_missing.append(f"pl[{slot}].anim_sets")
+                    continue
+                set_head = bytag.get(("human_anim_set_head", slot))
+                set_head = struct.unpack("<I", set_head)[0] if set_head else 0
+                if set_head != state["head"]:
+                    refresh_player_anim_sets(pine, cache, slot)
+                    changed_anim_set_slots.add(slot)
+                    transition_missing.append(f"pl[{slot}].anim_sets")
+                    continue
+                for index, node in enumerate(state["nodes"]):
+                    raw = bytag[("human_anim_set_raw", (slot, index))]
+                    next_ptr = struct.unpack_from("<I", raw, 4)[0]
+                    expected_next = (
+                        state["nodes"][index + 1]["address"]
+                        if index + 1 < len(state["nodes"]) else 0)
+                    if next_ptr != expected_next:
+                        refresh_player_anim_sets(pine, cache, slot)
+                        changed_anim_set_slots.add(slot)
+                        transition_missing.append(f"pl[{slot}].anim_sets")
+                        break
             pointer_changed = False
             for slot in range(n_humans):
                 bl_raw = bytag.get(("bl_raw", slot))
@@ -1277,6 +1384,23 @@ def main():
                 anim_state = cache["bot_anim"].get(k)
                 if anim_state and s not in changed_animation_slots:
                     entry["anim"] = animation_record(bytag, k, anim_state)
+            if s < n_humans:
+                body_state = cache["human_body_anim"].get(s)
+                if body_state and s not in changed_player_anim_slots:
+                    entry["body_anim"] = animation_record(
+                        bytag, s, body_state, "human_body_anim")
+                set_state = cache["human_anim_sets"].get(s)
+                if set_state and s not in changed_anim_set_slots:
+                    entry["anim_sets"] = {
+                        "owner_ptr": set_state["owner"],
+                        "list_head_ptr": set_state["head"],
+                        "chain_complete": set_state["chain_complete"],
+                        "nodes": [
+                            {"ptr": node["address"],
+                             "raw": bytag[("human_anim_set_raw", (s, index))].hex()}
+                            for index, node in enumerate(set_state["nodes"])
+                        ],
+                    }
             if s < n_humans and args.weapon_anim_raw:
                 anim_state = cache["human_anim"].get(s)
                 if anim_state and s not in changed_animation_slots:

@@ -606,6 +606,7 @@ struct MpSession::Impl {
             if (!remote) continue;
             const Player& q = *remote;
             const auto* st = session->weapons().state(j);
+            int weapon_id = 1;
             int category = 1;
             const nf::net::PlayerSnapshot* replicated = nullptr;
             if (network) {
@@ -615,15 +616,20 @@ struct MpSession::Impl {
                     if (it != snapshot->players.end()) replicated = &*it;
                 }
             }
-            else if (st) category = int(session->weapons().table().weapon(st->current).category);
-            body.set_category(category);
+            if (replicated) {
+                weapon_id = replicated->weapon;
+                category = int(session->weapons().table().weapon(weapon_id).category);
+            } else if (st) {
+                weapon_id = st->current;
+                category = int(session->weapons().table().weapon(weapon_id).category);
+            }
+            GameRng* rng = j < direct.options.humans ? &game_rng() : nullptr;
+            body.set_weapon(weapon_id, category, rng);
             if (replicated) {
                 const Vec3 velocity{replicated->velocity[0], replicated->velocity[1], replicated->velocity[2]};
-                body.update(replicated->substate == std::uint8_t(SubState::Crouch), velocity, timing.mul(),
-                            j < direct.options.humans ? &game_rng() : nullptr);
+                body.update(replicated->substate == std::uint8_t(SubState::Crouch), velocity, timing.mul(), rng);
             } else {
-                body.update(q.substate == SubState::Crouch, q.velocity, timing.mul(),
-                            j < direct.options.humans ? &game_rng() : nullptr);
+                body.update(q.substate == SubState::Crouch, q.velocity, timing.mul(), rng);
             }
             for (const AnimEvent& e : body.take_events()) {
                 if (e.kind != AnimEventKind::Sound || e.arg == 0) continue;

@@ -392,6 +392,7 @@ public:
         bool source_gate_valid = false;
         bool source_update_due = true;
         std::uint8_t source_object_anim = 0; // obj+0xfc Game_Run animation-update countdown
+        bool source_object_anim_from_view = false; // post-tick visibility write survives the next seed-each restore
         bool source_force_anim = false; // Drone+0x538 != 0
         std::array<Vec3, 3> source_root_basis{}; // AnimFrameResolve's cached sAnimObject +0x90..+0xb0
         bool source_root_basis_valid = false;
