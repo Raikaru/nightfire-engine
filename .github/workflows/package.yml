@@ -143,43 +143,22 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xdotool zstd xvfb libopengl0 libgl1 libegl1 libgl1-mesa-dri ffmpeg libasound2t64 libpulse0
-      - name: Read private ISO checksum
-        id: iso
+      # The repository is public: the ISO is never cached (fork PRs can restore base-branch caches) and
+      # disc-derived screenshots are never uploaded. Only the deploy key, absent on fork PRs, reaches the data.
+      - name: Fetch and reassemble private ISO
         uses: actions/checkout@v4
         with:
           repository: Raikaru/nightfire-ci-data
           ssh-key: ${{ secrets.NF_DATA_DEPLOY_KEY }}
           path: .private-data
-          sparse-checkout: iso/iso.sha1
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-      - name: Set checksum cache key
-        id: checksum
-        run: echo "sha1=$(awk '{print $1}' .private-data/iso/iso.sha1)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
-        id: iso-cache
-        with:
-          path: ${{ runner.temp }}/nightfire-usa.iso
-          key: nightfire-usa-iso-${{ steps.checksum.outputs.sha1 }}
-      - name: Fetch and reassemble private ISO
-        if: steps.iso-cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
-        with:
-          repository: Raikaru/nightfire-ci-data
-          ssh-key: ${{ secrets.NF_DATA_DEPLOY_KEY }}
-          path: .private-data-parts
-          sparse-checkout: iso/nightfire-usa.iso.zst.part*
+          sparse-checkout: iso/
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Decompress and verify ISO
-        if: steps.iso-cache.outputs.cache-hit != 'true'
         run: |
-          cat .private-data-parts/iso/nightfire-usa.iso.zst.part* | zstd -d -T0 -o "$RUNNER_TEMP/nightfire-usa.iso"
-          echo "${{ steps.checksum.outputs.sha1 }}  $RUNNER_TEMP/nightfire-usa.iso" | sha1sum --check
-          rm -rf .private-data-parts .private-data
-      - name: Verify cached ISO checksum
-        if: steps.iso-cache.outputs.cache-hit == 'true'
-        run: echo "${{ steps.checksum.outputs.sha1 }}  $RUNNER_TEMP/nightfire-usa.iso" | sha1sum --check
+          cat .private-data/iso/nightfire-usa.iso.zst.part* | zstd -d -T0 -o "$RUNNER_TEMP/nightfire-usa.iso"
+          echo "$(awk '{print $1}' .private-data/iso/iso.sha1)  $RUNNER_TEMP/nightfire-usa.iso" | sha1sum --check
+          rm -rf .private-data
       - uses: actions/download-artifact@v4
         with:
           name: linux-packages
@@ -240,15 +219,29 @@ jobs:
           "$RUNNER_TEMP/iso-smoke" "$RUNNER_TEMP/nightfire-usa.iso" "$HOME/data/nightfire"
           "$NFDUMP" "$HOME/data/nightfire" validate | tee "$RUNNER_TEMP/nfdump.log"
           grep -q 'failures 0' "$RUNNER_TEMP/nfdump.log"
+          mkdir -p "$RUNNER_TEMP/disc-shots"
           xvfb-run -a "$NIGHTFIRE" "$HOME/data/nightfire" --page 0x40000002 --press wait90 --frames 30 --mute \
-            --shot "$RUNNER_TEMP/nightfire-shots/main-menu.bmp"
+            --shot "$RUNNER_TEMP/disc-shots/main-menu.bmp"
           xvfb-run -a "$NIGHTFIRE" "$HOME/data/nightfire" --mp 07000024.bin --mode arena --bots 3 --frames 300 --mute \
-            --shot "$RUNNER_TEMP/nightfire-shots/mp-skyrail.bmp"
+            --shot "$RUNNER_TEMP/disc-shots/mp-skyrail.bmp"
+          # Disc-derived frames stay on the runner; assert they rendered real content instead of uploading them.
+          for shot in "$RUNNER_TEMP"/disc-shots/*.bmp; do
+            python3 - "$shot" <<'EOF'
+          import struct, sys
+          data = open(sys.argv[1], 'rb').read()
+          offset = struct.unpack_from('<I', data, 10)[0]
+          pixels = data[offset:]
+          distinct = len(set(pixels[i:i + 3] for i in range(0, len(pixels) - 3, 3 * 97)))
+          print(sys.argv[1], 'distinct sampled colours', distinct)
+          sys.exit(0 if distinct >= 64 else 1)
+          EOF
+          done
+          rm -rf "$RUNNER_TEMP/disc-shots" "$RUNNER_TEMP/nightfire-usa.iso" "$HOME/data/nightfire"
       - name: Reject a wrong file
         run: |
           printf 'not an ISO image\n' > "$RUNNER_TEMP/wrong-disc.iso"
           "$RUNNER_TEMP/iso-smoke" "$RUNNER_TEMP/wrong-disc.iso"
       - uses: actions/upload-artifact@v4
         with:
-          name: linux-disc-smoke-screenshots
-          path: ${{ runner.temp }}/nightfire-shots/*.bmp
+          name: first-run-wizard-screenshot
+          path: ${{ runner.temp }}/nightfire-shots/wizard.bmp
