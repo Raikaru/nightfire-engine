@@ -264,8 +264,10 @@ resolve the shared layer/sequence schema at `pl[0..3].anim`.
 For each human, `body_anim` captures the full layer/sequence chain resolved
 from the player animation owner, and `anim_sets` contains the ordered raw
 0x34-byte linked nodes rooted at owner+`0x98` (including the `+0x2C` random
-timer). This state is required when seeding the body animation; v5 recordings
-predate these fields and must be recaptured with the updated recorder.
+timer). v6 recordings restore this state exactly. Legacy v5 recordings lack
+these fields and retain the engine's own animation lifecycle instead; their
+engine trace rows set `body_anim_sets_unseeded: true` to mark that body state
+as approximate.
 `golden_effect_handle` and `golden_effect_active` expose the GoldenEye effect
 actor; no remaining-effect tick value is mapped.
 Bot goal targets pointing to an objective descriptor are retained in
@@ -288,13 +290,15 @@ run `Game_Run` only, without draw-side visibility state. By default row one is
 the saved P2S and each following row advances GameState's frame/timer counters
 and video-frame accumulator using the `VIDEO_FRAME_RATE / FRAME_RATE_INT` edge,
 then calls the selected entry exactly once. `--sample-current-frame` (only
-with `--no-game-flow`) instead treats the saved state as an unfinished frame:
-it applies that frame's pad and calls `Game_Run` before advancing counters.
-`ee_oracle_fill.py` uses this mode, matching `mp_record.py`'s end-of-`Game_Run`
-sample point and excluding draw-side state. `N` is the number of emitted rows;
-pad input must cover each simulated frame. Row numbers come from the saved
-GameState counters, not the P2S filename or requested checkpoint frame. The
-input word is the raw active-high Sony tSlot mask (for example, Cross is
+with `--no-game-flow`) omits the unprocessed P2S row and captures each emitted
+row at `mp_record`'s instruction hook `0x001C98BC` inside `Game_Run`. It uses
+the saved frame's pad/counters for the first sample, then advances counters
+before later calls. `ee_oracle_fill.py` uses this mode, matching the recorder's
+end-of-`Game_Run` sample point and excluding draw-side state. `N` is the number
+of emitted rows; pad input must cover each simulated frame. Row numbers come
+from the saved GameState counters, not the P2S filename or requested checkpoint
+frame.
+The input word is the raw active-high Sony tSlot mask (for example, Cross is
 `0x40` and R1 is `0x08`); stick bytes come from `pad_all[].s`. Add
 `--weapon-anim-raw` to capture the 0x100-byte pointed-to human animation object
 as `pl[].weapon_anim_raw` for replay code that needs more than the enum.

@@ -43,9 +43,13 @@ public:
     // control_handle_cel_change for an object that moved `from` -> `to` while in `room` (kNone = not linked):
     // through a portal of the room, else (still inside the room's box) unchanged, else find(to).
     int track(int room, const Vec3& from, const Vec3& to, const CollisionWorld& world) const;
-    // View_AddCels (0x1E6BA0): Vision_InView (0x1E89E0) tests each cel's own sphere.
-    bool cell_in_view(int target, const Vec3& eye, const Vec3& right, const Vec3& up,
-                      const Vec3& forward, float tan_half_x, float tan_half_y) const;
+    // View_AddCels candidates: seed from the viewer's linked cel and follow only portals visible through
+    // the progressively clipped frustum, matching Vision_Portal_Recurse's cell list.
+    void mark_visible_cells(int viewer, const Vec3& eye, const Vec3& right, const Vec3& up,
+                            const Vec3& forward, float tan_half_x, float tan_half_y,
+                            std::vector<std::uint8_t>& visible) const;
+    bool cell_in_view(int target, const std::vector<std::uint8_t>& visible, const Vec3& eye, const Vec3& right,
+                      const Vec3& up, const Vec3& forward, float tan_half_x, float tan_half_y) const;
     // cel+0x90 (kNoWater for kNone).
     float water_level(int room) const;
 

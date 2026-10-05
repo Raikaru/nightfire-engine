@@ -145,7 +145,7 @@ def main():
     ap.add_argument("--weapon-anim-raw", action="store_true",
                     help="capture the full human weapon-animation object range")
     ap.add_argument("--sample-current-frame", action="store_true",
-                    help="run Game_Run once at the saved frame before advancing")
+                    help="capture RAM at mp_record's Game_Run sample hook")
     ap.add_argument("--game-flow", dest="game_flow", action="store_true", default=True,
                     help="run GameFlow_Main and its view capture (default)")
     ap.add_argument("--no-game-flow", dest="game_flow", action="store_false",
