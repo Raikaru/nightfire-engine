@@ -204,7 +204,7 @@ def main():
             pine.emitted += 1
             chunks = pine.read_ranges(state["ranges"])
             return ({"done": pine.done, "frame": pine.frame,
-                     "timer_frame": pine.timer_frame}, chunks)
+                     "timer_frame": pine.timer_frame, "overflow_delta": 0}, chunks)
 
         original_factory = R.Pine
         original_vpad = R.vpad

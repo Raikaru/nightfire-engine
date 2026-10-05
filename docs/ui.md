@@ -456,18 +456,11 @@ appear bottom-left with the `chat` icon in every rule set. The PS2 and GC/Xbox H
 
 With every option off, the PS2 HUD is pixel-identical to a build without these hooks: the same headless
 `--mp 07000024.bin --bots 3 --frames 600 --shot` capture (Arena and Team Arena, 1920x1080) compared with
-`magick compare -metric AE` gave 0 differing pixels. The captures below are 1920x1080 runs: the browser against
+`magick compare -metric AE` gave 0 differing pixels. Verification captures were 1920x1080 runs: the browser against
 four local servers (LAN PS2, master-listed GC/Xbox with a password and a raised frag limit, master-listed Extended,
 a favourite reached only by direct query), the Settings pages through `set-*` presses, and `--mp --ruleset extended`
-matches (12 bots or 4 split-screen humans + 12 bots; Select held through `--inputs` for the scoreboard).
-
-![Server browser icons, searching, connecting and chat](ui-art-online.png)
-
-![Settings: Graphics, Audio, Accessibility, high-contrast prompts](ui-art-settings.png)
-
-![Extended HUD: scoreboard, kill feed and name tags, 16 participants, colour-blind set, debriefing table](ui-art-extended.png)
-
-![Default PS2 HUD, high contrast with the Cross crosshair, colour-blind teams with the Ring crosshair](ui-art-accessibility.png)
+matches (12 bots or 4 split-screen humans + 12 bots; Select held through `--inputs` for the scoreboard). Screenshots
+render disc-derived art, so they are not kept in the repository; regenerate them locally with the same commands.
 
 ## Button prompts (`src/ui/input_devices.*`, `src/ui/prompts.*`)
 
