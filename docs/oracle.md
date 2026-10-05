@@ -286,18 +286,21 @@ For deterministic offline replay from an existing PCSX2 savestate, use
 `ee_oracle.py STATE.p2s OUT.jsonl --rows N [--inputs REC.jsonl]`. The wrapper
 delegates to `nfmips mp-oracle`, which runs `GameFlow_Main` by default,
 including `Game_Draw` and draw-side visibility state. Use `--no-game-flow` to
-run `Game_Run` only, without draw-side visibility state. By default row one is
-the saved P2S and each following row advances GameState's frame/timer counters
-and video-frame accumulator using the `VIDEO_FRAME_RATE / FRAME_RATE_INT` edge,
-then calls the selected entry exactly once. `--sample-current-frame` (only
-with `--no-game-flow`) omits the unprocessed P2S row and captures each emitted
-row at `mp_record`'s instruction hook `0x001C98BC` inside `Game_Run`. It uses
-the saved frame's pad/counters for the first sample, then advances counters
-before later calls. `ee_oracle_fill.py` uses this mode, matching the recorder's
-end-of-`Game_Run` sample point and excluding draw-side state. `N` is the number
-of emitted rows; pad input must cover each simulated frame. Row numbers come
-from the saved GameState counters, not the P2S filename or requested checkpoint
-frame.
+run `Game_Run` only, without draw-side visibility state. Row one is the saved
+P2S; each following row advances GameState's frame/timer counters and
+video-frame accumulator using the `VIDEO_FRAME_RATE / FRAME_RATE_INT` edge,
+then calls the selected entry exactly once. `N` includes the saved P2S row;
+pad input must cover each simulated frame. `--sample-at-game-run-hook` captures
+each replayed frame at `mp_record`'s instruction hook `0x001C98BC` inside
+`Game_Run`; `GameFlow_Main` then continues through `Game_Draw`. `ee_oracle_fill.py`
+uses each checkpoint's saved `frame_before_save` counter (which can differ from
+`sample_frame`), omits that already-recorded P2S row, and uses hook mode for
+later rows. Thus validation sees the recorder's
+end-of-`Game_Run` phase while draw-side animation re-arming still affects the
+next frame. Fill compares only common EE fields in the v5/v6 capture schemas;
+the differing `seed_version` tag and absent version-specific fields are metadata.
+Row numbers come from the saved GameState counters, not the P2S filename or
+requested checkpoint frame.
 The input word is the raw active-high Sony tSlot mask (for example, Cross is
 `0x40` and R1 is `0x08`); stick bytes come from `pad_all[].s`. Add
 `--weapon-anim-raw` to capture the 0x100-byte pointed-to human animation object
@@ -308,7 +311,7 @@ slot 0 before the first frame; it mutates the P2S state and is intended for
 controlled weapon tests.
 
 The script feeds full RAM snapshots into the same `mp_record.py` decoder, so its
-JSONL uses the seedable v5 schema without a second decoder. Example:
+JSONL uses the seedable v6 schema without a second decoder. Example:
 
 ```sh
 python3 tools/oracle/ee_oracle.py frame-00013326.p2s replay.jsonl \
@@ -1065,16 +1068,18 @@ to erase that post-tick write and skip slot 6's frame-35 animation update at
 34716. The host now carries the visibility-generated counter over the next
 seed-each restore, while still importing the raw byte when no such pass wrote
 it.
-This carry models the one-frame ordering only when the host visibility result
-The longer Arena samples expose a separate limit in that approximation. At
-frame 17468, slot 6's source `obj+0xfc` remains zero while the host camera test
-marks it visible. A raw-RAM `View_CaptureScene` trace never calls
-`Vision_InView` for slot 6's source cel (`obj+0x20 == 0x015d3810`), even though
-a direct `Vision_InView` call on that cel's own sphere returns visible. Thus
-the residual is not just a disagreement in the four-plane sphere test: the
-host tests all mapped room spheres, while source `View_AddCels` only tests its
-scene candidate list. Do not force the source counter from the next recorder
-row; the candidate-list membership still needs to be modeled.
+The Arena view-counter discrepancy was a stale viewer-cel seed as well as a
+candidate-culling issue. `View_CaptureScene` roots `Vision_Portal_Recurse` from
+the viewer's linked cel (`viewer+4`); importing a player's `obj+0x20` cell
+pointer by coordinate lookup can select a different room. Seedable rows now
+capture that cel's `0xa0` bytes alongside the player object, and the importer
+maps its class and bounding sphere to one `RoomMap` entry (sphere-center
+rounding tolerance: 1 mm; ambiguous matches are rejected). In a source
+frame-18076 seed-each replay matches 304/305 transitions, including the
+formerly divergent frame 18078; its only residual is `pl[6].pos[1]` at
+frame 18347 (2.8 mm). The earlier frame-17466 replay now matches frame 17468;
+its 206-transition comparison has two RNG-only divergences, at 17479 and
+17520.
 
 ### Extended seeded campaign results
 
@@ -1092,7 +1097,7 @@ divergent frames among N compared transitions.
 | Arena 23797 (307) | 0/307 | 0/307 | exact aligned state |
 | Arena 15386 (230) | 5/230 | 1/230 | continuous first differs at 15602 by a small `pl[5].pos[2]` residual; bot 4 state differs at 15615 |
 | Arena 15728 (306) | 62/306 | 0/306 | continuous first differs at 15960 in `pl[5].pos[2]` |
-| Arena 17466 (245), 18076 (305) | 244/245, 304/305 | 244/245, 304/305 | slot 6 animation advances one frame while source counter stays zero (first differences 17468 and 18078); source frame 17468 trace shows its cel omitted from `View_AddCels` candidates |
+| Arena 17466 (206), 18076 (305) | 2/206, 1/305 | 2/206, 1/305 | frame 17468 slot 6 culling counter now matches; RNG-only differences at 17479/17520; frame 18076's only residual is `pl[6].pos[1]` at 18347 (2.8 mm) |
 | Arena 20090 (306) | 305/306 | 305/306 | first difference 20092: slot 6 animation frame 23 vs source 22; candidate-list mismatch remains under investigation |
 | Arena 23509 | 58/242 | 0/242 | continuous first differs at 23550 in `pl[5].pos[0]` |
 | CTF 34665 (307) | 0/307 | 0/307 | exact aligned state; includes frame 34716 slot 6 animation |
@@ -1113,14 +1118,22 @@ acceleration but still integrates its stored `Drone+0x480` vector once before
 clearing the vertical component at `Drone+0x484`; the host preserves that final
 fall displacement on source-collision ticks.
 
-`View_AddCels` (0x1E6BA0) calls `Vision_InView` (0x1E89E0) with each
-candidate cel's own `cel+0x8c` radius and `cel+0x80` center before adding its
-objects. A frame-17468 source-RAM trace confirms the slot-6 cel is not among
-the candidates reached from this viewer, despite passing a direct sphere test.
-The map parser's `parseentity_transform_bounding_box` (0x1D0FB0) transforms
-the model sphere center and copies its model radius unchanged; the host stores
-that sphere and currently tests every mapped room against the four camera side
-planes, without matching the source candidate-list membership.
+`Vision_Recurse` (0x1E82E0) follows each open directional portal, clips its
+quad against the current plane set, and recurses only when at least three
+vertices remain. The source caps the visible-cel list at 64, recursion depth at
+46, and recursive calls at 101; each child plane set is rebuilt from the
+clipped portal edges plus that portal plane. Portal one-way bits are the
+`build_alloc_portal` byte at `portal+0x27`.
+
+`View_AddCels` (0x1E6BA0) visits the sorted visible-cel list and calls
+`View_AddObjects`; it then checks each cel's linked model list, applying the
+object display mask/flags and `Vision_InView` (0x1E89E0) to each model's
+`+0x80/+0x8c` sphere. `Vision_InView` uses the four side planes. In the
+frame-18078 raw-RAM trace, source player 0 is linked to cel `0x015d68d0`,
+slots 4/5 share candidate cel `0x015d6150`, and slot 6's cel `0x015d32d0`
+is absent from the scene's `View_AddObjects` calls. With source-cell seeding
+and the corrected portal traversal, frame 18078 now matches; the 305-transition
+seed-each window has one separate 2.8 mm `pl[6].pos[1]` residual at frame 18347.
 In multiplayer, `World::tick` keeps the Game_Run boundary explicit: player
 movement/collision and player-weapon updates precede `MP_Update`, then
 `Drone_InitComms` prepares global opponent/sight state before object-control

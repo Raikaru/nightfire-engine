@@ -144,8 +144,8 @@ def main():
                     help="log writes to one MP human's BLData HP, including PC and $ra")
     ap.add_argument("--weapon-anim-raw", action="store_true",
                     help="capture the full human weapon-animation object range")
-    ap.add_argument("--sample-current-frame", action="store_true",
-                    help="capture RAM at mp_record's Game_Run sample hook")
+    ap.add_argument("--sample-at-game-run-hook", action="store_true",
+                    help="snapshot inside Game_Run before Game_Draw completes")
     ap.add_argument("--game-flow", dest="game_flow", action="store_true", default=True,
                     help="run GameFlow_Main and its view capture (default)")
     ap.add_argument("--no-game-flow", dest="game_flow", action="store_false",
@@ -156,6 +156,8 @@ def main():
                     help="use Player_EquipWeapon to grant and select a human MP weapon")
     ap.add_argument("--timeout", type=float, default=1200.0)
     args = ap.parse_args()
+    if args.sample_at_game_run_hook and not args.game_flow:
+        ap.error("--sample-at-game-run-hook requires the default GameFlow_Main")
     if args.rows < 1:
         ap.error("--rows must be positive")
     if args.watch_human_hp is not None:
@@ -173,8 +175,8 @@ def main():
         command += command_watch_human_hp
         if args.trace_rng:
             command.append("--trace-rng")
-        if args.sample_current_frame:
-            command.append("--sample-current-frame")
+        if args.sample_at_game_run_hook:
+            command.append("--sample-at-game-run-hook")
         if not args.game_flow:
             command.append("--no-game-flow")
         for weapon in args.give_weapon:
@@ -188,8 +190,8 @@ def main():
 
         def pine_factory(slot):
             pine = _StreamPine(slot, command=command, expected_rows=args.rows)
-            if pad_span and (args.rows > 1 or args.sample_current_frame):
-                first_input_frame = pine.frame if args.sample_current_frame else pine.frame + 1
+            if pad_span and args.rows > 1:
+                first_input_frame = pine.frame + 1
                 last_input_frame = pine.frame + args.rows - 1
                 if not (pad_span[0] <= first_input_frame
                         and pad_span[1] >= last_input_frame):

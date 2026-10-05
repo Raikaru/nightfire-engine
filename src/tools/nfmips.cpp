@@ -2599,13 +2599,17 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                   u32 trace_frame, int trace_slot, bool trace_rng,
                   const std::vector<int>& give_weapons,
                   int watch_drone_anim_slot, u32 watch_drone_frame,
-                  bool game_flow, bool sample_current_frame) {
+                  bool game_flow, bool sample_at_game_run_hook, u32 watch_addr = 0) {
     if (state.empty() || rows < 1)
         throw std::runtime_error("mp-oracle needs --state <p2s> and --rows N");
-    if (sample_current_frame && game_flow)
-        throw std::runtime_error("--sample-current-frame requires --no-game-flow");
-    if (sample_current_frame && trace_frame != 0)
-        throw std::runtime_error("--sample-current-frame excludes --trace-frame");
+    if (sample_at_game_run_hook && !game_flow)
+        throw std::runtime_error("--sample-at-game-run-hook requires GameFlow_Main");
+    if (watch_addr != 0 && watch_human_hp_slot >= 0)
+        throw std::runtime_error("--watch-addr excludes --watch-human-hp (single watch slot)");
+    if (watch_addr != 0 && watch_drone_anim_slot >= 0)
+        throw std::runtime_error("--watch-addr excludes --watch-drone-anim (single watch slot)");
+    if (sample_at_game_run_hook && trace_frame != 0)
+        throw std::runtime_error("--sample-at-game-run-hook excludes --trace-frame");
     if ((trace_frame == 0) != (trace_slot == -1)
         || (trace_frame != 0 && (trace_slot < 4 || trace_slot > 7))
         || (trace_frame != 0 && (watch_human_hp_slot >= 0 || trace_rng)))
@@ -2953,8 +2957,30 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
             std::fputc('\n', stderr);
         });
     }
-
-
+    if (watch_addr != 0) {
+        const u32 watched = watch_addr;
+        const u32 watched_off = m.mem.ram_offset(watched);
+        if (watched_off == ~u32(0)) throw std::runtime_error("--watch-addr is outside EE RAM");
+        std::fprintf(stderr, "watching writes at %08x\n", watched);
+        m.mem.set_watch([&m, watched, watched_off](u32 address, u32 size, bool is_write) {
+            if (!is_write) return;
+            const u32 offset = m.mem.ram_offset(address);
+            if (offset == ~u32(0) || offset >= watched_off + 4 || u64(offset) + size <= watched_off)
+                return;
+            const u32 frame = m.mem.read<u32>(0x002A37A4);
+            const u32 pc = m.cpu.cur_pc, ra = u32(m.cpu.r[31].d[0]);
+            std::fprintf(stderr, "ADDR write frame=%u addr=%08x size=%u pc=%08x", frame, address,
+                         size, pc);
+            if (auto sym = m.symbol_at(pc)) std::fprintf(stderr, " <%s+0x%x>", sym->name.c_str(), pc - sym->value);
+            std::fprintf(stderr, " a0=%08x a1=%08x a2=%08x a3=%08x ra=%08x", u32(m.cpu.r[4].d[0]),
+                         u32(m.cpu.r[5].d[0]), u32(m.cpu.r[6].d[0]), u32(m.cpu.r[7].d[0]), ra);
+            if (ra >= 8) {
+                if (auto sym = m.symbol_at(ra - 8))
+                    std::fprintf(stderr, " caller=%s+0x%x", sym->name.c_str(), ra - sym->value - 8);
+            }
+            std::fputc('\n', stderr);
+        });
+    }
     auto write_u32 = [](u32 value) {
         const u8 bytes[] = {u8(value), u8(value >> 8), u8(value >> 16), u8(value >> 24)};
         if (std::fwrite(bytes, 1, sizeof(bytes), stdout) != sizeof(bytes))
@@ -2983,8 +3009,7 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
     write_u32(1); // stream version
     write_u32(u32(rows));
     write_u32(kRamSize);
-    if (!sample_current_frame)
-        snapshot();   // Emit the saved P2S frame unless sampling its pending Game_Run.
+    snapshot();   // P2S state is the first emitted source frame.
 
     const u32 entry = m.addr(game_flow ? "GameFlow_Main__Fv" : "Game_Run__Fv");
     struct RngFunction {
@@ -2999,6 +3024,7 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
         u32 frame;
         const RngFunction* function;
     };
+    bool sample_hook_seen = false;
     std::vector<RngFunction> rng_functions;
     std::vector<PendingRandom> pending;
     if (trace_rng) {
@@ -3010,48 +3036,48 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
             {m.addr("Rand_FRand_MVar2__Fff"), "Rand_FRand_MVar2", true},
         };
         std::fprintf(stderr, "RNG_TRACE enabled functions=%zu\n", rng_functions.size());
-    }
-    bool record_hook_sampled = false;
-    auto observe_instruction = [&](const nf::ee::Cpu& cpu, u32 pc, u32) {
-        if (sample_current_frame && pc == 0x001C98BCu && !record_hook_sampled) {
-            snapshot();
-            record_hook_sampled = true;
-        }
-        if (!trace_rng) return;
-        const u32 stack = u32(cpu.r[29].d[0]);
-        for (auto it = pending.begin(); it != pending.end();) {
-            if (pc == it->caller_return && stack == it->stack) {
-                const auto symbol = m.symbol_at(it->caller);
-                const u32 result = it->function->float_result ? cpu.f[0] : cpu.r[2].w[0];
-                std::fprintf(stderr, "RNG_CALL frame=%u fn=%s caller=%08x result=%08x",
-                             it->frame, it->function->name, it->caller, result);
-                if (symbol)
-                    std::fprintf(stderr, " <%s+0x%x>", symbol->name.c_str(),
-                                 it->caller - symbol->value);
-                std::fputc('\n', stderr);
-                it = pending.erase(it);
-            } else {
-                ++it;
+        m.set_instruction_observer([&](const nf::ee::Cpu& cpu, u32 pc, u32) {
+            if (sample_at_game_run_hook && pc == 0x001C98BCu && !sample_hook_seen) {
+                snapshot();
+                sample_hook_seen = true;
             }
-        }
-        for (const RngFunction& function : rng_functions) {
-            if (pc != function.address) continue;
-            const u32 caller_return = u32(cpu.r[31].d[0]);
-            pending.push_back({caller_return, caller_return - 8, stack,
-                               m.mem.read<u32>(kFrameStart), &function});
-            break;
+            const u32 stack = u32(cpu.r[29].d[0]);
+            for (auto it = pending.begin(); it != pending.end();) {
+                if (pc == it->caller_return && stack == it->stack) {
+                    const auto symbol = m.symbol_at(it->caller);
+                    const u32 result = it->function->float_result ? cpu.f[0] : cpu.r[2].w[0];
+                    std::fprintf(stderr, "RNG_CALL frame=%u fn=%s caller=%08x result=%08x",
+                                 it->frame, it->function->name, it->caller, result);
+                    if (symbol)
+                        std::fprintf(stderr, " <%s+0x%x>", symbol->name.c_str(),
+                                     it->caller - symbol->value);
+                    std::fputc('\n', stderr);
+                    it = pending.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            for (const RngFunction& function : rng_functions) {
+                if (pc != function.address) continue;
+                const u32 caller_return = u32(cpu.r[31].d[0]);
+                pending.push_back({caller_return, caller_return - 8, stack,
+                                   m.mem.read<u32>(kFrameStart), &function});
+                break;
+            }
+        });
+    }
+    auto sample_hook_observer = [&](const nf::ee::Cpu&, u32 pc, u32) {
+        if (pc == 0x001C98BCu && !sample_hook_seen) {
+            snapshot();
+            sample_hook_seen = true;
         }
     };
-    if (trace_rng || sample_current_frame)
-        m.set_instruction_observer(observe_instruction);
-    for (int row = sample_current_frame ? 0 : 1; row < rows; ++row) {
-        const bool current_sample = sample_current_frame && row == 0;
-        record_hook_sampled = false;
+    for (int row = 1; row < rows; ++row) {
         const u32 before = m.mem.read<u32>(kFrameStart);
         const u32 timer_before = m.mem.read<u32>(kFrame);
-        const u32 next_frame = before + (current_sample ? 0u : 1u);
-        const u32 next_timer_frame = timer_before + (current_sample ? 0u : 1u);
-        if (!game_flow && !current_sample) {
+        const u32 next_frame = before + 1;
+        const u32 next_timer_frame = timer_before + 1;
+        if (!game_flow) {
             const u32 frame_rate_int = m.mem.read<u32>(m.addr("FRAME_RATE_INT"));
             if (!frame_rate_int)
                 throw std::runtime_error("FRAME_RATE_INT is zero");
@@ -3062,7 +3088,7 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                              m.mem.read<u32>(kFrameAccumulator)
                                  + video_frame_rate / frame_rate_int);
         }
-        const auto events = pads.find(current_sample ? before : before + 1);
+        const auto events = pads.find(before + 1);
         if (events != pads.end()) {
             for (const OraclePad& event : events->second) {
                 const u32 address = kTslot0 + event.port * kTslotStride + kPadInput;
@@ -3158,6 +3184,9 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                 });
             }
         }
+        sample_hook_seen = false;
+        if (sample_at_game_run_hook && !trace_rng)
+            m.set_instruction_observer(sample_hook_observer);
         try {
             m.call_keep(entry, {}, 200'000'000);
         } catch (const std::exception& e) {
@@ -3168,9 +3197,7 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
                          m.cpu.cur_pc, e.what());
             std::fputs(m.disasm_range(m.cpu.cur_pc - 16, 8).c_str(), stderr);
         }
-        if (!trace_rng && !sample_current_frame) m.set_instruction_observer({});
-        if (sample_current_frame && !record_hook_sampled)
-            throw std::runtime_error("Game_Run did not reach mp_record's sample hook");
+        if (!trace_rng) m.set_instruction_observer({});
         if (trace_frame != 0 && next_frame == trace_frame) {
             m.mem.set_watch({});
             if (!trace_done)
@@ -3180,7 +3207,9 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
         const u32 timer_after = m.mem.read<u32>(kFrame);
         if (after != next_frame || timer_after != next_timer_frame)
             throw std::runtime_error("Game_Run frame counters did not advance exactly once");
-        if (!sample_current_frame)
+        if (sample_at_game_run_hook && !sample_hook_seen)
+            throw std::runtime_error("GameFlow_Main did not reach mp_record's Game_Run hook");
+        if (!sample_at_game_run_hook)
             snapshot();
     }
     if (std::fflush(stdout) != 0) throw std::runtime_error("flushing oracle stream failed");
@@ -3193,7 +3222,10 @@ void usage() {
                  "usage: nfmips <elf> call <sym|addr> [args] [--state p|--ram d] [--dump a[:n]] [--steps N]\n"
                  "       nfmips <elf> init [--check] [--dump-out f] [--steps N]\n"
                  "       nfmips <elf> trace <sym|addr> [args] [--steps N] [--state p|--ram d]\n"
-                 "       nfmips <elf> mp-oracle --state <p2s> --rows N [--pads <frame/port/input.txt>] [--give-weapon ID ...] [--watch-human-hp 0..3] [--trace-frame N --trace-slot 4..7] [--trace-rng] [--game-flow|--no-game-flow]\n"
+                 "       nfmips <elf> mp-oracle --state <p2s> --rows N [--pads file] [--give-weapon ID ...]\n"
+                 "         [--watch-human-hp 0..3 | --watch-drone-anim 4..7 --watch-drone-frame N]\n"
+                 "         [--watch-addr EE_RAM_ADDRESS] [--trace-frame N --trace-slot 4..7] [--trace-rng]\n"
+                 "         [--game-flow|--no-game-flow] [--sample-at-game-run-hook]\n"
                  "       nfmips <elf> sinf3-selftest (PS2Sinf3 angle-range loops and cardinal outputs)\n"
                  "       nfmips <elf> float-selftest (EE/VU float model assertions)\n"
                  "       nfmips <elf> symbols [substr]\n"
@@ -3271,8 +3303,8 @@ int main(int argc, char** argv) {
             std::string state, pads;
             int rows = 0, watch_human_hp_slot = -1, trace_slot = -1;
             int watch_drone_anim_slot = -1;
-            u32 trace_frame = 0, watch_drone_frame = 0;
-            bool trace_rng = false, game_flow = true, sample_current_frame = false;
+            u32 trace_frame = 0, watch_drone_frame = 0, watch_addr = 0;
+            bool trace_rng = false, game_flow = true, sample_at_game_run_hook = false;
             std::vector<int> give_weapons;
             for (size_t j = 2; j < av.size(); j++) {
                 if (av[j] == "--state" && j + 1 < av.size()) state = av[++j];
@@ -3288,23 +3320,26 @@ int main(int argc, char** argv) {
                     watch_drone_anim_slot = std::stoi(av[++j]);
                 else if (av[j] == "--watch-drone-frame" && j + 1 < av.size())
                     watch_drone_frame = u32(std::stoul(av[++j]));
+                else if (av[j] == "--watch-addr" && j + 1 < av.size())
+                    watch_addr = u32(std::stoul(av[++j], nullptr, 0));
                 else if (av[j] == "--give-weapon" && j + 1 < av.size())
                     give_weapons.push_back(std::stoi(av[++j]));
                 else if (av[j] == "--trace-rng") trace_rng = true;
                 else if (av[j] == "--game-flow") game_flow = true;
                 else if (av[j] == "--no-game-flow") game_flow = false;
-                else if (av[j] == "--sample-current-frame") sample_current_frame = true;
+                else if (av[j] == "--sample-at-game-run-hook")
+                    sample_at_game_run_hook = true;
                 else throw std::runtime_error(
                     "mp-oracle wants --state <p2s> --rows N [--pads file] "
                     "[--give-weapon ID ...] [--watch-human-hp 0..3] "
                     "[--watch-drone-anim 4..7 --watch-drone-frame N] "
                     "[--trace-frame N --trace-slot 4..7] [--trace-rng] "
-                    "[--no-game-flow] [--sample-current-frame]");
+                    "[--no-game-flow] [--sample-at-game-run-hook]");
             }
             return cmd_mp_oracle(elf, state, rows, pads, watch_human_hp_slot,
                                  trace_frame, trace_slot, trace_rng, give_weapons,
                                  watch_drone_anim_slot, watch_drone_frame, game_flow,
-                                 sample_current_frame);
+                                 sample_at_game_run_hook, watch_addr);
         }
         if (cmd == "call") {
             if (av.size() < 3) {

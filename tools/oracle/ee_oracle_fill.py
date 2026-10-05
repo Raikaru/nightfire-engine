@@ -37,16 +37,22 @@ def _checkpoints(directory):
     for metadata_path in pathlib.Path(directory).glob("frame-*.json"):
         with metadata_path.open(encoding="utf-8") as stream:
             metadata = json.load(stream)
-        frame = metadata.get("sample_frame")
-        if isinstance(frame, bool) or not isinstance(frame, int):
+        sample_frame = metadata.get("sample_frame")
+        if isinstance(sample_frame, bool) or not isinstance(sample_frame, int):
             raise ValueError(f"{metadata_path}: missing integer sample_frame")
+        state_frame = metadata.get("frame_before_save", sample_frame)
+        if isinstance(state_frame, bool) or not isinstance(state_frame, int):
+            raise ValueError(f"{metadata_path}: missing integer frame_before_save")
         state_name = metadata.get("savestate", metadata_path.with_suffix(".p2s").name)
         state = metadata_path.parent / state_name
         if not state.is_file():
             raise ValueError(f"{metadata_path}: checkpoint state is missing: {state}")
-        if metadata_path.stem != f"frame-{frame:08d}":
-            raise ValueError(f"{metadata_path}: filename does not match sample_frame {frame}")
-        result.append((frame, state))
+        if metadata_path.stem != f"frame-{sample_frame:08d}":
+            raise ValueError(
+                f"{metadata_path}: filename does not match sample_frame {sample_frame}")
+        # LOADSTATE replays from the GameState frame actually stored in P2S;
+        # the requested/sample label can lag that counter during save.
+        result.append((state_frame, state))
     result.sort(key=lambda item: item[0])
     if len(result) < 2:
         raise ValueError(f"{directory}: need at least two P2S checkpoints")
@@ -60,10 +66,11 @@ def _flatten(row):
 
 
 def _compare_rows(reference, generated, tolerance):
-    # Checkpoint and partial/resync markers describe host-side capture state,
-    # not EE state. A partial row can validate only the fields it captured.
+    # Capture metadata describes host-side recording state, not EE state.
+    # A partial row can validate only the fields it captured.
     partial = reference.get("partial") is True
-    metadata = {"checkpoint", "partial", "resync", "state_missing", "seed_ready"}
+    metadata = {"checkpoint", "partial", "resync", "state_missing", "seed_ready",
+                "seed_version"}
     reference = {key: value for key, value in reference.items() if key not in metadata}
     generated = {key: value for key, value in generated.items() if key not in metadata}
     expected = _flatten(reference)
@@ -74,25 +81,20 @@ def _compare_rows(reference, generated, tolerance):
         actual = {field: value for field, value in actual.items()
                   if not field.endswith(".complete")}
     mismatches = []
-    fields = expected.keys() & actual.keys() if partial else expected.keys() | actual.keys()
-    for field in sorted(fields):
-        if field not in expected:
-            mismatches.append((field, "<missing>", actual[field], None))
-        elif field not in actual:
-            mismatches.append((field, expected[field], "<missing>", None))
-        else:
-            delta, equal = mp_compare.residual(expected[field], actual[field], tolerance)
-            if not equal:
-                mismatches.append((field, expected[field], actual[field], delta))
+    # v5/v6 capture different field sets; only comparable fields can validate.
+    for field in sorted(expected.keys() & actual.keys()):
+        delta, equal = mp_compare.residual(expected[field], actual[field], tolerance)
+        if not equal:
+            mismatches.append((field, expected[field], actual[field], delta))
     return mismatches
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Replay Game_Run between P2S checkpoints at mp_record's "
-                    "sample point, then validate every overlapping PCSX2 row.")
+        description="Replay GameFlow_Main between P2S checkpoints at the "
+                    "mp_record sample point, then validate common fields.")
     parser.add_argument("checkpoints", help="mp_record checkpoint directory")
-    parser.add_argument("reference", help="PCSX2 mp_record v6 JSONL to validate against")
+    parser.add_argument("reference", help="PCSX2 mp_record JSONL for overlap validation")
     parser.add_argument("out", help="write filled JSONL only if all overlaps match")
     parser.add_argument("--elf", default=str(pathlib.Path.home() / "Projects/nightfire-data/ps2/ACTION.ELF"))
     parser.add_argument("--nfmips", default="build/nfmips")
@@ -148,8 +150,8 @@ def main(argv=None):
                     command += ["--watch-human-hp", str(args.watch_human_hp)]
                 if args.weapon_anim_raw:
                     command.append("--weapon-anim-raw")
-                command.append("--no-game-flow")
-                command.append("--sample-current-frame")
+                command.append("--sample-at-game-run-hook")
+
                 if args.trace_rng:
                     command.append("--trace-rng")
                 for weapon in args.give_weapon:
@@ -168,6 +170,9 @@ def main(argv=None):
                     if not first_frame <= frame <= end_frame:
                         raise ValueError(
                             f"segment {first_frame}..{end_frame} emitted frame {frame}")
+                    if frame == first_frame:
+                        # This savestate is the already-recorded overlap row.
+                        continue
                     duplicate_boundary = last_frame is not None and frame == last_frame
                     if (last_frame is not None and not duplicate_boundary
                             and frame != last_frame + 1):

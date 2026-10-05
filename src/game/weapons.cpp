@@ -399,8 +399,9 @@ void WeaponSystem::set_weapon_anim(PlayerWeapons& p) {   // Player_SetWeaponAnim
     p.anim.reset();
     p.anim_weapon = -1;
     p.anim_script = 0;
-    if (!bank_) return;
     const WeaponDef& d = table_.weapon(p.current);
+    if (d.model_gfx != 0) p.laser_pointer_enabled = d.has(wf1::kLaserSight);
+    if (!bank_) return;
     const std::uint32_t model_gfx = p.current == kFists ? kFistsModelGfx : d.model_gfx;
     const SkinDef* skin = model_gfx ? bank_->skin(model_gfx) : nullptr;
     if (!skin) return;
@@ -480,6 +481,8 @@ void WeaponSystem::advance_anim(int slot, PlayerWeapons& p, const World& world) 
             p.anim->set_game_rng(&game_rng());
             p.anim->tick();
         }
+        for (const AnimEvent& event : p.anim->take_events())
+            if (event.kind == AnimEventKind::ToggleHand) p.laser_pointer_enabled = !p.laser_pointer_enabled;
         const float after = p.anim->frame();
         float before = p.anim_frame_prev;
         if (after < before) before = 0;   // a looping script wrapped
@@ -1190,7 +1193,7 @@ void WeaponSystem::post_tick_rng() {
         const bool sighted = d.has(wf1::kLaserSight) ||
                              (d.alt != 0 && pair > 0 && pair < WeaponTable::kWeaponCount &&
                               table_.weapon(pair).has(wf1::kLaserSight));
-        if (sighted) (void)game_rng().rand_int(9);
+        if (sighted && p->laser_pointer_enabled) (void)game_rng().rand_int(9);
         if (p->muzzle_frames > 0) {
             while (p->muzzle_lights_pending > 0) {
                 --p->muzzle_lights_pending;
