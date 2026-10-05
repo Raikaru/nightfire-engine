@@ -877,6 +877,13 @@ void MpSeedImporter::restore_at(std::uint64_t frame, World& world, ArenaSession&
                 bot->drone->source_view_room =
                     world.rooms().find(bot->drone->pos, world.collision());
                 bot->drone->source_view_pos = bot->drone->pos;
+                bot->drone->source_view_sphere_valid = false;
+                if (uint_number(source.at("seed_version")) >= 5) {
+                    const Vec3 source_center = vec3_at(obj, 0x80);
+                    bot->drone->source_view_center_offset = source_center - bot->drone->pos;
+                    bot->drone->source_view_radius = f32_at(obj, 0x8c);
+                    bot->drone->source_view_sphere_valid = true;
+                }
             }
             if (uint_number(source.at("seed_version")) >= 5) {
                 const Json* anim = item.find("anim");

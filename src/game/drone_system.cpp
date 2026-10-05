@@ -479,11 +479,14 @@ void DroneSystem::after_camera_update(World& world, FrameTiming) {
             Drone& d = *dp;
             if (d.hidden || d.pending_delete) continue;
             if (!rooms.cell_in_view(d.source_view_room, eye, right, up, forward, tan_half_x, tan_half_y)) continue;
-            const Vec3 delta = d.pos - eye;
+            const Vec3 center = d.source_view_sphere_valid
+                                    ? d.pos + d.source_view_center_offset
+                                    : d.pos;
+            const Vec3 delta = center - eye;
             const float depth = dot(delta, forward);
             const float horizontal = std::abs(dot(delta, right));
             const float vertical = std::abs(dot(delta, up));
-            const float radius = d.radius;
+            const float radius = d.source_view_sphere_valid ? d.source_view_radius : d.radius;
             const bool in_frustum =
                 depth * tan_half_x + radius * x_radius >= horizontal &&
                 depth * tan_half_y + radius * y_radius >= vertical;

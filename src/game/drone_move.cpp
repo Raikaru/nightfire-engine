@@ -655,16 +655,20 @@ void collision_post_root_step(Drone& d, const CollisionStepState& state) {
         d.on_ground = false;
         d.ground_normal_y = 1.0f;
     }
-    // Drone_CollisionHandler applies NDrone2_DoGravity after collision and feet resolution.
+    // Grounded source Drone_CollisionHandler skips gravity acceleration, integrates the stored fall vector once,
+    // then clears Drone+0x484.
     if (!d.mv.disabled && (!source_collision_valid || source_gravity_due)) {
         if (!d.on_ground ||
             (!(source_collision_valid && source_collision_due) && d.ground_normal_y < 0.5f)) {
             d.fall_velocity[1] -= 9.8f * timing.rec();
+            d.fall_velocity[1] = std::clamp(d.fall_velocity[1], -45.0f, 45.0f);
+            d.pos = d.pos + d.fall_velocity * timing.rec();
+        } else if (source_collision_valid && source_collision_due) {
+            d.pos = d.pos + d.fall_velocity * timing.rec();
+            d.fall_velocity = {};
         } else {
             d.fall_velocity = {};
         }
-        d.fall_velocity[1] = std::clamp(d.fall_velocity[1], -45.0f, 45.0f);
-        d.pos = d.pos + d.fall_velocity * timing.rec();
     }
     // The source push branch and the FeetOnPoint snap are mutually exclusive.
     if (source_feet_delta_valid && !source_hit_list_present && d.on_ground && source_feet_delta > -0.1f) {

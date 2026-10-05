@@ -891,21 +891,24 @@ void WeaponSystem::weapon_firing(int slot, PlayerWeapons& p, World& world, Frame
         if (p.anim_state == WeaponAnim::Idle && !try_reload(false)) handle_no_ammo(p);
     }
 
+    const bool state_ok = p.anim_state == WeaponAnim::Idle || p.anim_state == WeaponAnim::FireHold ||
+                          (p.anim_state == WeaponAnim::Firing && !d.has(wf1::kNoRetrigger));
+    // The source accepts the fire edge into the trigger counter while drawing, but leaves cooldown and
+    // firing effects untouched until the animation state is idle, firing, or fire-hold.
     if (pressed && gate && p.cooldown <= 0.0f) {
-        // Guided missile in flight (F2 & 0x4, owner in substate 10): the trigger blows it up in the air
-        // (Bullet_handle_object_destruction) instead of firing a new one.
-        if (Projectile* g = find_guided(slot)) {
-            detonate_owned(slot, g->weapon);
-            p.cooldown = 30.0f;
-            return;
+        if (state_ok) {
+            // Guided missile in flight (F2 & 0x4, owner in substate 10): the trigger blows it up in the air
+            // (Bullet_handle_object_destruction) instead of firing a new one.
+            if (Projectile* g = find_guided(slot)) {
+                detonate_owned(slot, g->weapon);
+                p.cooldown = 30.0f;
+                return;
+            }
+            p.cooldown = 1.0f;
         }
-        p.cooldown = 1.0f;
         p.shots_left = d.fire_count[std::size_t(std::min<int>(p.weapon[std::size_t(p.current)].mode_index, 3))];
         p.cycle_start = p.shots_left;
     }
-    const bool state_ok = p.anim_state == WeaponAnim::Idle || p.anim_state == WeaponAnim::FireHold ||
-                          (p.anim_state == WeaponAnim::Firing && !d.has(wf1::kNoRetrigger));
-    // The original returns from states other than idle, firing (9), and fire-hold (11) before ticking cooldown.
     if (!state_ok) return;
     if (p.cooldown > 0.0f) p.cooldown -= timing.mul();
     if (p.cooldown > 0.0f || !gate) return;

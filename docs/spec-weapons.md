@@ -1021,7 +1021,97 @@ Additional per-level start values: level 0x18–1B and 0x07 set armour; `Player_
 
 `Player_InitAmmoWeapons` then `EquipWeapon` are the only entry points that create inventory; there is **no** weapon-definition file on disc.
 
-## 11. Known gaps (need runtime tracing, not derivable from the decompile)
+## 11. Multiplayer weapon-source profile
+
+The reachable weapon sweep is the union of source-proven multiplayer paths, not every
+valid `weapon_data` row:
+
+* Setup-menu weapon sets are `PickupMatrix` @ **0x2B9100** (11 × 5 `s16`, rows 0–9 selectable,
+  row 10 is rebuilt as Random). Their 10 fixed rows contribute `{2, 6, 10, 14, 16, 17, 18, 21,
+  22, 24, 26, 28, 30, 36, 42, 44, 46, 50, 52, 53, 55, 58, 59, 66, 82}`.
+  Random additionally indexes `UseableGuns` @ **0x2B9170** and contributes `{12, 20, 25, 51, 54}`.
+  This is 30 distinct menu/pickup-set ids.
+* The eight MP arena maps (Skyrail `0x07000024`, Fort Knox `0x07000027`, Snow Blind
+  `0x07000029`, Phoenix Base `0x07000026`, Atlantis `0x07000023`, Missile Silo
+  `0x07000028`, Sub Pen `0x07000025`, Ravine `0x0700004B`) place pickups only in categories
+  7–11. `Pickup_CreateFromSet` @ **0x18F1B0** resolves those category slots through the selected
+  `PickupMatrix` row, so map records add no ids outside that set union.
+* `MP_EquipPlayer` @ **0x1855F8** adds fists (id 1) and the grapple (id 80) to the human's MP
+  spawn path; its row-0 start weapon is already in the set union. `BOTWEAP_InitWeapon` @
+  **0x129E48** equips bots with that same set-0 default, gives defenders id 59, and gives
+  character 26 id 69. Id 59 is already in the matrix union; id 69 is not.
+
+The resulting reachable-id set has **33 ids**:
+`{1, 2, 6, 10, 12, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 30, 36, 42, 44, 46, 50, 51,
+52, 53, 54, 55, 58, 59, 66, 69, 80, 82}`.
+
+Each directly grantable id was run from Skyrail Arena checkpoint frame **11527** for 121 source
+rows (source frames 11527–11647), then seeded into the engine for 120 aligned ticks (11528–11647).
+The port-0 profile held R1/fire on 11528–11540 and tapped it on 11550/11558; pressed alternate/mode
+(Square) on 11564; held aim (L1) on 11570–11590, with Up/zoom-in on 11576–11581 and Down/zoom-out
+on 11584–11587; tapped reload (Cross) on 11596; and pressed next-weapon (R2) on 11608/11616.
+Raw Sony pad bits are `R1=0x8`, `Square=0x80`, `L1=0x4`, `Up=0x1000`, `Down=0x4000`,
+`Cross=0x40`, `R2=0x2`. In source rows the expected mapped fire/aim/zoom actions were present.
+`nfmips mp-oracle --give-weapon` now invokes `Player_WeaponSelect` after granting a weapon and
+waits for the original owner current-weapon byte to become the requested id before recording;
+each row below compares that active-source run against `nfgame --mp-seed-each`.
+
+`mp_compare.py diff` results (first field divergence; RNG is the comparator's first reported field,
+not proof that the RNG value itself causes later state differences):
+
+| id | frames aligned | divergent frames | first divergence |
+|---:|---:|---:|---|
+| 1 | — | — | Spawn-only fists fallback; `Player_EquipWeapon(1)` rejects the grant from this checkpoint |
+| 2 | 120 | 24 | 11528 `rng[0]` |
+| 6 | 120 | 100 | 11528 `projectiles[0].in_air` |
+| 10 | 120 | 24 | 11528 `rng[0]` |
+| 12 | 120 | 24 | 11528 `rng[0]` |
+| 14 | 120 | 111 | 11529 `pl[0].foot` |
+| 16 | 120 | 26 | 11528 `rng[0]` |
+| 17 | 120 | 68 | 11528 `rng[0]` |
+| 18 | 120 | 25 | 11528 `rng[0]` |
+| 20 | 120 | 26 | 11528 `rng[0]` |
+| 21 | 120 | 26 | 11528 `rng[0]` |
+| 22 | 120 | 91 | 11529 `rng[0]` |
+| 24 | 120 | 32 | 11528 `rng[0]` |
+| 25 | 120 | 91 | 11529 `rng[0]` |
+| 26 | 120 | 13 | 11528 `rng[0]` |
+| 28 | 120 | 71 | 11528 `rng[0]` |
+| 30 | 120 | 100 | 11528 `rng[0]` |
+| 36 | 120 | 100 | 11528 `rng[0]` |
+| 42 | 120 | 17 | 11528 `rng[0]` |
+| 44 | 120 | 18 | 11528 `rng[0]` |
+| 46 | 120 | 18 | 11528 `rng[0]` |
+| 50 | 120 | 68 | 11528 `rng[0]` |
+| 51 | 120 | 68 | 11528 `rng[0]` |
+| 52 | 120 | 100 | 11528 `rng[0]` |
+| 53 | 120 | 100 | 11528 `rng[0]` |
+| 54 | 120 | 100 | 11528 `rng[0]` |
+| 55 | 120 | 100 | 11528 `rng[0]` |
+| 58 | 120 | 38 | 11528 `rng[0]` |
+| 59 | 120 | 25 | 11528 `rng[0]` |
+| 66 | 120 | 68 | 11528 `rng[0]` |
+| 69 | 120 | 88 | 11528 `rng[0]` |
+| 80 | 120 | 70 | 11528 `rng[0]` |
+| 82 | 120 | 69 | 11528 `rng[0]` |
+
+Id 1 remains the non-selectable spawn fallback rather than a weapon that `Player_EquipWeapon` can
+grant; its complete spawn-time behavior needs an oracle started through `MP_EquipPlayer`, not a
+synthetic inventory write. The 32 grantable ids all had source `owner_current == owner_selected ==
+requested id` before their first recorded tick. The source profiles for ids 2 and 17 included both
+aim and zoom controls and completed all 121 rows without a `StepLimit` trap. `PS2Sinf3`'s positive
+and negative angle-reduction loops also have a direct regression command:
+
+```sh
+build-MpWeapons/nfmips /path/to/ACTION.ELF sinf3-selftest
+```
+
+It checks the cardinal outputs and finite range reduction of ±10000-radian inputs with a one-million
+instruction limit. Engine/source weapon profiles are not yet frame-matching; see the first-divergence
+table above.
+
+
+## 12. Known gaps (need runtime tracing, not derivable from the decompile)
 * Recoil phase offsets (float registers dropped by IDA). (The pain overlay alpha is proven since 2026-10-02: `old + min(21.3333*dmg, 128)` capped at 255, via nfmips diff-mpweap.)
 * Fields flagged **unknown** in §2.1 (+52, +80, +88, +96, +100, +140, +156) are populated but not read by any function examined; `Check_Target`, `Draw_LaserBeam`, `Draw_TaserBeam`, `Bullet_DoTrails`, `Effect_*` internals and drone/BOT weapon paths were not decompiled here.
 * `Player_WeaponHasAmmo` return expression is lost in the decompile (semantics inferred).

@@ -1037,7 +1037,21 @@ countdown: `Game_Run` calls `MP_Update` (which runs `Drone_Control`) before
 `control_movement_object_handler` decrements it, then `Game_Draw` visibility
 passes set it to 2 for selected objects. The host consumes the seeded counter
 at the animation gate, decrements after control, and refreshes visible bots
-after camera update; `Drone+0x580` is not part of this gate.
+after camera update using their source `obj+0x80` sphere center and `obj+0x8c`
+radius, not the collision capsule. `Drone+0x580` is not part of this gate.
+
+The recorder's bot layer `effective_weight` is the raw script-layer `+0x9c`
+field. `AnimFrameResolve` refreshes it from blend time/duration when the object
+is resolved for rendering; an offscreen fresh layer can therefore retain zero
+even while its blend time and duration are both one. The host trace computes
+the blend ratio on demand, so this stale render cache is not a simulation-state
+divergence.
+
+In `Drone_CollisionHandler`, a grounded source drone skips gravity
+acceleration but still integrates its stored `Drone+0x480` vector once before
+clearing the vertical component at `Drone+0x484`; the host preserves that final
+fall displacement on source-collision ticks.
+
 `View_AddCels` (0x1E6BA0) calls `Vision_InView` (0x1E89E0) with each
 candidate cel's own `cel+0x8c` radius and `cel+0x80` center before adding its
 objects. The map parser's `parseentity_transform_bounding_box` (0x1D0FB0)

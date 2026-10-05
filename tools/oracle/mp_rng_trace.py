@@ -213,8 +213,10 @@ def attach(pine):
                   (next_overflow - overflow) & 0xFFFFFFFF)
         if 0 < deltas[0] < 0x80000000 and all(
                 delta < 0x80000000 for delta in deltas[1:]):
-            stable_frames += 1
-        else:
+            stable_frames += deltas[0]
+        elif any(delta >= 0x80000000 for delta in deltas):
+            # Ignore empty polls; only a counter rewind suggests a savestate
+            # transition still in progress.
             stable_frames = 0
         frame, head, overflow = next_frame, next_head, next_overflow
     if stable_frames < 3:

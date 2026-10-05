@@ -12,17 +12,21 @@
 //
 // Integer args (decimal/0xhex, or i:..) fill a0-a3 then the o32 stack area;
 // f:.. args fill f12, f13, ... . Results print as v0/v1 (hex+dec) and f0.
+#include <array>
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
 #include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <zlib.h>
@@ -2621,6 +2625,49 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
     GlobalOpts opts;
     opts.state = state;
     Machine m = open_machine(elf, opts);
+    // PCSX2 savestates preserve the MpOracle pnach call-site jumps. Restore
+    // every EE code patch to its ACTION.ELF word before replaying a checkpoint.
+    const std::filesystem::path patch_path =
+        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()
+        / "tools/oracle/pcsx2/SLUS-20579_5B86BB62.pnach";
+    std::ifstream patch_file(patch_path);
+    if (!patch_file)
+        throw std::runtime_error("cannot open MP oracle pnach: " + patch_path.string());
+    std::vector<u8> elf_image;
+    FILE* elf_file = std::fopen(elf.c_str(), "rb");
+    if (!elf_file) throw std::runtime_error("cannot reopen " + elf);
+    char elf_buffer[65536];
+    size_t elf_bytes = 0;
+    while ((elf_bytes = std::fread(elf_buffer, 1, sizeof(elf_buffer), elf_file)) != 0) {
+        const auto* bytes = reinterpret_cast<const u8*>(elf_buffer);
+        elf_image.insert(elf_image.end(), bytes, bytes + elf_bytes);
+    }
+    if (std::ferror(elf_file)) {
+        std::fclose(elf_file);
+        throw std::runtime_error("failed reading " + elf);
+    }
+    std::fclose(elf_file);
+    const nf::Elf32 original_elf(std::move(elf_image));
+    size_t restored_words = 0;
+    std::string patch_line;
+    while (std::getline(patch_file, patch_line)) {
+        constexpr std::string_view kGameCodePatch = "patch=2,EE,";
+        if (!patch_line.starts_with(kGameCodePatch)) continue;
+        const size_t address_end = patch_line.find(',', kGameCodePatch.size());
+        if (address_end == std::string::npos
+            || patch_line.compare(address_end + 1, 5, "word,") != 0)
+            continue;
+        const std::string patch_address = patch_line.substr(
+            kGameCodePatch.size(), address_end - kGameCodePatch.size());
+        const u32 address = parse_u32("0x" + patch_address);
+        const nf::Bytes original = original_elf.at(address, sizeof(u32));
+        m.mem.write_block(address, original.data(), u32(original.size()));
+        ++restored_words;
+    }
+    if (!patch_file.eof())
+        throw std::runtime_error("failed reading MP oracle pnach: " + patch_path.string());
+    std::fprintf(stderr, "MP_ORACLE restored %zu pnach-patched words from ACTION.ELF\n",
+                 restored_words);
     // Game_Run polls EE peripheral registers; model the inert register bank as
     // last-value storage while scratchpad DMA is handled by hook_sp_copy().
     m.mem.stub_hw_window(0x10000000u, 0x00100000u);
@@ -2676,11 +2723,14 @@ int cmd_mp_oracle(const std::string& elf, const std::string& state, int rows,
         if (!object) throw std::runtime_error("--give-weapon requires a human in MP slot 0");
         const u32 bl_data = m.mem.read<u32>(object + 0xE0);
         if (!bl_data) throw std::runtime_error("--give-weapon human has no BLData");
-        nf::ee::CallArgs args;
-        args.i(bl_data).i(u32(weapon)).i(999);
-        const auto result = m.call_keep("Player_EquipWeapon__FP6BLDatass", args);
-        if (result.v0 == 0)
-            throw std::runtime_error("Player_EquipWeapon rejected weapon " + std::to_string(weapon));
+        if (weapon != 1) {
+            nf::ee::CallArgs args;
+            args.i(bl_data).i(u32(weapon)).i(999);
+            const auto result = m.call_keep("Player_EquipWeapon__FP6BLDatass", args);
+            if (result.v0 == 0)
+                throw std::runtime_error("Player_EquipWeapon rejected weapon " + std::to_string(weapon));
+        }
+        // Fists are the source's empty-inventory fallback; Player_EquipWeapon rejects them.
         const u32 weapon_owner = m.mem.read<u32>(object + 0xDC);
         if (!weapon_owner) throw std::runtime_error("--give-weapon human has no weapon owner");
         const u8 current_before = m.mem.read<u8>(weapon_owner + 0x62);
@@ -3124,6 +3174,7 @@ void usage() {
                  "       nfmips <elf> init [--check] [--dump-out f] [--steps N]\n"
                  "       nfmips <elf> trace <sym|addr> [args] [--steps N] [--state p|--ram d]\n"
                  "       nfmips <elf> mp-oracle --state <p2s> --rows N [--pads <frame/port/input.txt>] [--give-weapon ID ...] [--watch-human-hp 0..3] [--trace-frame N --trace-slot 4..7] [--trace-rng] [--game-flow|--no-game-flow]\n"
+                 "       nfmips <elf> sinf3-selftest (PS2Sinf3 angle-range loops and cardinal outputs)\n"
                  "       nfmips <elf> float-selftest (EE/VU float model assertions)\n"
                  "       nfmips <elf> symbols [substr]\n"
                  "       nfmips <elf> diff [--count N] [--seed N] [--state p2s]\n"
@@ -3143,6 +3194,40 @@ void usage() {
                  "       --hook-copy (psiCopyToSP/FromSP as plain RAM<->scratchpad copies)\n");
 }
 
+int cmd_sinf3_selftest(const std::string& elf) {
+    Machine m(elf);
+    m.install_libc_hooks();
+    constexpr u32 output = 0x01E00000u;
+    constexpr float pi = 3.1415927f;
+    const auto run = [&](float x, float y, float z) {
+        m.mem.write<u32>(output, 0);
+        m.mem.write<u32>(output + 4, 0);
+        m.mem.write<u32>(output + 8, 0);
+        CallArgs args;
+        args.i(output).i(output + 4).i(output + 8).f(x).f(y).f(z);
+        const auto result = m.call_keep("PS2Sinf3__FfffPfN23", args, 1'000'000);
+        if (u32(result.v0) != 0x3F800000u)
+            throw std::runtime_error("PS2Sinf3 returned an unexpected value");
+        return std::array<float, 3>{
+            std::bit_cast<float>(m.mem.read<u32>(output)),
+            std::bit_cast<float>(m.mem.read<u32>(output + 4)),
+            std::bit_cast<float>(m.mem.read<u32>(output + 8)),
+        };
+    };
+    const auto cardinal = run(0.0f, pi * 0.5f, pi);
+    if (cardinal[0] != 0.0f || std::fabs(cardinal[1] - 1.0f) > 1e-5f
+        || std::fabs(cardinal[2]) > 1e-6f)
+        throw std::runtime_error("PS2Sinf3 cardinal-angle check failed");
+    const auto reduced = run(-10000.0f, 10000.0f, pi);
+    for (float value : reduced)
+        if (!std::isfinite(value) || std::fabs(value) > 1.01f)
+            throw std::runtime_error("PS2Sinf3 range reduction produced an invalid result");
+    if (std::fabs(reduced[0] + reduced[1]) > 1e-6f || std::fabs(reduced[2]) > 1e-6f)
+        throw std::runtime_error("PS2Sinf3 positive/negative range reduction disagrees");
+    std::printf("PS2Sinf3-selftest passed: cardinal angles and finite +/-10000-radian reductions\n");
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -3157,6 +3242,11 @@ int main(int argc, char** argv) {
             const bool fp_ok = nf::ee::fp::self_test();
             return vu0_macro_self_test() && fp_ok ? 0 : 1;
         }
+        if (cmd == "sinf3-selftest") {
+            if (av.size() != 2) throw std::runtime_error("sinf3-selftest takes no additional arguments");
+            return cmd_sinf3_selftest(elf);
+        }
+
         if (cmd == "mp-oracle") {
             std::string state, pads;
             int rows = 0, watch_human_hp_slot = -1, trace_slot = -1;
